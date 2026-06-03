@@ -1,0 +1,18 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "module": "esnext",
+        "outDir": "./distFrontend",
+        "lib": ["dom", "ES2022", "DOM.Iterable"],
+        "types": []
+    },
+    "include": [
+        "**/l2/**/*",
+        "monaco.d.ts",
+        "mls.d.ts"
+    ],
+    "exclude": [
+        "node_modules",
+        "**/*.spec.ts"
+    ]
+}

@@ -1,0 +1,14 @@
+node_modules
+dist
+distBackend
+distFrontend
+.env
+logs
+package-lock.json
+tsconfig.tsbuildinfo
+appconfig.json
+.claude
+pnpm-lock.yaml
+**.d.ts
+mls-*
+DS_Store

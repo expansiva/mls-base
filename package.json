@@ -1,0 +1,25 @@
+{
+    "name": "repos",
+    "version": "1.0.0",
+    "private": true,
+    "scripts": {
+        "build": "pnpm build:frontend && pnpm build:backend",
+        "build:frontend": "tsc -p tsconfig.frontend.json",
+        "build:backend": "tsc -p tsconfig.backend.json",
+        "build:watch": "tsc -p tsconfig.frontend.json --watch & tsc -p tsconfig.backend.json --watch",
+        "typecheck": "tsc -p tsconfig.json --noEmit"
+    },
+    "dependencies": {
+        "adm-zip": "0.5.16",
+        "less": "^4.2.0",
+        "esbuild": "^0.27.2",
+        "lit": "^3.3.2",
+        "mls-ci": "git+https://github.com/expansiva/mls-ci.git",
+        "node-fetch": "^2.7.0",
+        "typescript": "^5.5.3"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "typescript": "^5.5.0"
+    }
+}

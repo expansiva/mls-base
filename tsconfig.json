@@ -1,0 +1,45 @@
+{
+    "compilerOptions": {
+        "target": "es2020",
+        "module": "preserve",
+        "moduleResolution": "bundler",
+        // "baseUrl": ".",
+        "esModuleInterop": true,
+        "outDir": "./dist/",
+        "strict": true,
+        "removeComments": false,
+        "skipLibCheck": true,
+        "noUnusedParameters": false,
+        "forceConsistentCasingInFileNames": true,
+        "sourceMap": false,
+        "declaration": false,
+        "noEmitOnError": true,
+        "experimentalDecorators": true,
+        "emitDecoratorMetadata": false,
+        "noImplicitAny": false,
+        "strictNullChecks": false,
+        "paths": {
+            "/_102027_/*": ["./mls-102027/*"],
+            "/_102025_/*": ["./mls-102025/*"],
+            "/_102036_/*": ["./mls-102036/*"],
+            "/_100554_/*": ["./mls-100554/*"],
+            "/_102020_/*": ["./mls-102020/*"],
+            "/_mls_test_/*": ["./mls-test/*"]
+        },
+        "lib": [
+            "dom",
+            "ES2022",
+            "DOM.Iterable"
+        ]
+    },
+    "include": [
+        "**/l2/**/*",
+        "**/l1/**/*",
+        "monaco.d.ts",
+        "mls.d.ts"
+    ],
+    "exclude": [
+        "node_modules",
+        "**/*.spec.ts"
+    ]
+}
