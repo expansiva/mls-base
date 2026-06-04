@@ -10,4 +10,4 @@ appconfig.json
 .claude
 pnpm-lock.yaml
 mls-*
-DS_Store
+.DS_Store
