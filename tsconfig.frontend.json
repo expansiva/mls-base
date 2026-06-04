@@ -8,11 +8,12 @@
     },
     "include": [
         "**/l2/**/*",
-        "monaco.d.ts",
-        "mls.d.ts"
+        "./types/monaco.d.ts",
+        "./types/mls.d.ts"
     ],
     "exclude": [
         "node_modules",
-        "**/*.spec.ts"
+        "**/*.spec.ts",
+        "**/*.test.ts"
     ]
 }

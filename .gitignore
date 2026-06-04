@@ -11,3 +11,4 @@ appconfig.json
 pnpm-lock.yaml
 mls-*
 .DS_Store
+types/*

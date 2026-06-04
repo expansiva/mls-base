@@ -3,6 +3,7 @@
     "version": "1.0.0",
     "private": true,
     "scripts": {
+        "postinstall": "node runInstall.js",
         "build": "pnpm build:frontend && pnpm build:backend",
         "build:frontend": "tsc -p tsconfig.frontend.json",
         "build:backend": "tsc -p tsconfig.backend.json",
