@@ -37,6 +37,21 @@ const mainProjects = {
 
 }
 
+async function pullMainProjects() {
+    for (const [projectId] of Object.entries(mainProjects)) {
+        const destPath = path.join('.', `mls-${projectId}`);
+
+        if (!fs.existsSync(destPath)) {
+            console.log(`mls-${projectId} not found, skipping`);
+            continue;
+        }
+
+        console.log(`Pulling mls-${projectId}...`);
+        execSync(`git -C "${destPath}" pull`, { stdio: 'inherit' });
+        console.log(`mls-${projectId} updated`);
+    }
+}
+
 async function cloneMainProjects() {
     for (const [projectId, project] of Object.entries(mainProjects)) {
         const destPath = path.join('.', `mls-${projectId}`);
@@ -110,9 +125,18 @@ async function runDownload() {
 }
 
 
-module.exports = { runDownload };
+module.exports = { runDownload, pullMainProjects };
 
-runDownload().catch((err) => {
-    console.error(err.message);
-    process.exit(1);
-});
+const command = process.argv[2];
+
+if (command === 'update') {
+    pullMainProjects().catch((err) => {
+        console.error(err.message);
+        process.exit(1);
+    });
+} else {
+    runDownload().catch((err) => {
+        console.error(err.message);
+        process.exit(1);
+    });
+}
