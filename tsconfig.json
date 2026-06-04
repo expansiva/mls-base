@@ -19,12 +19,17 @@
         "noImplicitAny": false,
         "strictNullChecks": false,
         "paths": {
-            "/_102027_/*": ["./mls-102027/*"],
-            "/_102025_/*": ["./mls-102025/*"],
-            "/_102036_/*": ["./mls-102036/*"],
-            "/_100554_/*": ["./mls-100554/*"],
-            "/_102020_/*": ["./mls-102020/*"],
-            "/_mls_test_/*": ["./mls-test/*"]
+            "/_102027_/*": ["./mls-102027/*"], // collabCommon
+            "/_102029_/*": ["./mls-102029/*"], // clientCommon
+            "/_102025_/*": ["./mls-102025/*"], // collabMessages
+            "/_102036_/*": ["./mls-102036/*"], // collabMessagesBase
+            "/_100554_/*": ["./mls-100554/*"], // collab_workspace
+            "/_102020_/*": ["./mls-102020/*"], // collabMasterFrontendAuraDev
+
+            "/_102032_/*": ["./mls-102032/*"], // collabMasterFrontendLandingPage
+            "/_102033_/*": ["./mls-102033/*"], // collabMasterFrontendAuraClient
+            "/_102034_/*": ["./mls-102034/*"], // collabMasterBackendForgeClient
+            "/_102040_/*": ["./mls-102040/*"]  // collabMolecules
         },
         "lib": [
             "dom",
