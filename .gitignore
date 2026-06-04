@@ -11,4 +11,4 @@ appconfig.json
 pnpm-lock.yaml
 **.d.ts
 mls-*
-DS_Store
+.DS_Store
