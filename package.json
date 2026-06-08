@@ -9,31 +9,36 @@
         "build:frontend": "tsc -p tsconfig.frontend.json",
         "build:backend": "tsc -p tsconfig.backend.json",
         "build:watch": "tsc -p tsconfig.frontend.json --watch & tsc -p tsconfig.backend.json --watch",
-        "typecheck": "tsc -p tsconfig.json --noEmit"
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "node scripts/run-tests.mjs --all",
+        "test:102020": "node scripts/run-tests.mjs 102020",
+        "test:l1": "node scripts/run-tests.mjs --all l1",
+        "test:l2": "node scripts/run-tests.mjs --all l2"
     },
     "dependencies": {
         "@aws-sdk/client-dynamodb": "^3.922.0",
         "@aws-sdk/lib-dynamodb": "^3.922.0",
-        "fastify": "^5.6.1",
-        "lit": "^3.3.2",
-        "pg": "^8.16.3",
-         "adm-zip": "0.5.16",
-        "less": "^4.2.0",
+        "adm-zip": "0.5.16",
         "esbuild": "^0.27.2",
+        "fastify": "^5.6.1",
+        "less": "^4.2.0",
+        "lit": "^3.3.2",
         "mls-ci": "git+https://github.com/expansiva/mls-ci.git",
         "node-fetch": "^2.7.0",
+        "pg": "^8.16.3",
         "typescript": "^5.5.3"
     },
     "devDependencies": {
         "@tailwindcss/cli": "^4.2.2",
         "@types/node": "^24.5.2",
         "@types/pg": "^8.18.0",
+        "adm-zip": "0.5.16",
         "esbuild": "^0.27.4",
-        "tailwindcss": "^4.2.2",
-        "typescript": "^5.9.2",
+        "less": "^4.6.4",
         "mls-ci": "git+https://github.com/expansiva/mls-ci.git",
         "node-fetch": "^2.7.0",
-        "less": "^4.6.4",
-        "adm-zip": "0.5.16"
+        "tailwindcss": "^4.2.2",
+        "tsx": "^4.19.0",
+        "typescript": "^5.9.2"
     }
 }

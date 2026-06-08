@@ -1,0 +1,1 @@
+// Path aliases are registered in test/register-hooks.mjs before this file loads.
