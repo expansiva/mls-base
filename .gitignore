@@ -12,3 +12,5 @@ pnpm-lock.yaml
 mls-*
 .DS_Store
 types/*
+servers/*.conf
+.pm2.generated.cjs

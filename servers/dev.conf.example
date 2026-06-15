@@ -1,0 +1,13 @@
+# Local server config for publishMlsBase.sh
+# Copy to servers/dev.conf (or any <profile>.conf) and edit. Real *.conf files are
+# gitignored. Same idea as servidores/collab.codes (host + certificate).
+
+# Required: ssh target.
+#SSH_HOST=ubuntu@192.168.5.15
+#SSH_CONFIG=./servers/collab.codes
+#SSH_HOST=collab.codes
+
+# example with lima
+SSH_HOST=lima-ubuntu24
+SSH_CONFIG=$HOME/.lima/ubuntu24/ssh.config
+REMOTE_BASE=/data/mls-base

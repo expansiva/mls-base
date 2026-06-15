@@ -3,8 +3,8 @@
     "version": "1.0.0",
     "private": true,
     "scripts": {
-        "postinstall": "node runInstall.js",
-        "updateProjects": "node runInstall.js update",
+        "install:dev": "node runInstallDev.js",
+        "postInstall": "node runInstallLibs.js",
         "build": "pnpm build:frontend && pnpm build:backend",
         "build:frontend": "tsc -p tsconfig.frontend.json",
         "build:backend": "tsc -p tsconfig.backend.json",
@@ -13,7 +13,8 @@
         "test": "node scripts/run-tests.mjs --all",
         "test:102020": "node scripts/run-tests.mjs 102020",
         "test:l1": "node scripts/run-tests.mjs --all l1",
-        "test:l2": "node scripts/run-tests.mjs --all l2"
+        "test:l2": "node scripts/run-tests.mjs --all l2",
+        "publish": "sh publishMlsBase.sh"
     },
     "dependencies": {
         "@aws-sdk/client-dynamodb": "^3.922.0",
