@@ -3,9 +3,11 @@
     "version": "1.0.0",
     "private": true,
     "scripts": {
-        "install:dev": "node runInstallDev.js",
+        "install:dev": "node runInstallDevs.js",
         "postInstall": "node runInstallLibs.js",
-        "build": "pnpm build:frontend && pnpm build:backend",
+        "build": "node scripts/build.mjs",
+        "build:server": "node scripts/build.mjs --client 102043 --only server",
+        "build:web": "node scripts/build.mjs --only web",
         "build:frontend": "tsc -p tsconfig.frontend.json",
         "build:backend": "tsc -p tsconfig.backend.json",
         "build:watch": "tsc -p tsconfig.frontend.json --watch & tsc -p tsconfig.backend.json --watch",

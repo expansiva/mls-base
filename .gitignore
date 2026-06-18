@@ -14,3 +14,4 @@ mls-*
 types/*
 servers/*.conf
 .pm2.generated.cjs
+tsconfig.build.json

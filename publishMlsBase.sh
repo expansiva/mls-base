@@ -77,25 +77,30 @@ $SSH "mkdir -p '$REMOTE_BASE'"
 
 # scaffold files needed to build on the VM (copy the ones that exist)
 SCAFFOLD=""
-for f in package.json runInstallLibs.js pnpm-workspace.yaml tsconfig.json tsconfig.frontend.json tsconfig.backend.json addNewVersion.mjs; do
+for f in package.json pm2.config.js runInstallLibs.js pnpm-workspace.yaml tsconfig.json tsconfig.frontend.json tsconfig.backend.json addNewVersion.mjs; do
   [ -f "$ROOT/$f" ] && SCAFFOLD="$SCAFFOLD $ROOT/$f"
 done
 # shellcheck disable=SC2086
-rsync -az -e "$RSH" $EXCLUDES $SCAFFOLD "$SSH_HOST:$REMOTE_BASE/"
+rsync -avz -e "$RSH" $EXCLUDES $SCAFFOLD "$SSH_HOST:$REMOTE_BASE/"
 
 # type definitions required by the build (tsconfig includes types/*.d.ts)
 if [ -d "$ROOT/types" ]; then
-  rsync -az -e "$RSH" $EXCLUDES "$ROOT/types/" "$SSH_HOST:$REMOTE_BASE/types/"
+  rsync -avz -e "$RSH" $EXCLUDES "$ROOT/types/" "$SSH_HOST:$REMOTE_BASE/types/"
+fi
+
+# scripts
+if [ -d "$ROOT/scripts" ]; then
+  rsync -avz -e "$RSH" $EXCLUDES "$ROOT/scripts/" "$SSH_HOST:$REMOTE_BASE/scripts/"
 fi
 
 # referenced project sources
 for p in $PROJECTS; do
   # shellcheck disable=SC2086
-  rsync -az --delete -e "$RSH" $EXCLUDES "$ROOT/$p/" "$SSH_HOST:$REMOTE_BASE/$p/"
+  rsync -avz --delete -e "$RSH" $EXCLUDES "$ROOT/$p/" "$SSH_HOST:$REMOTE_BASE/$p/"
 done
 
 # --- 5. Apply the new version on the VM --------------------------------------
 # addNewVersion.mjs updates tsconfig paths from disk, then installs/builds and
 # (re)loads pm2. Run with node for portability (Ubuntu /bin/sh is dash).
-$SSH "cd '$REMOTE_BASE' && node addNewVersion.mjs"
+$SSH "cd '$REMOTE_BASE' && node addNewVersion.mjs $CLIENT_ID"
 echo "Publish done."

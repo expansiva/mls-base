@@ -2,16 +2,20 @@
 // addNewVersion.mjs
 // Runs ON the VM after publishMlsBase.sh has copied the sources here.
 // Steps:
-//   1. Update tsconfig.json "paths" from the mls-<id> projects present on disk
-//      (single source of truth — no hard-coded project list).
+//   1. Update tsconfig.json "paths" from the mls-<id> projects present on disk.
 //   2. pnpm install (deps only; the dev-only clone lives in "install:dev").
 //   3. pnpm migrate for every project that declares a "migrate" script.
-//   4. pnpm build.
-//   5. pm2 startOrReload every project that declares a "pm2" field (cluster +
-//      reload = no downtime). Projects without a "pm2" field are left untouched.
+//   4. pnpm build (-> dist/local + dist/web).
+//   5. Assemble a release in releases/<yyyyMMddHHmmss> (runtime output only, no
+//      sources; node_modules shared via symlink), activate it atomically through
+//      the "current" symlink, keep the 10 newest, and reload pm2 (cluster, no
+//      downtime). Rollback = repoint "current" to an older release + reload.
 
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync,
+  statSync, symlinkSync, writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,26 +59,14 @@ function updateTsconfigPaths(ids) {
   writeFileSync(file, text.replace(/"paths"\s*:\s*\{[^}]*\}/, () => block));
 }
 
-// Collect pm2 apps declared by mls-base itself or any mls-<id> project.
-function discoverPm2Apps() {
-  const pkgs = [join(ROOT, 'package.json')].concat(
-    readdirSync(ROOT)
-      .filter((d) => d.startsWith('mls-'))
-      .map((d) => join(ROOT, d, 'package.json')),
-  );
-  const apps = [];
-  for (const p of pkgs) {
-    if (!existsSync(p)) continue;
-    let json;
-    try { json = JSON.parse(readFileSync(p, 'utf8')); } catch { continue; }
-    if (json.pm2 && Array.isArray(json.pm2.apps)) {
-      for (const a of json.pm2.apps) {
-        a.cwd = dirname(p);
-        apps.push(a);
-      }
-    }
-  }
-  return apps;
+function pad(n) {
+  return String(n).padStart(2, '0');
+}
+
+// Release id: yyyyMMddHHmmss (sorts chronologically).
+function makeReleaseId() {
+  const d = new Date();
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
 // ── main ───────────────────────────────────────────────────────────────────
@@ -103,19 +95,41 @@ for (const id of ids) {
   }
 }
 
-console.log('--- pnpm build');
-run('pnpm build');
+// Optional client id passed by publishMlsBase.sh (node addNewVersion.mjs <id>);
+// forwarded to the build so it picks the right client config when several exist.
+const clientId = process.argv[2];
+const clientArg = clientId ? ` -- --client ${clientId}` : '';
+console.log(`--- build${clientId ? ` (client ${clientId})` : ''}`);
+run(`pnpm build${clientArg}`);
 
-console.log('--- pm2 startOrReload');
-const apps = discoverPm2Apps();
-if (apps.length) {
-  const eco = join(ROOT, '.pm2.generated.cjs');
-  writeFileSync(eco, `module.exports = ${JSON.stringify({ apps }, null, 2)};\n`);
-  console.log(`    pm2 apps: ${apps.map((a) => a.name).join(', ')}`);
-  run(`pm2 startOrReload ${eco} --update-env`);
-  try { run('pm2 save'); } catch { /* non-fatal */ }
-} else {
-  console.log('    no pm2-managed projects found — skipping');
+// ── assemble release and activate it via the "current" symlink ──────────────
+// A release holds only the runtime output (frontend + backend), no sources.
+// node_modules is shared across releases via a symlink (pnpm store-backed).
+const releaseId = makeReleaseId();
+const releasesDir = join(ROOT, 'releases');
+const releaseDir = join(releasesDir, releaseId);
+mkdirSync(releaseDir, { recursive: true });
+
+console.log(`--- assembling release ${releaseId}`);
+renameSync(join(ROOT, 'dist'), join(releaseDir, 'dist')); // dist/local + dist/web
+cpSync(join(ROOT, 'config.json'), join(releaseDir, 'config.json')); // server reads it from cwd
+symlinkSync(join(ROOT, 'node_modules'), join(releaseDir, 'node_modules'), 'dir');
+
+// Atomic activation: point current -> releases/<id> (ln -sfn replaces in place).
+run(`ln -sfn '${releaseDir}' '${join(ROOT, 'current')}'`);
+console.log(`--- current -> releases/${releaseId}`);
+
+// Keep the 10 most recent releases; remove older ones.
+const releases = readdirSync(releasesDir).filter((n) => /^\d{14}$/.test(n)).sort().reverse();
+for (const old of releases.slice(10)) {
+  rmSync(join(releasesDir, old), { recursive: true, force: true });
+  console.log(`    pruned old release ${old}`);
 }
 
-console.log('addNewVersion done.');
+// Reload pm2 (cluster -> graceful, no downtime; starts on first run).
+mkdirSync(join(ROOT, 'logs'), { recursive: true });
+console.log('--- pm2 reload (pm2.config.js)');
+run('pm2 startOrReload pm2.config.js --update-env');
+try { run('pm2 save'); } catch { /* non-fatal */ }
+
+console.log(`addNewVersion done (release ${releaseId}).`);

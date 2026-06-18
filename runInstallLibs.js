@@ -53,8 +53,6 @@ async function runDownload() {
         await downloadFile(urlMls, './types/mls.d.ts');
         console.log('Get lib definition');
 
-        await cloneMainProjects();
-
     } catch (error) {
         throw new Error('Erro dowloads files:' + error.message)
     }
