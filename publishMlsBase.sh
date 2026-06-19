@@ -99,8 +99,8 @@ for p in $PROJECTS; do
   rsync -avz --delete -e "$RSH" $EXCLUDES "$ROOT/$p/" "$SSH_HOST:$REMOTE_BASE/$p/"
 done
 
-# --- 5. Apply the new version on the VM --------------------------------------
-# addNewVersion.mjs updates tsconfig paths from disk, then installs/builds and
-# (re)loads pm2. Run with node for portability (Ubuntu /bin/sh is dash).
-$SSH "cd '$REMOTE_BASE' && node addNewVersion.mjs $CLIENT_ID"
+# --- 5. Build + deploy on the VM ---------------------------------------------
+# `pnpm build` runs addNewVersion.mjs (package.json "build"): it compiles, then
+# materializes a new release and reloads pm2. Login shell (-l) so pnpm/node are on PATH.
+$SSH "bash -lc 'cd \"$REMOTE_BASE\" && pnpm build -- --client $CLIENT_ID'"
 echo "Publish done."

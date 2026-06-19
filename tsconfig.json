@@ -19,17 +19,20 @@
         "noImplicitAny": false,
         "strictNullChecks": false,
         "paths": {
-            "/_102027_/*": ["./mls-102027/*"], // collabCommon
-            "/_102029_/*": ["./mls-102029/*"], // clientCommon
-            "/_102025_/*": ["./mls-102025/*"], // collabMessages
-            "/_102036_/*": ["./mls-102036/*"], // collabMessagesBase
             "/_100554_/*": ["./mls-100554/*"], // collab_workspace
             "/_102020_/*": ["./mls-102020/*"], // collabMasterFrontendAuraDev
-
+            "/_102021_/*": ["./mls-102021/*"],
+            "/_102025_/*": ["./mls-102025/*"], // collabMessages
+            "/_102027_/*": ["./mls-102027/*"], // collabCommon
+            "/_102029_/*": ["./mls-102029/*"], // clientCommon
+            "/_102030_/*": ["./mls-102030/*"],
             "/_102032_/*": ["./mls-102032/*"], // collabMasterFrontendLandingPage
             "/_102033_/*": ["./mls-102033/*"], // collabMasterFrontendAuraClient
             "/_102034_/*": ["./mls-102034/*"], // collabMasterBackendForgeClient
-            "/_102040_/*": ["./mls-102040/*"]  // collabMolecules
+            "/_102036_/*": ["./mls-102036/*"], // collabMessagesBase
+            "/_102040_/*": ["./mls-102040/*"], // collabMolecules
+            "/_102043_/*": ["./mls-102043/*"],
+            "/_102045_/*": ["./mls-102045/*"]
         },
         "lib": [
             "dom",

@@ -5,7 +5,8 @@
     "scripts": {
         "install:dev": "node runInstallDevs.js",
         "postInstall": "node runInstallLibs.js",
-        "build": "node scripts/build.mjs",
+        "build": "node addNewVersion.mjs",
+        "compile": "node scripts/build.mjs",
         "build:server": "node scripts/build.mjs --client 102043 --only server",
         "build:web": "node scripts/build.mjs --only web",
         "build:frontend": "tsc -p tsconfig.frontend.json",

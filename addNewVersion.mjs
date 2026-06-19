@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // addNewVersion.mjs
-// Runs ON the VM after publishMlsBase.sh has copied the sources here.
+// This IS the `pnpm build` pipeline (package.json "build" points here). The publish
+// only syncs sources, then runs `pnpm build` on the VM — which compiles AND deploys.
 // Steps:
 //   1. Update tsconfig.json "paths" from the mls-<id> projects present on disk.
 //   2. pnpm install (deps only; the dev-only clone lives in "install:dev").
 //   3. pnpm migrate for every project that declares a "migrate" script.
-//   4. pnpm build (-> dist/local + dist/web).
+//   4. Compile via `node scripts/build.mjs` (-> dist/local + dist/web).
 //   5. Assemble a release in releases/<yyyyMMddHHmmss> (runtime output only, no
 //      sources; node_modules shared via symlink), activate it atomically through
 //      the "current" symlink, keep the 10 newest, and reload pm2 (cluster, no
@@ -95,12 +96,16 @@ for (const id of ids) {
   }
 }
 
-// Optional client id passed by publishMlsBase.sh (node addNewVersion.mjs <id>);
-// forwarded to the build so it picks the right client config when several exist.
-const clientId = process.argv[2];
-const clientArg = clientId ? ` -- --client ${clientId}` : '';
-console.log(`--- build${clientId ? ` (client ${clientId})` : ''}`);
-run(`pnpm build${clientArg}`);
+// Client id (passed as `--client <id>` by the publish, or positionally). Forwarded
+// to the compiler so it picks the right client config when several exist on disk.
+const argv = process.argv.slice(2);
+const clientFlag = argv.indexOf('--client');
+const clientId = clientFlag >= 0 ? argv[clientFlag + 1] : argv.find((a) => !a.startsWith('--'));
+const clientArg = clientId ? ` --client ${clientId}` : '';
+console.log(`--- compile${clientId ? ` (client ${clientId})` : ''}`);
+// Call the compiler directly (NOT `pnpm build`, which now points to this file) to
+// avoid infinite recursion.
+run(`node scripts/build.mjs${clientArg}`);
 
 // ── assemble release and activate it via the "current" symlink ──────────────
 // A release holds only the runtime output (frontend + backend), no sources.
