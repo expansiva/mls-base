@@ -8,8 +8,8 @@ module.exports = {
     instances: 2,
     exec_mode: 'cluster',
     watch: false,
+    kill_timeout: 180000,   // 3 min
     env: {
-      PORT: 3000,
       NODE_ENV: 'production',
       TZ: 'UTC' // set the timezone, UTC
     },
