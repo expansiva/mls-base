@@ -13,6 +13,8 @@
         "build:backend": "tsc -p tsconfig.backend.json",
         "build:watch": "tsc -p tsconfig.frontend.json --watch & tsc -p tsconfig.backend.json --watch",
         "typecheck": "tsc -p tsconfig.json --noEmit",
+        "materializeL1": "tsx mls-102021/l1/agentMaterializeL1/nodejsMaterializeL1.ts 102050 cafeFlow --check --force",
+        "materializeL2": "tsx mls-102020/l1/agentMaterializeL2/nodejsMaterializeL2.ts -- 102050 cafeFlow --config mls-102020/l1/agentMaterializeL2/materializeL2.config.json --check --force",
         "test": "node scripts/run-tests.mjs --all",
         "test:102020": "node scripts/run-tests.mjs 102020",
         "test:l1": "node scripts/run-tests.mjs --all l1",
