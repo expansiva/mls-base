@@ -16,8 +16,8 @@
         "noEmitOnError": true,
         "experimentalDecorators": true,
         "emitDecoratorMetadata": false,
-        "noImplicitAny": false,
-        "strictNullChecks": false,
+        // "noImplicitAny": false,
+        // "strictNullChecks": false,
         "paths": {
             "/_100554_/*": ["./mls-100554/*"], // collab_workspace
             "/_102020_/*": ["./mls-102020/*"], // collabMasterFrontendAuraDev
@@ -31,7 +31,6 @@
             "/_102034_/*": ["./mls-102034/*"], // collabMasterBackendForgeClient
             "/_102036_/*": ["./mls-102036/*"], // collabMessagesBase
             "/_102040_/*": ["./mls-102040/*"], // collabMolecules
-            "/_102043_/*": ["./mls-102043/*"],
             "/_102045_/*": ["./mls-102045/*"],
             "/_102048_/*": ["./mls-102048/*"],
             "/_102049_/*": ["./mls-102049/*"],
@@ -52,6 +51,7 @@
     "exclude": [
         "node_modules",
         "**/*.spec.ts",
-        "./mls-102030/**/*"
+        "./mls-102030/**/*",
+        "./mls-102050/**/*"
     ]
 }
