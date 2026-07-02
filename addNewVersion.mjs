@@ -118,7 +118,28 @@ mkdirSync(releaseDir, { recursive: true });
 console.log(`--- assembling release ${releaseId}`);
 renameSync(join(ROOT, 'dist'), join(releaseDir, 'dist')); // dist/local + dist/web
 cpSync(join(ROOT, 'config.json'), join(releaseDir, 'config.json')); // server reads it from cwd
+// Carry the VM-level .env (kept stable at the mls-base root) into the release: the server
+// and migrate resolve .env from their cwd, and releases are recreated on every publish.
+if (existsSync(join(ROOT, '.env'))) cpSync(join(ROOT, '.env'), join(releaseDir, '.env'));
 symlinkSync(join(ROOT, 'node_modules'), join(releaseDir, 'node_modules'), 'dir');
+
+// DB migrations BEFORE activation: the client's TableDefinitions (persistenceModules ->
+// tableDefsDir) only become Postgres tables when the master backend's migrate runs
+// (bootstrapSchema; the server does NOT create schema at startup). Run it from the
+// release dir so config.json/.env resolve exactly as the server will see them.
+// If it fails, we abort before switching "current" — the previous release keeps running.
+const releaseConfig = JSON.parse(readFileSync(join(releaseDir, 'config.json'), 'utf8'));
+const masterBackendId = Object.entries(releaseConfig.projects ?? {})
+  .find(([, p]) => p?.type === 'master backend')?.[0];
+const migrateJs = masterBackendId
+  ? join(releaseDir, 'dist', 'local', `_${masterBackendId}_`, 'l1', 'scripts', 'migrate.js')
+  : '';
+if (migrateJs && existsSync(migrateJs)) {
+  console.log(`--- db migrate (master backend ${masterBackendId})`);
+  run(`node '${migrateJs}'`, releaseDir);
+} else {
+  console.log(`--- db migrate skipped (${migrateJs || 'no master backend in config.json'} not found)`);
+}
 
 // Atomic activation: point current -> releases/<id> (ln -sfn replaces in place).
 run(`ln -sfn '${releaseDir}' '${join(ROOT, 'current')}'`);

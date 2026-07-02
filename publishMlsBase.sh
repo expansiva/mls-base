@@ -11,8 +11,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# --- 1. Resolve the client base project (e.g. 102043) ------------------------
-DEFAULT_CLIENT_ID="102043"
+# --- 1. Resolve the client base project (e.g. 102048) ------------------------
+DEFAULT_CLIENT_ID="102048"
 CLIENT_ID="${1:-}"
 if [ -z "$CLIENT_ID" ]; then
   printf 'Client base project id [%s]: ' "$DEFAULT_CLIENT_ID" > /dev/tty
@@ -20,11 +20,39 @@ if [ -z "$CLIENT_ID" ]; then
 fi
 # Enter accepts the default shown above.
 CLIENT_ID="${CLIENT_ID:-$DEFAULT_CLIENT_ID}"
-CONFIG_JSON="$ROOT/mls-${CLIENT_ID}/config.json"
-if [ ! -f "$CONFIG_JSON" ]; then
-  echo "config.json not found for client project: $CONFIG_JSON" >&2
+
+# --- 1b. Compose the client config.json from l5/project.json -----------------
+# The client-owned l5/project.json (written by the change agents) is the source of
+# truth: its `masters` signatures point to the composers, each contributing its part
+# of the workspace config (dependency inversion; the composed file is regenerated on
+# every publish — manual customization belongs in l5/project.json `customize`).
+L5_PROJECT_JSON="$ROOT/mls-${CLIENT_ID}/l5/project.json"
+if [ ! -f "$L5_PROJECT_JSON" ]; then
+  echo "l5/project.json not found for client project: $L5_PROJECT_JSON" >&2
   exit 1
 fi
+TSX="$ROOT/node_modules/.bin/tsx"
+[ -x "$TSX" ] || TSX="npx tsx"
+CONFIG_JSON="$ROOT/mls-${CLIENT_ID}/config.json"
+rm -f "$CONFIG_JSON"
+# Deterministic composer order: backend, then frontend.
+for SIDE in backend frontend; do
+  COMPOSER="$(node -p "
+    const m = (require('$L5_PROJECT_JSON').masters || {})['$SIDE'];
+    m ? \`mls-\${m.masterProject}/l2/\${m.agentFolder}/nodejsSaveConfigJson.ts\` : '';
+  ")"
+  if [ -z "$COMPOSER" ]; then
+    echo "l5/project.json has no masters.$SIDE signature" >&2
+    exit 1
+  fi
+  if [ ! -f "$ROOT/$COMPOSER" ]; then
+    echo "composer not found: $ROOT/$COMPOSER" >&2
+    exit 1
+  fi
+  echo "--- composing config ($SIDE): $COMPOSER"
+  $TSX "$ROOT/$COMPOSER" "$CLIENT_ID"
+done
+node "$ROOT/scripts/validateClientConfig.mjs" "$CONFIG_JSON"
 
 # --- 2. Resolve the server profile (host + cert + remote path) ---------------
 DEFAULT_PROFILE="dev"
@@ -57,13 +85,17 @@ SSH_OPTS=""
 RSH="ssh $SSH_OPTS"
 SSH="$RSH $SSH_HOST"
 
-# --- 3. Discover referenced projects from the client config.json -------------
-# Collect every 6-digit project id referenced in config.json and keep the ones
-# that exist locally as mls-<id> directories. The client project itself included.
-IDS="$(grep -oE '10[0-9]{4}' "$CONFIG_JSON" | sort -u)"
+# --- 3. Discover referenced projects from the composed config.json -----------
+# The project set is exactly the `projects` map composed from l5/project.json
+# (client + masters + libs) — deterministic, no id grep.
+IDS="$(node -p "Object.keys(require('$CONFIG_JSON').projects || {}).join(' ')")"
 PROJECTS=""
 for id in $IDS; do
-  [ -d "$ROOT/mls-${id}" ] && PROJECTS="$PROJECTS mls-${id}"
+  if [ ! -d "$ROOT/mls-${id}" ]; then
+    echo "project mls-${id} declared in config.json but missing on disk" >&2
+    exit 1
+  fi
+  PROJECTS="$PROJECTS mls-${id}"
 done
 case " $PROJECTS " in
   *" mls-${CLIENT_ID} "*) : ;;
@@ -99,8 +131,17 @@ for p in $PROJECTS; do
   rsync -avz --delete -e "$RSH" $EXCLUDES "$ROOT/$p/" "$SSH_HOST:$REMOTE_BASE/$p/"
 done
 
-# --- 5. Build + deploy on the VM ---------------------------------------------
-# `pnpm build` runs addNewVersion.mjs (package.json "build"): it compiles, then
-# materializes a new release and reloads pm2. Login shell (-l) so pnpm/node are on PATH.
+# --- 5. First-time VM setup (pnpm publish:initial → INITIAL=1) ----------------
+# Creates the app role, database, timescaledb extension and the stable .env on the
+# VM (idempotent) BEFORE the build, so the migration that follows can connect.
+if [ -n "${INITIAL:-}" ]; then
+  echo "--- running VM initial setup (INITIAL=1)"
+  $SSH "bash -lc 'cd \"$REMOTE_BASE\" && bash scripts/vmInitialSetup.sh'"
+fi
+
+# --- 6. Build + deploy on the VM ---------------------------------------------
+# `pnpm build` runs addNewVersion.mjs (package.json "build"): it compiles, runs the
+# DB migration (schema + mechanical seeds) and activates the release via pm2.
+# Login shell (-l) so pnpm/node are on PATH.
 $SSH "bash -lc 'cd \"$REMOTE_BASE\" && pnpm build -- --client $CLIENT_ID'"
 echo "Publish done."
