@@ -362,6 +362,8 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
     }
   }
 
+  await writeComponentStylesForWeb(clientConfig, outdir, ids);
+
   // copy shell templates referenced by config.json (kept in their _<id>_ path)
   for (const shellPath of Object.values(clientConfig.shellTemplates ?? {})) {
     const { abs, rel } = resolveVirtual(shellPath);
@@ -370,6 +372,42 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
     await mkdir(dirname(dest), { recursive: true });
     await cp(abs, dest);
   }
+}
+
+function extractInjectedCss(source) {
+  const blocks = [];
+  const re = /if\s*\(\s*this\.loadStyle\s*\)\s*this\.loadStyle\s*\(\s*`([\s\S]*?)`\s*\)\s*;/gu;
+  let match;
+  while ((match = re.exec(source)) !== null) blocks.push(match[1]);
+  return blocks;
+}
+
+async function writeComponentStylesForWeb(clientConfig, outdir, ids) {
+  if (!existsSync(LOCAL_DIST)) {
+    log('component styles skipped (dist/local not found)');
+    return;
+  }
+
+  const blocks = [];
+  for (const id of ids) {
+    const l2 = resolve(LOCAL_DIST, `_${id}_`, 'l2');
+    if (!existsSync(l2)) continue;
+    for (const file of (await walkFiles(l2)).filter((f) => extname(f) === '.js')) {
+      const cssBlocks = extractInjectedCss(await readFile(file, 'utf8'));
+      for (const css of cssBlocks) blocks.push(css);
+    }
+  }
+
+  const css = `${blocks.join('\n\n')}\n`;
+  let written = 0;
+  for (const [projId, project] of Object.entries(clientConfig.projects ?? {})) {
+    if (project.type !== 'master frontend') continue;
+    const cssOut = resolve(outdir, `_${projId}_`, 'l2', 'shared', 'component-styles.css');
+    await mkdir(dirname(cssOut), { recursive: true });
+    await writeFile(cssOut, css, 'utf8');
+    written += 1;
+  }
+  log(`component styles compiled -> ${written} file(s), ${blocks.length} block(s)`);
 }
 
 // ── client config discovery ──────────────────────────────────────────────────
@@ -417,6 +455,10 @@ async function main() {
 
   if (args.only !== 'web') {
     await buildServer(ids);
+    // post-compile: compile each project's .less and inject into the per-file JS
+    // (same mls-ci routine the GitHub Action uses; requires the /// <mls header,
+    // so it applies to dist/local only — esbuild output strips it)
+    run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local']);
     // make the chosen client config discoverable at the projects-dir root
     await cp(join(clientRoot, 'config.json'), resolve(ROOT, 'config.json'));
     log('copied client config.json to project root');

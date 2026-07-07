@@ -17,3 +17,5 @@ servers/*.conf
 tsconfig.build.json
 releases
 current
+.cssStage
+.cssStage-old-sandbox

@@ -1,0 +1,335 @@
+{
+  "defaultProjectId": "102048",
+  "projects": {
+    "102025": {
+      "root": "../mls-102025",
+      "type": "lib"
+    },
+    "102027": {
+      "root": "../mls-102027",
+      "type": "lib"
+    },
+    "102029": {
+      "root": "../mls-102029",
+      "type": "lib"
+    },
+    "102033": {
+      "root": "../mls-102033",
+      "type": "master frontend"
+    },
+    "102034": {
+      "root": "../mls-102034",
+      "type": "master backend",
+      "modules": [
+        {
+          "moduleId": "mdm",
+          "basePath": "/mdm",
+          "shellMode": "spa",
+          "backendRouter": "./_102034_/l1/mdm/layer_2_controllers/router.js"
+        },
+        {
+          "moduleId": "monitor",
+          "basePath": "/monitor",
+          "shellMode": "spa",
+          "backendRouter": "./_102034_/l1/monitor/layer_2_controllers/router.js"
+        },
+        {
+          "moduleId": "audit",
+          "basePath": "/audit",
+          "shellMode": "spa",
+          "backendRouter": "./_102034_/l1/audit/layer_2_controllers/router.js"
+        }
+      ],
+      "persistenceModules": [
+        {
+          "moduleId": "platform",
+          "persistenceEntrypoint": "./_102034_/l1/server/persistence.js"
+        },
+        {
+          "moduleId": "mdm",
+          "persistenceEntrypoint": "./_102034_/l1/mdm/persistence.js"
+        },
+        {
+          "moduleId": "monitor",
+          "persistenceEntrypoint": "./_102034_/l1/monitor/persistence.js"
+        }
+      ]
+    },
+    "102036": {
+      "root": "../mls-102036",
+      "type": "lib"
+    },
+    "102048": {
+      "root": ".",
+      "type": "client",
+      "runtime": {
+        "projectId": "102048"
+      },
+      "modules": [
+        {
+          "moduleId": "cafeFlow",
+          "basePath": "/cafeFlow",
+          "shellMode": "spa",
+          "backendControllers": "./_102048_/l1/cafeFlow/layer_1_external/adapters/http/controllers",
+          "navigation": [
+            {
+              "id": "adjustStockLevel",
+              "label": "Registrar Entrada/Ajuste de Estoque",
+              "href": "/cafeFlow/adjustStockLevel",
+              "description": "Registrar Entrada/Ajuste de Estoque"
+            },
+            {
+              "id": "createMenuItem",
+              "label": "Cadastrar Item de Cardápio",
+              "href": "/cafeFlow/createMenuItem",
+              "description": "Cadastrar Item de Cardápio"
+            },
+            {
+              "id": "createStockItem",
+              "label": "Cadastrar Item de Estoque",
+              "href": "/cafeFlow/createStockItem",
+              "description": "Cadastrar Item de Estoque"
+            },
+            {
+              "id": "createTable",
+              "label": "Cadastrar Mesa",
+              "href": "/cafeFlow/createTable",
+              "description": "Cadastrar Mesa"
+            },
+            {
+              "id": "deleteMenuItem",
+              "label": "Remover Item de Cardápio",
+              "href": "/cafeFlow/deleteMenuItem",
+              "description": "Remover Item de Cardápio"
+            },
+            {
+              "id": "deleteStockItem",
+              "label": "Remover Item de Estoque",
+              "href": "/cafeFlow/deleteStockItem",
+              "description": "Remover Item de Estoque"
+            },
+            {
+              "id": "deleteTable",
+              "label": "Remover Mesa",
+              "href": "/cafeFlow/deleteTable",
+              "description": "Remover Mesa"
+            },
+            {
+              "id": "orderLifecycle",
+              "label": "Ciclo de Vida do Pedido",
+              "href": "/cafeFlow/orderLifecycle",
+              "description": "Ciclo de Vida do Pedido"
+            },
+            {
+              "id": "queryMenuItem",
+              "label": "Consultar Itens de Cardápio",
+              "href": "/cafeFlow/queryMenuItem",
+              "description": "Consultar Itens de Cardápio"
+            },
+            {
+              "id": "queryStockItem",
+              "label": "Consultar Itens de Estoque",
+              "href": "/cafeFlow/queryStockItem",
+              "description": "Consultar Itens de Estoque"
+            },
+            {
+              "id": "queryTable",
+              "label": "Consultar Mesas",
+              "href": "/cafeFlow/queryTable",
+              "description": "Consultar Mesas"
+            },
+            {
+              "id": "shiftLifecycle",
+              "label": "Ciclo de Vida do Turno Diário",
+              "href": "/cafeFlow/shiftLifecycle",
+              "description": "Ciclo de Vida do Turno Diário"
+            },
+            {
+              "id": "updateMenuItem",
+              "label": "Editar Item de Cardápio",
+              "href": "/cafeFlow/updateMenuItem",
+              "description": "Editar Item de Cardápio"
+            },
+            {
+              "id": "updateStockItem",
+              "label": "Editar Item de Estoque",
+              "href": "/cafeFlow/updateStockItem",
+              "description": "Editar Item de Estoque"
+            },
+            {
+              "id": "updateTable",
+              "label": "Editar Mesa",
+              "href": "/cafeFlow/updateTable",
+              "description": "Editar Mesa"
+            }
+          ],
+          "frontend": {
+            "layer": "l2",
+            "pages": [
+              {
+                "pageId": "adjustStockLevel",
+                "route": "/cafeFlow/adjustStockLevel",
+                "source": "l2/cafeFlow/web/desktop/page11/adjustStockLevel.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/adjustStockLevel.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--adjust-stock-level-102048",
+                "title": "Registrar Entrada/Ajuste de Estoque"
+              },
+              {
+                "pageId": "createMenuItem",
+                "route": "/cafeFlow/createMenuItem",
+                "source": "l2/cafeFlow/web/desktop/page11/createMenuItem.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/createMenuItem.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--create-menu-item-102048",
+                "title": "Cadastrar Item de Cardápio"
+              },
+              {
+                "pageId": "createStockItem",
+                "route": "/cafeFlow/createStockItem",
+                "source": "l2/cafeFlow/web/desktop/page11/createStockItem.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/createStockItem.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--create-stock-item-102048",
+                "title": "Cadastrar Item de Estoque"
+              },
+              {
+                "pageId": "createTable",
+                "route": "/cafeFlow/createTable",
+                "source": "l2/cafeFlow/web/desktop/page11/createTable.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/createTable.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--create-table-102048",
+                "title": "Cadastrar Mesa"
+              },
+              {
+                "pageId": "deleteMenuItem",
+                "route": "/cafeFlow/deleteMenuItem",
+                "source": "l2/cafeFlow/web/desktop/page11/deleteMenuItem.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/deleteMenuItem.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--delete-menu-item-102048",
+                "title": "Remover Item de Cardápio"
+              },
+              {
+                "pageId": "deleteStockItem",
+                "route": "/cafeFlow/deleteStockItem",
+                "source": "l2/cafeFlow/web/desktop/page11/deleteStockItem.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/deleteStockItem.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--delete-stock-item-102048",
+                "title": "Remover Item de Estoque"
+              },
+              {
+                "pageId": "deleteTable",
+                "route": "/cafeFlow/deleteTable",
+                "source": "l2/cafeFlow/web/desktop/page11/deleteTable.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/deleteTable.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--delete-table-102048",
+                "title": "Remover Mesa"
+              },
+              {
+                "pageId": "orderLifecycle",
+                "route": "/cafeFlow/orderLifecycle",
+                "source": "l2/cafeFlow/web/desktop/page11/orderLifecycle.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/orderLifecycle.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--order-lifecycle-102048",
+                "title": "Ciclo de Vida do Pedido"
+              },
+              {
+                "pageId": "queryMenuItem",
+                "route": "/cafeFlow/queryMenuItem",
+                "source": "l2/cafeFlow/web/desktop/page11/queryMenuItem.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/queryMenuItem.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--query-menu-item-102048",
+                "title": "Consultar Itens de Cardápio"
+              },
+              {
+                "pageId": "queryStockItem",
+                "route": "/cafeFlow/queryStockItem",
+                "source": "l2/cafeFlow/web/desktop/page11/queryStockItem.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/queryStockItem.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--query-stock-item-102048",
+                "title": "Consultar Itens de Estoque"
+              },
+              {
+                "pageId": "queryTable",
+                "route": "/cafeFlow/queryTable",
+                "source": "l2/cafeFlow/web/desktop/page11/queryTable.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/queryTable.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--query-table-102048",
+                "title": "Consultar Mesas"
+              },
+              {
+                "pageId": "shiftLifecycle",
+                "route": "/cafeFlow/shiftLifecycle",
+                "source": "l2/cafeFlow/web/desktop/page11/shiftLifecycle.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/shiftLifecycle.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--shift-lifecycle-102048",
+                "title": "Ciclo de Vida do Turno Diário"
+              },
+              {
+                "pageId": "updateMenuItem",
+                "route": "/cafeFlow/updateMenuItem",
+                "source": "l2/cafeFlow/web/desktop/page11/updateMenuItem.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/updateMenuItem.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--update-menu-item-102048",
+                "title": "Editar Item de Cardápio"
+              },
+              {
+                "pageId": "updateStockItem",
+                "route": "/cafeFlow/updateStockItem",
+                "source": "l2/cafeFlow/web/desktop/page11/updateStockItem.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/updateStockItem.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--update-stock-item-102048",
+                "title": "Editar Item de Estoque"
+              },
+              {
+                "pageId": "updateTable",
+                "route": "/cafeFlow/updateTable",
+                "source": "l2/cafeFlow/web/desktop/page11/updateTable.ts",
+                "definition": "l2/cafeFlow/web/desktop/page11/updateTable.defs.ts",
+                "componentTag": "cafe-flow--web--desktop--page11--update-table-102048",
+                "title": "Editar Mesa"
+              }
+            ]
+          }
+        }
+      ],
+      "persistenceModules": [
+        {
+          "moduleId": "cafeFlow",
+          "tableDefsDir": "./_102048_/l1/cafeFlow/layer_1_external/adapters/persistence"
+        }
+      ]
+    }
+  },
+  "shellTemplates": {
+    "spa": "./_102033_/l2/shared/spa/index.html",
+    "pwa": "./_102033_/l2/shared/pwa/index.html"
+  },
+  "publication": {
+    "defaultTarget": "web",
+    "targets": {
+      "web": {
+        "assetBaseUrl": "",
+        "serveStaticFromServer": true,
+        "minify": false,
+        "sourcemap": true
+      }
+    }
+  },
+  "clientShell": {
+    "mode": "spa",
+    "activeProfile": "production",
+    "regions": {
+      "aside": {
+        "activeProfile": "messages",
+        "profiles": {
+          "messages": {
+            "renderer": {
+              "entrypoint": "/_102048_/l2/cafeFlow/messagesAside.js",
+              "source": "l2/cafeFlow/messagesAside.ts",
+              "tag": "cafe-flow-messages-aside-102048"
+            },
+            "widthPx": 400
+          }
+        }
+      }
+    }
+  }
+}
