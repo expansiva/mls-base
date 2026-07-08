@@ -18,12 +18,12 @@
         "materializeL1": "tsx mls-102021/l1/cbMaterializeCli/nodejsMaterializeL1.ts 102048 cafeFlow --check --force",
         "materializeL2": "tsx mls-102020/l2/agentChangeFrontend/nodejsMaterializeL2.ts -- 102048 cafeFlow --force",
         "migrate": "node scripts/runMigrate.mjs",
-        "publish:initial": "INITIAL=1 sh publishMlsBase.sh",
+        "publish": "node scripts/runPublishMlsBase.mjs",
+        "publish:initial": "node scripts/runPublishMlsBase.mjs --initial",
         "test": "node scripts/run-tests.mjs --all",
         "test:102020": "node scripts/run-tests.mjs 102020",
         "test:l1": "node scripts/run-tests.mjs --all l1",
-        "test:l2": "node scripts/run-tests.mjs --all l2",
-        "publish": "sh publishMlsBase.sh"
+        "test:l2": "node scripts/run-tests.mjs --all l2"
     },
     "dependencies": {
         "@aws-sdk/client-dynamodb": "^3.922.0",
