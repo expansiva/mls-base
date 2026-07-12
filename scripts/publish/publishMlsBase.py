@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""publishMlsBase.py — cross-platform dev publish for mls-base (Windows/macOS/Linux).
+"""scripts/publish/publishMlsBase.py — cross-platform dev publish for mls-base.
 
 Python port of publishMlsBase.sh:
-composes the client config.json, copies the referenced project SOURCES to the
-runtime VM (the build happens on the VM) and triggers `pnpm build` there.
+composes the generated client config, copies the referenced project SOURCES to
+the runtime VM (the build happens on the VM) and triggers `pnpm build` there.
 
 The VM comes from servers/<profile>.conf, reached either via ssh
 (SSH_HOST [+ SSH_CONFIG/CERT], e.g. Lima on macOS) or via a local Multipass
@@ -11,7 +11,7 @@ instance (MULTIPASS_INSTANCE, e.g. on Windows). The sources tarball is built
 with the stdlib `tarfile` module, so no external tar/rsync is needed locally.
 
 Usage:
-  python publishMlsBase.py [clientProjectId] [serverProfile] [--initial]
+  python scripts/publish/publishMlsBase.py [clientProjectId] [serverProfile] [--initial]
 Both positional arguments are prompted if omitted. --initial (or INITIAL=1)
 runs scripts/vmInitialSetup.sh on the VM before the build.
 """
@@ -23,23 +23,25 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CLIENT_ID = "102048"
 DEFAULT_PROFILE = "dev"
 # same set publishMlsBase.sh passes to rsync --exclude
 EXCLUDED_NAMES = {"node_modules", ".git", "dist", "distBackend", "distFrontend", ".DS_Store"}
+EXCLUDED_PATTERNS = [re.compile(r"^publish\.[A-Za-z0-9_.-]+\.conf$")]
 # scaffold files needed to build on the VM (copied when they exist)
 SCAFFOLD_FILES = [
     "package.json",
-    "pm2.config.js",
-    "runInstallLibs.js",
     "pnpm-workspace.yaml",
     "tsconfig.json",
     "tsconfig.frontend.json",
     "tsconfig.backend.json",
-    "addNewVersion.mjs",
+    "servers/pm2.config.js",
 ]
 # staging tarball at the project root (gitignored); removed after the upload
 TAR_FILE = ".publish.sources.tgz"
@@ -96,6 +98,37 @@ def run(cmd, **kwargs):
         raise RuntimeError(f"Command failed ({result.returncode}): {' '.join(str(c) for c in cmd)}")
 
 
+def http_json(method, url, payload=None):
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {error.code} {url}: {body}") from error
+
+
+def http_upload(url, path):
+    request = urllib.request.Request(
+        url,
+        data=path.read_bytes(),
+        method="PUT",
+        headers={"Content-Type": "application/gzip", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {error.code} {url}: {body}") from error
+
+
 def ask(question, default):
     if not sys.stdin.isatty():
         return default
@@ -109,11 +142,29 @@ def sh_quote(s):
 
 
 def parse_conf(path):
-    """servers/<profile>.conf is a flat KEY=VALUE file (sourced by the .sh
-    version); supports comments, optional quotes and $HOME/~ in values."""
+    """Read a publish target config.
+
+    Supports the legacy flat KEY=VALUE format and a small JSON object. JSON keys
+    are converted to upper snake case, so {"serverProjectId":"102051"} becomes
+    SERVER_PROJECT_ID plus compatibility aliases used by the sites publish path.
+    """
+    text = path.read_text(encoding="utf-8")
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        data = json.loads(stripped)
+        conf = {}
+        for key, value in data.items():
+            env_key = re.sub(r"(?<!^)([A-Z])", r"_\1", str(key)).upper()
+            conf[env_key] = str(value)
+        if "SERVER_ID" in conf:
+            conf["SITES_SERVER_ID"] = conf["SERVER_ID"]
+        if "SERVER_PROJECT_ID" in conf:
+            conf["SITES_SERVER_PROJECT_ID"] = conf["SERVER_PROJECT_ID"]
+        return conf
+
     conf = {}
     home = str(Path.home())
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -128,6 +179,10 @@ def parse_conf(path):
         value = value.replace("${HOME}", home).replace("$HOME", home)
         conf[m.group(1)] = value
     return conf
+
+
+def generated_config_path(client_id):
+    return ROOT / ".generated" / "configs" / f"mls-{client_id}.config.json"
 
 
 class MultipassRemote:
@@ -176,11 +231,91 @@ def make_remote(conf, remote_base):
     raise RuntimeError("servers/<profile>.conf must define SSH_HOST or MULTIPASS_INSTANCE")
 
 
+def absolute_url(base, path):
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    return base.rstrip("/") + "/" + path.lstrip("/")
+
+
+def publish_via_sites(client_id, tar_file, initial=False, conf=None):
+    conf = conf or {}
+    base = os.environ.get("COLLAB_SITES_BASE_URL", "https://sites.collab.codes").rstrip("/")
+    server_id = (os.environ.get("COLLAB_SITES_SERVER_ID", "").strip() or conf.get("SITES_SERVER_ID") or "").strip() or None
+    server_project_id = (os.environ.get("COLLAB_SITES_SERVER_PROJECT_ID", "").strip() or conf.get("SITES_SERVER_PROJECT_ID") or "").strip() or None
+    payload = {
+        "projectId": client_id,
+        "serverId": server_id,
+        "serverProjectId": server_project_id,
+        "packageName": f"mls-{client_id}.tgz",
+    }
+    if initial:
+        log("note: --initial is ignored by collab-sites remote publish; runtime bootstrap owns initial VM setup")
+    created = http_json("POST", f"{base}/api/v1/publish/jobs", payload)
+    upload_url = absolute_url(base, created["uploadUrl"])
+    poll_url = absolute_url(base, created["pollUrl"])
+    authorize_url = created["authorizeUrl"]
+
+    log(f"uploading package to collab-sites: {created['job']['id']}")
+    http_upload(upload_url, ROOT / tar_file)
+
+    print("", flush=True)
+    print("Abra este link para autorizar e acompanhar o publish:", flush=True)
+    print(authorize_url, flush=True)
+    print("", flush=True)
+
+    last_status = None
+    while True:
+        polled = http_json("GET", poll_url)
+        job = polled.get("job") or {}
+        status = job.get("status")
+        if status != last_status:
+            log(f"publish status: {status}")
+            last_status = status
+        if status == "done":
+            log("publish done")
+            return
+        if status in {"failed", "expired"}:
+            raise RuntimeError(job.get("lastError") or f"publish {status}")
+        time.sleep(3)
+
+
+def resolve_conf_path(profile, client_root):
+    """Resolve publish target config.
+
+    Project-local configs are preferred so each client project can carry its
+    own local/remote targets without growing mls-base/servers indefinitely.
+    The canonical location is mls-<client>/l5/publish.<profile>.conf; the
+    previous root location remains as a compatibility fallback.
+    Legacy mls-base/servers/<profile>.conf remains supported.
+    """
+    raw = Path(profile)
+    candidates = []
+    if raw.is_absolute() or raw.suffix == ".conf" or len(raw.parts) > 1:
+        candidates.append(raw if raw.is_absolute() else ROOT / raw)
+    else:
+        candidates.extend([
+            client_root / "l5" / f"publish.{profile}.conf",
+            client_root / "l5" / f"{profile}.conf",
+            client_root / f"publish.{profile}.conf",
+            client_root / f"{profile}.conf",
+            ROOT / "servers" / f"{profile}.conf",
+        ])
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    tried = "\n  - ".join(str(path) for path in candidates)
+    raise RuntimeError(f"Server config not found for profile '{profile}'. Tried:\n  - {tried}")
+
+
 def collect_files(abs_dir, rel_dir, out):
     """Recursive walk with the rsync-equivalent excludes; paths kept relative
     to ROOT with forward slashes (tar archive names)."""
     for entry in sorted(abs_dir.iterdir(), key=lambda e: e.name):
         if entry.name in EXCLUDED_NAMES:
+            continue
+        if any(pattern.match(entry.name) for pattern in EXCLUDED_PATTERNS):
             continue
         rel = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
         if entry.is_dir():
@@ -192,9 +327,12 @@ def collect_files(abs_dir, rel_dir, out):
 def main():
     positional = []
     initial = bool(os.environ.get("INITIAL"))
+    sites_publish = False
     for arg in sys.argv[1:]:
         if arg == "--initial":
             initial = True
+        elif arg == "--sites":
+            sites_publish = True
         else:
             positional.append(arg)
 
@@ -202,15 +340,17 @@ def main():
     client_id = positional[0] if positional else ask("Client base project id", DEFAULT_CLIENT_ID)
     client_root = ROOT / f"mls-{client_id}"
 
-    # --- 1b. Compose the client config.json from l5/project.json ---------------
+    # --- 1b. Compose the generated client config from l5/project.json ----------
     # l5/project.json is the source of truth: its `masters` signatures point to
     # the composers (backend then frontend), each contributing its part of the
     # workspace config. The composed file is regenerated on every publish.
-    l5_path = client_root / "l5" / "project.json"
+    runtime_l5_path = client_root / "l5" / "runtime.project.json"
+    l5_path = runtime_l5_path if runtime_l5_path.is_file() else client_root / "l5" / "project.json"
     if not l5_path.is_file():
         raise RuntimeError(f"l5/project.json not found for client project: {l5_path}")
     l5 = json.loads(l5_path.read_text(encoding="utf-8"))
-    config_json = client_root / "config.json"
+    config_json = generated_config_path(client_id)
+    config_json.parent.mkdir(parents=True, exist_ok=True)
     config_json.unlink(missing_ok=True)
     for side in ("backend", "frontend"):
         master = (l5.get("masters") or {}).get(side)
@@ -224,14 +364,22 @@ def main():
     run([which("node"), str(ROOT / "scripts" / "validateClientConfig.mjs"), str(config_json)])
 
     # --- 2. Resolve the server profile (ssh or multipass + remote path) --------
-    profile = positional[1] if len(positional) > 1 else ask("Server profile (servers/<profile>.conf)", DEFAULT_PROFILE)
-    conf_path = ROOT / "servers" / f"{profile}.conf"
-    if not conf_path.is_file():
-        raise RuntimeError(f"Server config not found: {conf_path} (see servers/dev.conf.example)")
-    conf = parse_conf(conf_path)
-    remote_base = conf.get("REMOTE_BASE") or "/data/mls-base"
-    remote = make_remote(conf, remote_base)
-    log(f"client={client_id} target={remote.label} remoteBase={remote_base}")
+    # Server profile is no longer prompted: use the positional arg or DEFAULT_PROFILE directly.
+    profile = positional[1] if len(positional) > 1 else DEFAULT_PROFILE
+    if sites_publish:
+        try:
+            sites_conf = parse_conf(resolve_conf_path(profile, client_root))
+        except RuntimeError:
+            sites_conf = {}
+        remote_base = "/data/mls-base"
+        remote = None
+        log(f"client={client_id} target=collab-sites remoteBase={remote_base}")
+    else:
+        conf_path = resolve_conf_path(profile, client_root)
+        conf = parse_conf(conf_path)
+        remote_base = conf.get("REMOTE_BASE") or "/data/mls-base"
+        remote = make_remote(conf, remote_base)
+        log(f"client={client_id} target={remote.label} remoteBase={remote_base}")
 
     # --- 3. Discover referenced projects from the composed config.json ---------
     ids = list(json.loads(config_json.read_text(encoding="utf-8")).get("projects", {}).keys())
@@ -243,9 +391,22 @@ def main():
             raise RuntimeError(f"project {project} declared in config.json but missing on disk")
     log(f"projects to publish: {' '.join(projects)}")
 
+    # --- 3b. Regenerate obj/ for ALL published projects -------------------------
+    # The runtime VM's cbe login serves each project's sources/js from
+    # mls-<id>/obj/compiled.zip. Masters/libs get their obj from CI on git push,
+    # but a local edit that is not pushed would ship a STALE obj to the VM — so
+    # the publish regenerates every obj from the LOCAL build (dist/local).
+    # source.zip is always rebuilt; compiled.zip only when dist/local/_<id>_
+    # exists (otherwise the existing zip is kept, with a note). Later the VM
+    # itself can pull + compile and run this same script.
+    log("generating obj for ALL published projects (source.zip [+ compiled.zip if dist/local present])")
+    run([which("node"), str(ROOT / "scripts" / "buildClientObj.mjs"), "--projects", ",".join(ids)])
+
     # --- 4. Pack sources + scaffold and ship them to the VM --------------------
     files = [f for f in SCAFFOLD_FILES if (ROOT / f).is_file()]
-    for directory in ["types", "scripts", *projects]:
+    # "static" ships the cbe libs disk cache (mls.js etc.) so the runtime VM can
+    # serve /libs/* without reaching the remote origin (see mls-102034 cbe module).
+    for directory in [".generated", "types", "scripts", "static", *projects]:
         if (ROOT / directory).is_dir():
             collect_files(ROOT / directory, directory, files)
     log(f"packing {len(files)} file(s)")
@@ -254,6 +415,12 @@ def main():
             for rel in files:
                 tar.add(ROOT / rel, arcname=rel)
 
+        if sites_publish:
+            publish_via_sites(client_id, TAR_FILE, initial, sites_conf)
+            return
+
+        if remote is None:
+            raise RuntimeError("remote target was not resolved")
         remote.run(f"mkdir -p {sh_quote(remote_base)}")
         # project dirs are replaced wholesale (the rsync --delete equivalent)
         remote.run(f"cd {sh_quote(remote_base)} && rm -rf {' '.join(projects)}")

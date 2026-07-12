@@ -87,6 +87,9 @@ that by walking agent `interaction.payload` (`aiAgentHelper.ts:getInteractionSte
 - After the human answers/approves, create a completed `result` step (e.g. `*-answer`) that the next
   step `dependsOn`; that both completes the emitting agent (via `setStepCompletedIfChildrenCompleted`)
   and unlocks downstream. Examples: `e1-clarification-answer`, `checkpoint-draft-answer`.
+- **For an "adjust/iterate" answer (review loop), intent ORDER inside the batch is critical**: add the
+  next OPEN step (the adjustment/re-run agent step) FIRST, then the completed `*-answer`/`*-request`
+  result, then the clarification `update-status`. See "Parent auto-completion" below.
 - **Do NOT use a "wrapper" agent step with a child clarification in `nextSteps`.** It deadlocks (see
   "What NOT to do"). The `agentNewSolutionFinal` shape (wrapper + child) looks like this but is not a
   safe pattern to copy for a mid-pipeline checkpoint.
@@ -104,6 +107,64 @@ that by walking agent `interaction.payload` (`aiAgentHelper.ts:getInteractionSte
 
 Orchestration — `mls-102027/l2/aiAgentOrchestration.ts`: `continuePoolingTask`, `processIntents`,
 `getClarificationElement`, `finishClarification`, `loadAgent`, `executeBeforePrompt`.
+
+## Parallel fan-out (collab-messages parallel system)
+
+For N independent items known upfront (entities, workflows, operations), use the parallel system
+instead of a sequential chain: an `add-step` intent whose step is a fan-out PARENT (agent step,
+status `in_progress`, `planning.executionMode: 'parallel_dynamic'`) plus intent-level
+`executionMode: { type: 'parallel', args: string[], maxParallel: 5 }`. Backend behavior
+(`tasks.ts:addParallelArgs` + docs in `types/mls.d.ts` AgentIntentParallelSteps): pre-allocates up to
+maxParallel child slots, calls the agent's `beforePromptStep` once per compact arg (the ARG is the
+hook args — keep it short/unique, e.g. `entity:Order`), REUSES slots as items finish and DELETES
+finished children (task size and UI stay clean). The parent auto-completes when all children are
+terminal. Builders: `ns2Shared.createParallelDynamicAgentStepIntent` (v2) /
+`ns3Steps.ns3ParallelStepIntent` (ns3). Rules learned in production:
+
+- **A 'failed' child fails the parent** (and the task). Fan-out children must NEVER return
+  `update-status failed` — on gate/extract failure they complete-with-trace; a downstream finalize
+  step verifies the artifacts on disk and runs a bounded sequential repair round for missing items.
+- **Never add steps from inside a fan-out child** — the parent manages slots/progress counters.
+- Host the fan-out under the step that must wait for it: its (deferred) completion then anchors the
+  next `waiting_dependency` step. Barriers between item kinds = separate fan-outs chained by no-LLM
+  phase steps (ns3 E5: workflows fan-out → 'e5-operations-phase' → operations fan-out → finalize).
+- use stepTitle for parallel like this:   const stepTitle: string = `Defining {{completed}}/{{total}} workflows, failed {{failed}}`;
+
+## Interaction cleaner (task record size)
+
+`update-status` accepts `cleaner: 'input' | 'input_output'`. Once a step's artifact is persisted to
+disk, complete it with `cleaner: 'input_output'`: the backend drops the step's LLM input, payload and
+trace (keeps `prompt`). Without this a full pipeline run keeps every LLM payload on the task record —
+DynamoDB items are capped at 400KB and the write FAILS. Do NOT clean steps whose
+`interaction.payload` hosts a pending/rendered clarification child (checkpoint steps): payload=null
+drops the child from the tree. Sweep example: `agentNewSolution2Final.ts`.
+
+## Parent auto-completion (why intent order matters)
+
+`aiOrchestrator.ts:setStepCompletedIfChildrenCompleted` completes ANY step whose `nextSteps` children
+are ALL `completed`/`failed`, cascading up to the root (task may become `done`). Two traps:
+
+- **A pending clarification in `interaction.payload` does NOT hold its parent open** — the sweep only
+  looks at `nextSteps`. So while the human looks at a checkpoint widget, the emitting agent step has
+  no open `nextSteps` child protecting it.
+- **The sweep runs inside EACH intent, not at the end of the batch.** `intentAddStep` with a
+  `status: 'completed'` step and `intentUpdateStatus` both trigger it immediately. So within one
+  `msgApplyIntents` call, an early "completed result" intent can auto-complete the parent chain and
+  make a later `add-step` fail with "Parent step cannot be modified".
+
+**Rule: never send a completed result/answer step before adding the next open step.** For a review
+loop ("request adjustment via LLM"), the batch must be:
+1. `add-step` the adjustment/re-run agent step (open status, e.g. `waiting_human_input`) — this is
+   the "pending revision" child that keeps the parent alive;
+2. `add-step` the completed `*-request`/`*-answer` result;
+3. `update-status` completing the clarification.
+
+For the final "approve" answer the completed result may come first — completing the chain is the goal.
+
+Additionally, anchor all these intents on a non-terminal agent step: if the original `parentStep` was
+already auto-completed (stale context, re-click after an error), walk up to the nearest mutable agent
+step or the root. Helper: `findMutableParentStep` (exists in both `agentNs3Draft.ts` and
+`agentNs3Journeys.ts`). Fixed example of the whole pattern: `agentNs3Journeys.ts:applyJourneysReview`.
 
 ## What NOT to do
 

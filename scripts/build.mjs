@@ -47,6 +47,22 @@ function run(cmd, args) {
   }
 }
 
+function composeGeneratedConfig(clientId) {
+  const clientRoot = resolve(ROOT, `mls-${clientId}`);
+  const l5Path = existsSync(join(clientRoot, 'l5', 'runtime.project.json'))
+    ? join(clientRoot, 'l5', 'runtime.project.json')
+    : join(clientRoot, 'l5', 'project.json');
+  if (!existsSync(l5Path)) return;
+  let l5;
+  try { l5 = JSON.parse(readFileSync(l5Path, 'utf8')); } catch { return; }
+  for (const side of ['backend', 'frontend']) {
+    const master = l5.masters?.[side];
+    if (!master) continue;
+    const composer = `mls-${master.masterProject}/l2/${master.agentFolder}/nodejsSaveConfigJson.ts`;
+    if (existsSync(resolve(ROOT, composer))) run('pnpm', ['exec', 'tsx', composer, clientId]);
+  }
+}
+
 function toPosix(p) {
   return p.split('\\').join('/');
 }
@@ -59,10 +75,20 @@ function discoverProjects() {
     .sort();
 }
 
-// Project id -> source root, populated from the client config.json in main().
+// Project id -> source root, populated from the generated client config in main().
 const projectRoots = new Map();
 function projectDir(id) {
   return projectRoots.get(id) ?? resolve(ROOT, `mls-${id}`);
+}
+
+function generatedConfigPath(id) {
+  return join(ROOT, '.generated', 'configs', `mls-${id}.config.json`);
+}
+
+function clientConfigPath(id) {
+  const generated = generatedConfigPath(id);
+  if (existsSync(generated)) return generated;
+  return join(projectDir(id), 'config.json');
 }
 
 // Resolve a "/_<id>_/rest" specifier (or relative source) to a real .ts/.js file.
@@ -415,14 +441,14 @@ function detectClientId(explicit) {
   if (explicit) return explicit;
   const candidates = [];
   for (const id of discoverProjects()) {
-    const cfgPath = join(projectDir(id), 'config.json');
+    const cfgPath = clientConfigPath(id);
     if (!existsSync(cfgPath)) continue;
     let cfg;
     try { cfg = JSON.parse(readFileSync(cfgPath, 'utf8')); } catch { continue; }
     if (cfg.projects?.[id]?.type === 'client' || cfg.defaultProjectId === id) candidates.push(id);
   }
   if (candidates.length === 1) return candidates[0];
-  if (candidates.length === 0) throw new Error('No client config.json found. Pass --client <id>.');
+  if (candidates.length === 0) throw new Error('No generated client config found. Pass --client <id> after composing it.');
   throw new Error(`Multiple client apps found (${candidates.join(', ')}). Pass --client <id>.`);
 }
 
@@ -439,11 +465,14 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
+  if (args.client) composeGeneratedConfig(args.client);
   const clientId = detectClientId(args.client);
   const clientRoot = resolve(ROOT, `mls-${clientId}`);
-  const clientConfig = JSON.parse(await readFile(join(clientRoot, 'config.json'), 'utf8'));
+  const configPath = clientConfigPath(clientId);
+  if (!existsSync(configPath)) throw new Error(`generated config not found: ${configPath}`);
+  const clientConfig = JSON.parse(await readFile(configPath, 'utf8'));
 
-  // The project set comes from the client config.json (only what the app needs),
+  // The project set comes from the generated client config (only what the app needs),
   // with each project's source root resolved from its `root` field.
   const ids = Object.keys(clientConfig.projects ?? {});
   if (ids.length === 0) throw new Error('config.json declares no projects.');
@@ -460,8 +489,8 @@ async function main() {
     // so it applies to dist/local only — esbuild output strips it)
     run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local']);
     // make the chosen client config discoverable at the projects-dir root
-    await cp(join(clientRoot, 'config.json'), resolve(ROOT, 'config.json'));
-    log('copied client config.json to project root');
+    await cp(configPath, resolve(ROOT, 'config.json'));
+    log('copied generated client config to project root');
   }
 
   if (args.only !== 'server') {

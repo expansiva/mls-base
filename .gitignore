@@ -1,4 +1,8 @@
 node_modules
+__pycache__/
+/.generated/
+/config.json
+/mls-*/config.json
 dist
 distBackend
 distFrontend
@@ -10,6 +14,10 @@ appconfig.json
 .claude
 pnpm-lock.yaml
 mls-*
+!mls-102051/
+mls-102051/*
+!mls-102051/package.json
+!mls-102051/publish.*.conf.example
 .DS_Store
 types/*
 servers/*.conf

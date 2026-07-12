@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// addNewVersion.mjs
+// scripts/runtime/addNewVersion.mjs
 // This IS the `pnpm build` pipeline (package.json "build" points here). The publish
 // only syncs sources, then runs `pnpm build` on the VM — which compiles AND deploys.
 // Steps:
@@ -17,10 +17,10 @@ import {
   cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync,
   statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const run = (cmd, cwd = ROOT) => execSync(cmd, { cwd, stdio: 'inherit' });
 
 // Directories named exactly mls-<digits> (skip "-temp" and other variants).
@@ -145,6 +145,15 @@ if (migrateJs && existsSync(migrateJs)) {
 run(`ln -sfn '${releaseDir}' '${join(ROOT, 'current')}'`);
 console.log(`--- current -> releases/${releaseId}`);
 
+const releaseAlias = process.env.COLLAB_RELEASE_ALIAS || '';
+if (releaseAlias) {
+  if (!/^current-\d+$/.test(releaseAlias)) {
+    throw new Error(`Invalid COLLAB_RELEASE_ALIAS: ${releaseAlias}`);
+  }
+  run(`ln -sfn '${releaseDir}' '${join(ROOT, releaseAlias)}'`);
+  console.log(`--- ${releaseAlias} -> releases/${releaseId}`);
+}
+
 // Keep the 10 most recent releases; remove older ones.
 const releases = readdirSync(releasesDir).filter((n) => /^\d{14}$/.test(n)).sort().reverse();
 for (const old of releases.slice(10)) {
@@ -154,8 +163,8 @@ for (const old of releases.slice(10)) {
 
 // Reload pm2 (cluster -> graceful, no downtime; starts on first run).
 mkdirSync(join(ROOT, 'logs'), { recursive: true });
-console.log('--- pm2 reload (pm2.config.js)');
-run('pm2 startOrReload pm2.config.js --update-env');
+console.log('--- pm2 reload (servers/pm2.config.js)');
+run('pm2 startOrReload servers/pm2.config.js --update-env');
 try { run('pm2 save'); } catch { /* non-fatal */ }
 
 console.log(`addNewVersion done (release ${releaseId}).`);

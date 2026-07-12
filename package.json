@@ -3,9 +3,9 @@
     "version": "1.0.0",
     "private": true,
     "scripts": {
-        "install:dev": "node runInstallDevs.js",
-        "postInstall": "node runInstallLibs.js",
-        "build": "node addNewVersion.mjs",
+        "install:dev": "node scripts/install/runInstallDevs.js",
+        "postInstall": "node scripts/install/runInstallLibs.js",
+        "build": "node scripts/runtime/addNewVersion.mjs",
         "compile": "node scripts/build.mjs",
         "build:server": "node scripts/build.mjs --client 102048 --only server",
         "build:web": "node scripts/build.mjs --only web",
@@ -16,10 +16,13 @@
         "processCss": "node scripts/processCssAfterCompile.mjs --dist dist",
         "compile:local": "tsc && node scripts/processCssAfterCompile.mjs --dist dist",
         "materializeL1": "tsx mls-102021/l1/cbMaterializeCli/nodejsMaterializeL1.ts 102048 cafeFlow --check --force",
-        "materializeL2": "tsx mls-102020/l2/agentChangeFrontend/nodejsMaterializeL2.ts -- 102048 cafeFlow --force",
+        "materializeL2": "tsx mls-102020/l2/agentChangeFrontend/nodejsMaterializeL2.ts -- 102051 cafeFlow --force",
         "migrate": "node scripts/runMigrate.mjs",
-        "publish": "node scripts/runPublishMlsBase.mjs",
+
+        "publish": "pnpm run buildClientObj && node scripts/runPublishMlsBase.mjs",
+
         "publish:initial": "node scripts/runPublishMlsBase.mjs --initial",
+        "buildClientObj": "node scripts/buildClientObj.mjs  --client 102051",
         "test": "node scripts/run-tests.mjs --all",
         "test:102020": "node scripts/run-tests.mjs 102020",
         "test:l1": "node scripts/run-tests.mjs --all l1",

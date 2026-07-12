@@ -94,10 +94,12 @@ async function processProject(mlsCiDir, id, distDir) {
   log(`mls-${id}: staged ${jsCount} js / ${lessCount} less`);
 
   const runner = join(stage, 'node_modules', 'mls-ci', 'processCSS.js');
+  // Capture mls-ci's stdout (it logs one "Processed CSS for file: …" line per file — pure noise)
+  // while keeping stderr inherited so real errors still surface.
   const result = spawnSync(
     process.execPath,
     ['-e', `require(${JSON.stringify(runner)}).runProcessCss(${JSON.stringify(id)}).catch((e)=>{console.error(e.message);process.exit(1);})`],
-    { cwd: stage, stdio: 'inherit' },
+    { cwd: stage, stdio: ['inherit', 'pipe', 'inherit'], encoding: 'utf8' },
   );
   if (result.status !== 0) throw new Error(`mls-ci runProcessCss failed for mls-${id}`);
 

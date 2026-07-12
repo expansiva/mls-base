@@ -8,6 +8,7 @@
     },
     "include": [
         "**/l2/**/*",
+        "**/l5/*.ts",
         "./types/monaco.d.ts",
         "./types/mls.d.ts"
     ],
@@ -15,6 +16,8 @@
         "node_modules",
         "**/*.spec.ts",
         "**/*.test.ts",
-        "./mls-102030/**/*"
+        "**/nodejs*",
+        "./mls-102030/**/*",
+        "./mls-102050/**/*"
     ]
 }

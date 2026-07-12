@@ -1,17 +1,22 @@
 {
     "extends": "./tsconfig.json",
     "compilerOptions": {
-        "module": "nodenext",
-        "moduleResolution": "nodenext",
+        "module": "esnext",
+        "moduleResolution": "bundler",
         "outDir": "./distBackend",
         "lib": ["ES2022"],
         "types": ["node"]
     },
     "include": [
-        "**/l1/**/*"
+        "**/l1/**/*",
+        "**/l5/*.ts",
+        "**/nodejs*"
     ],
     "exclude": [
         "node_modules",
-        "**/*.spec.ts"
+        "**/*.spec.ts",
+        "**/l2/**/*",
+        "./mls-102030/**/*",
+        "./mls-102050/**/*"
     ]
 }

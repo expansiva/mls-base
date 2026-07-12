@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const publishScript = resolve(ROOT, 'publishMlsBase.py');
+const publishScript = resolve(ROOT, 'scripts/publish/publishMlsBase.py');
 const passthroughArgs = process.argv.slice(2);
 
 const candidates = process.platform === 'win32'

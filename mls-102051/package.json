@@ -1,0 +1,9 @@
+{
+  "name": "mls-102051",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "publish": "node ../scripts/runPublishMlsBase.mjs 102051 remote --sites",
+    "publish:local": "node ../scripts/runPublishMlsBase.mjs 102051 local"
+  }
+}
