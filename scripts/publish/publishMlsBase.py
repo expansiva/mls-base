@@ -181,10 +181,6 @@ def parse_conf(path):
     return conf
 
 
-def generated_config_path(client_id):
-    return ROOT / ".generated" / "configs" / f"mls-{client_id}.config.json"
-
-
 class MultipassRemote:
     """Remote channel over `multipass exec/transfer` (no ssh key or IP needed)."""
 
@@ -349,7 +345,8 @@ def main():
     if not l5_path.is_file():
         raise RuntimeError(f"l5/project.json not found for client project: {l5_path}")
     l5 = json.loads(l5_path.read_text(encoding="utf-8"))
-    config_json = generated_config_path(client_id)
+    # Single source of truth: mls-<client>/l5/config.json (composed here, read by Studio + runtime).
+    config_json = client_root / "l5" / "config.json"
     config_json.parent.mkdir(parents=True, exist_ok=True)
     config_json.unlink(missing_ok=True)
     for side in ("backend", "frontend"):

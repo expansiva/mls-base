@@ -31,13 +31,18 @@ make the LLM lose context. Instead:
 - `steps/{slug}/` per pipeline step, containing everything that step owns: the agent hook file, the
   prompt (`prompt.md`), the deterministic gate/validator with its test, a short `readme.md`
   (input, output, invariants, known LLM traps), a golden fixture when useful, and a `CHANGELOG.md`.
+- `helpers/` at the agent root for shared cross-step code only. This folder is mandatory once more
+  than one step imports the same helper. Keep entrypoints (`agentX.ts`, CLI scripts), `flow.json`,
+  `spec.md`, `steps/`, `skills/`, `schemas/`, `tools/` and domain-specific asset folders at the root;
+  move reusable plumbing, shared gates, persistence adapters, repair state helpers, and CLI clients
+  into `helpers/`.
 - `CHANGELOG.md` per step, one dated line per change, including dead ends and superseded approaches
   with the why. This local history is what keeps an LLM oriented months later.
 - Dispatcher and worker of the same fan-out live in the same folder but in separate files. Never
   discriminate "which role am I playing" via fields smuggled through the prompt JSON when separate
   agents are possible.
-- Shared helpers stay minimal, generic, and policy-frozen: they must not know about any specific
-  step. If a fix requires touching helpers, stop and review — that is a boundary.
+- Shared helpers stay minimal, generic, and policy-frozen: they live in `helpers/` and must not know
+  about any specific step. If a fix requires touching helpers, stop and review — that is a boundary.
 - Versioned JSON schemas for LLM tool outputs live centrally (one `schemas/` folder), each with an
   `$id` + version; bump the version and update fixtures together.
 
@@ -138,7 +143,8 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
 
 ## What to avoid (hard-earned)
 
-- **Flat folders.** Dozens of sibling agent files with no step boundary — the v1/v2 disease.
+- **Flat folders.** Dozens of sibling agent/helper files with no `steps/` and `helpers/` boundary —
+  the v1/v2 disease.
 - **God-modules.** One shared file accumulating scan + schemas + prompt building + persistence +
   intents (cbShared 868 lines, cfeCreateShared 2,653 lines). Split by responsibility from day one;
   a shared module every step imports is a change with total blast radius.

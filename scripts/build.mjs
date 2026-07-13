@@ -81,14 +81,9 @@ function projectDir(id) {
   return projectRoots.get(id) ?? resolve(ROOT, `mls-${id}`);
 }
 
-function generatedConfigPath(id) {
-  return join(ROOT, '.generated', 'configs', `mls-${id}.config.json`);
-}
-
 function clientConfigPath(id) {
-  const generated = generatedConfigPath(id);
-  if (existsSync(generated)) return generated;
-  return join(projectDir(id), 'config.json');
+  // Single source of truth: mls-<id>/l5/config.json (composed by the publish generators).
+  return join(projectDir(id), 'l5', 'config.json');
 }
 
 // Resolve a "/_<id>_/rest" specifier (or relative source) to a real .ts/.js file.

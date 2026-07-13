@@ -35,14 +35,9 @@ import ts from 'typescript';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-function generatedConfigPath(id) {
-  return join(ROOT, '.generated', 'configs', `mls-${id}.config.json`);
-}
-
 function clientConfigPath(id) {
-  const generated = generatedConfigPath(id);
-  if (existsSync(generated)) return generated;
-  return join(ROOT, `mls-${id}`, 'config.json');
+  // Single source of truth: mls-<id>/l5/config.json.
+  return join(ROOT, `mls-${id}`, 'l5', 'config.json');
 }
 const SOURCE_FOLDERS = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
 const SKIP_NAMES = new Set(['.DS_Store']);
