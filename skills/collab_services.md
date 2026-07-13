@@ -13,7 +13,6 @@ detail.
   every project. Loaded after login even in production (`mls-102041/l2/index.ts` injects
   `/_100554_/l2/collabInit.js`).
 - **Base class** — `mls-102027/l2/serviceBase.ts` (`ServiceBase`, `IService`, `IServiceMenu`).
-- **Aura services live in** — `mls-102020/l2/aura/services/` (registry: `mls-102020/l2/pluginCollabCoreIndex.ts`).
 
 ## Mental model (read this first)
 
@@ -118,17 +117,3 @@ Each project exposes services via `getMenus()` returning `mls.plugin.MenuAction[
 2. Register it in the project's `pluginCollabCoreIndex.ts` with the same widget string.
 3. If a same-shortName service exists in a lower-priority project (e.g. Studio), yours overrides it.
 4. Republish the project + clear the mls.stor cache; check icon in nav-2 and open it.
-
-## Checklist — moving a service into a folder
-
-Update the trio TOGETHER (real example: the 2026-07-13 move of 4 services to `l2/aura/services/`):
-1. Move `.ts`/`.less`/`.html`; update the `/// <mls fileReference>` headers.
-2. New tag = folder-prefixed (`aura--services--service-x-102020`): `@customElement`, `.less`
-   selector, any `.html` usage.
-3. New widget = `_<project>_/l2/<folder>/<shortName>` in BOTH `details.widget` and
-   `pluginCollabCoreIndex`.
-4. Do NOT touch thread names that merely look like paths (e.g.
-   `'_102020_/l2/serviceExploreProjects'` in selectLanguage/selectDesignSystem/selectPage) — they
-   are message-thread identifiers; renaming orphans the history.
-5. Republish + clear caches; verify icon (nav-2), open/close (nav-3), height (layout/msize).
-
