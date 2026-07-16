@@ -20,6 +20,7 @@ declare namespace mls {
 // export * as common from "./common/common";
 // export * as mindmap from "./mindmap/mindmap";
 // export * as bots from "./bots/bots";
+// export * as sites from "./sites/sites";
 // export * as l5_common from "@common/l5-common";
 export type * as msg from "@msg/global";
 // import * as cbe from "@common/global.cbe.types";
@@ -1495,6 +1496,36 @@ export const loadConfig: (widget: string) => Promise<string>;
  * save the config of a plugin
  */
 export const saveConfig: (widget: string, config: string) => Promise<void>;
+
+}
+
+declare namespace mls.sites {
+
+export interface ISitesHandlers {
+    getHeader?: () => number | undefined;
+    setHeader?: (index: number) => void;
+    getAside?: () => number | undefined;
+    setAside?: (index: number) => void;
+    getPage?: () => number | undefined;
+    setPage?: (index: number) => void;
+}
+/**
+ * Injects the local implementations. Called by the runtime base
+ * (mls-102033 shell) after it mounts; partial updates are merged.
+ */
+export const register: (impl: ISitesHandlers) => void;
+/** Current header index (1-based), or undefined before the base registers. */
+export const getHeader: () => number | undefined;
+/** Switch the shell header to the nth entry (1-based) of the boot header list. */
+export const setHeader: (index: number) => void;
+/** Current aside index (1-based), or undefined before the base registers. */
+export const getAside: () => number | undefined;
+/** Switch the shell aside to the nth entry (1-based) of the boot aside list. */
+export const setAside: (index: number) => void;
+/** Current content page genome (e.g. 11, 21), or undefined before the base registers. */
+export const getPage: () => number | undefined;
+/** Switch the active content page to the given two-digit genome (e.g. 21). */
+export const setPage: (index: number) => void;
 
 }
 

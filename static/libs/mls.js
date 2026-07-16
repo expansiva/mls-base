@@ -6232,6 +6232,7 @@
     setContributions: () => setContributions,
     setServices: () => setServices,
     showLibVersions: () => showLibVersions,
+    sites: () => sites_exports,
     stor: () => stor_exports,
     version: () => version7
   });
@@ -6507,7 +6508,7 @@
     parseTripleSlash: () => parseTripleSlash,
     translateImportPaths: () => translateImportPaths
   });
-  var MLSTSWORKERVERSION = "1.0.898";
+  var MLSTSWORKERVERSION = "1.0.899";
   var getModelTS = /* @__PURE__ */ __name((project, shortName, folder) => {
     var _a2;
     return (_a2 = mls_exports.editor.models[mls_exports.editor.getKeyModel(project, shortName, folder, 2)]) == null ? void 0 : _a2.ts;
@@ -15463,6 +15464,46 @@
     return results;
   }
   __name(getBotContextVarsBeforeMessageSend2, "getBotContextVarsBeforeMessageSend2");
+
+  // src/sites/sites.ts
+  var sites_exports = {};
+  __export(sites_exports, {
+    getAside: () => getAside,
+    getHeader: () => getHeader,
+    getPage: () => getPage,
+    register: () => register,
+    setAside: () => setAside,
+    setHeader: () => setHeader,
+    setPage: () => setPage
+  });
+  var handlers = {};
+  var register = /* @__PURE__ */ __name((impl) => {
+    Object.assign(handlers, impl);
+  }, "register");
+  var getHeader = /* @__PURE__ */ __name(() => {
+    var _a2;
+    return (_a2 = handlers.getHeader) == null ? void 0 : _a2.call(handlers);
+  }, "getHeader");
+  var setHeader = /* @__PURE__ */ __name((index) => {
+    var _a2;
+    return (_a2 = handlers.setHeader) == null ? void 0 : _a2.call(handlers, index);
+  }, "setHeader");
+  var getAside = /* @__PURE__ */ __name(() => {
+    var _a2;
+    return (_a2 = handlers.getAside) == null ? void 0 : _a2.call(handlers);
+  }, "getAside");
+  var setAside = /* @__PURE__ */ __name((index) => {
+    var _a2;
+    return (_a2 = handlers.setAside) == null ? void 0 : _a2.call(handlers, index);
+  }, "setAside");
+  var getPage = /* @__PURE__ */ __name(() => {
+    var _a2;
+    return (_a2 = handlers.getPage) == null ? void 0 : _a2.call(handlers);
+  }, "getPage");
+  var setPage = /* @__PURE__ */ __name((index) => {
+    var _a2;
+    return (_a2 = handlers.setPage) == null ? void 0 : _a2.call(handlers, index);
+  }, "setPage");
 
   // ../cbe-common/src/l5-common.ts
   var l5_common_exports = {};

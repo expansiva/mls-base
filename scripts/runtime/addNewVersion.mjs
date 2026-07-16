@@ -161,10 +161,14 @@ for (const old of releases.slice(10)) {
   console.log(`    pruned old release ${old}`);
 }
 
-// Reload pm2 (cluster -> graceful, no downtime; starts on first run).
+// Reload pm2 (cluster -> graceful, no downtime; starts on first run). Sites
+// publishes create a root pm2.config.js that lists one app per hosted project.
+const pm2Config = existsSync(join(ROOT, 'pm2.config.js'))
+  ? 'pm2.config.js'
+  : 'servers/pm2.config.js';
 mkdirSync(join(ROOT, 'logs'), { recursive: true });
-console.log('--- pm2 reload (servers/pm2.config.js)');
-run('pm2 startOrReload servers/pm2.config.js --update-env');
+console.log(`--- pm2 reload (${pm2Config})`);
+run(`pm2 startOrReload ${pm2Config} --update-env`);
 try { run('pm2 save'); } catch { /* non-fatal */ }
 
 console.log(`addNewVersion done (release ${releaseId}).`);
