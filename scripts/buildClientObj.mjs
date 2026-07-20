@@ -23,8 +23,12 @@
 //                     machine first; if dist/local/_<id>_ is missing this step is skipped with a note.
 //
 // Usage:
-//   node scripts/buildClientObj.mjs [--client <id>] [--source-only]
+//   node scripts/buildClientObj.mjs [--client <id>] [--source-only] [--out-root <dir>]
 //   (client id defaults to the generated config whose project is type "client" / defaultProjectId)
+//   --out-root writes the zips to <dir>/mls-<id>/obj/ instead of the project's own obj/. The publish
+//   uses this to stage the zips OUTSIDE the git-tracked project trees: a locally generated zip never
+//   matches the CI-committed one byte-for-byte (CI uses git OIDs as versionRef; local uses sha1), so
+//   writing in place left every published project's obj/ permanently "modified" in git.
 
 import AdmZip from 'adm-zip';
 import { createHash } from 'node:crypto';
@@ -73,11 +77,12 @@ function writeZipIfChanged(zip, out, writtenMessage, unchangedMessage) {
 }
 
 function parseArgs(argv) {
-  const args = { client: '', projects: [], sourceOnly: false };
+  const args = { client: '', projects: [], sourceOnly: false, outRoot: '' };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--client') args.client = argv[++i] ?? '';
     else if (argv[i] === '--projects') args.projects = (argv[++i] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
     else if (argv[i] === '--source-only') args.sourceOnly = true;
+    else if (argv[i] === '--out-root') args.outRoot = argv[++i] ?? '';
   }
   return args;
 }
@@ -158,18 +163,21 @@ function buildImportsMap(clientRoot) {
 // yields an empty filesInfo and breaks the frontend ("Invalid project information ... file length:0").
 // The CI uses git OIDs as versionRef; a collab-synced client has no git, so we use a content sha1
 // (stable across runs, changes when the file changes — enough for the update comparison).
-function readPreviousFileInfos(objDir) {
-  const compiledZip = join(objDir, 'compiled.zip');
-  if (!existsSync(compiledZip)) return null;
-  try {
-    const entry = new AdmZip(compiledZip).getEntry('fileinfos.json');
-    if (!entry) return null;
-    const parsed = JSON.parse(entry.getData().toString('utf8'));
-    if (!Array.isArray(parsed.files)) return null;
-    return parsed;
-  } catch {
-    return null;
+function readPreviousFileInfos(...objDirs) {
+  for (const objDir of objDirs) {
+    const compiledZip = join(objDir, 'compiled.zip');
+    if (!existsSync(compiledZip)) continue;
+    try {
+      const entry = new AdmZip(compiledZip).getEntry('fileinfos.json');
+      if (!entry) continue;
+      const parsed = JSON.parse(entry.getData().toString('utf8'));
+      if (!Array.isArray(parsed.files)) continue;
+      return parsed;
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
 function buildFileInfos(clientRoot, previousFileInfos) {
@@ -222,12 +230,12 @@ function findCompiledRoot(clientId) {
   return candidates.find((dir) => existsSync(join(dir, 'l2'))) ?? null;
 }
 
-function buildCompiledZip(clientId, clientRoot, objDir) {
+function buildCompiledZip(clientId, clientRoot, objDir, previousObjDirs) {
   const compiledRoot = findCompiledRoot(clientId);
   if (!compiledRoot) {
-    const existing = join(objDir, 'compiled.zip');
+    const existing = previousObjDirs.map((dir) => join(dir, 'compiled.zip')).find((path) => existsSync(path));
     log(`compiled.zip SKIPPED: no local build found (looked for dist/local/_${clientId}_/l2 and dist/mls-${clientId}/l2). Run "pnpm compile" (or "pnpm compile:local") on a machine with a working esbuild first, then re-run this.`);
-    if (existsSync(existing)) log(`compiled.zip: keeping the existing ${relative(ROOT, existing)} (${statSync(existing).size} bytes) untouched.`);
+    if (existing) log(`compiled.zip: keeping the existing ${relative(ROOT, existing)} (${statSync(existing).size} bytes) untouched.`);
     return false;
   }
   const zip = new AdmZip();
@@ -249,7 +257,7 @@ function buildCompiledZip(clientId, clientRoot, objDir) {
     throw new Error(`compiled.zip would be empty: ${relative(ROOT, compiledRoot)}/l2 has no js output. The local build is incomplete — run "pnpm compile" (or "pnpm compile:local") and check its errors.`);
   }
   // fileinfos.json — REQUIRED by the login filesInfo (cbe central and runtime cbe module).
-  const fileInfos = buildFileInfos(clientRoot, readPreviousFileInfos(objDir));
+  const fileInfos = buildFileInfos(clientRoot, readPreviousFileInfos(...previousObjDirs));
   if (fileInfos.files.length === 0) {
     throw new Error(`fileinfos.json would be empty: no source files found under ${relative(ROOT, clientRoot)}/l1..l7.`);
   }
@@ -268,15 +276,19 @@ function buildCompiledZip(clientId, clientRoot, objDir) {
   );
 }
 
-function buildProjectObj(projectId, sourceOnly) {
+function buildProjectObj(projectId, sourceOnly, outRoot) {
   const projectRoot = resolve(ROOT, `mls-${projectId}`);
   if (!existsSync(projectRoot)) throw new Error(`project not found: ${projectRoot}`);
-  const objDir = join(projectRoot, 'obj');
+  const projectObjDir = join(projectRoot, 'obj');
+  const objDir = outRoot ? join(resolve(ROOT, outRoot), `mls-${projectId}`, 'obj') : projectObjDir;
   mkdirSync(objDir, { recursive: true });
-  log(`project=${projectId} root=${relative(ROOT, projectRoot)}`);
+  log(`project=${projectId} root=${relative(ROOT, projectRoot)}${outRoot ? ` obj=${relative(ROOT, objDir)}` : ''}`);
 
   buildSourceZip(projectRoot, objDir);
-  if (!sourceOnly) buildCompiledZip(projectId, projectRoot, objDir);
+  // previous fileinfos: prefer the staged zip (stable across publishes), fall back to the
+  // project's own obj (the CI-committed one) so update_at survives the first staged run.
+  const previousObjDirs = objDir === projectObjDir ? [objDir] : [objDir, projectObjDir];
+  if (!sourceOnly) buildCompiledZip(projectId, projectRoot, objDir, previousObjDirs);
 }
 
 function main() {
@@ -286,7 +298,7 @@ function main() {
   // reaches the VM without waiting for the project's CI. Without --projects the
   // original single-client behavior is kept.
   const ids = args.projects.length > 0 ? args.projects : [detectClientId(args.client)];
-  for (const id of ids) buildProjectObj(id, args.sourceOnly);
+  for (const id of ids) buildProjectObj(id, args.sourceOnly, args.outRoot);
   log(`done (${ids.length} project(s))`);
 }
 

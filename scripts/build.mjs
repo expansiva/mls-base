@@ -278,6 +278,13 @@ function collectEntrypoints(clientConfig, clientRoot) {
       for (const page of fe?.pages ?? []) {
         if (page.source) addSource(page.source, projRoot);
       }
+      // Generated BFF test files (page11 <page>.test.ts) — tsc excludes **/*.test.ts, so the
+      // entrypoint-driven esbuild is the only path that emits their compiled .js into the dist the
+      // monitor Tests runner resolves. Stored as "_<id>_/..." (no leading slash); normalize to a
+      // "/_<id>_/..." specifier so resolveSource matches and falls back to the .test.ts source.
+      for (const testPath of fe?.pageTests ?? []) {
+        addSource(testPath.startsWith('/') ? testPath : `/${testPath.replace(/^\.\//u, '')}`, projRoot);
+      }
       // covers modules without config "pages" (e.g. the master-backend monitor)
       const moduleFile = fe?.moduleSource
         ? resolve(projRoot, fe.moduleSource)
@@ -460,8 +467,13 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.client) composeGeneratedConfig(args.client);
+  // ALWAYS run the composers (idempotent), not only with an explicit --client: the Studio-written
+  // l5/config.json lacks the master runtime manifest merge (masterModules.json -> 102034
+  // modules/persistenceModules). Publishing it raw ships a runtime without the platform tables —
+  // the schema rebuild then creates only the client module's tables and migrate.js dies on
+  // INSERT INTO "_schema_migrations" (publish 102049, 17/jul).
   const clientId = detectClientId(args.client);
+  composeGeneratedConfig(clientId);
   const clientRoot = resolve(ROOT, `mls-${clientId}`);
   const configPath = clientConfigPath(clientId);
   if (!existsSync(configPath)) throw new Error(`generated config not found: ${configPath}`);

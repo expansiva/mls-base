@@ -45,6 +45,12 @@ SCAFFOLD_FILES = [
 ]
 # staging tarball at the project root (gitignored); removed after the upload
 TAR_FILE = ".publish.sources.tgz"
+# staging area for the regenerated obj zips (gitignored, kept between publishes so
+# fileinfos.json update_at stays stable). The zips are packed into the tar under
+# mls-<id>/obj/, but the git-tracked project trees are never touched — a locally
+# generated zip never matches the CI-committed one byte-for-byte, so writing in
+# place left every published project permanently "modified" in git.
+OBJ_STAGE_DIR = ".publish-obj"
 
 COPY_DESIGN_SYSTEMS_JS = r"""
 node <<'NODE'
@@ -384,10 +390,15 @@ def main():
     # but a local edit that is not pushed would ship a STALE obj to the VM — so
     # the publish regenerates every obj from the LOCAL build (dist/local).
     # source.zip is always rebuilt; compiled.zip only when dist/local/_<id>_
-    # exists (otherwise the existing zip is kept, with a note). Later the VM
-    # itself can pull + compile and run this same script.
+    # exists (otherwise the project's existing zip is shipped, with a note).
+    # The zips are staged under OBJ_STAGE_DIR (NOT written into the git-tracked
+    # project trees) and packed into the tar as mls-<id>/obj/*.zip below.
     log("generating obj for ALL published projects (source.zip [+ compiled.zip if dist/local present])")
-    run([which("node"), str(ROOT / "scripts" / "buildClientObj.mjs"), "--projects", ",".join(ids)])
+    run([
+        which("node"), str(ROOT / "scripts" / "buildClientObj.mjs"),
+        "--projects", ",".join(ids),
+        "--out-root", OBJ_STAGE_DIR,
+    ])
 
     # --- 3c. Refresh the mls lib from S3 ---------------------------------------
     # runInstallLibs.js downloads the type defs (types/mls.d.ts, monaco.d.ts) AND
@@ -405,11 +416,18 @@ def main():
     for directory in [".generated", "types", "scripts", "static", *projects]:
         if (ROOT / directory).is_dir():
             collect_files(ROOT / directory, directory, files)
-    log(f"packing {len(files)} file(s)")
+    # the freshly staged obj zips replace (or add to) the working-tree ones in the tar
+    entries = {rel: ROOT / rel for rel in files}
+    for pid in ids:
+        for zip_name in ("source.zip", "compiled.zip"):
+            staged = ROOT / OBJ_STAGE_DIR / f"mls-{pid}" / "obj" / zip_name
+            if staged.is_file():
+                entries[f"mls-{pid}/obj/{zip_name}"] = staged
+    log(f"packing {len(entries)} file(s)")
     try:
         with tarfile.open(ROOT / TAR_FILE, "w:gz") as tar:
-            for rel in files:
-                tar.add(ROOT / rel, arcname=rel)
+            for rel, abs_path in sorted(entries.items()):
+                tar.add(abs_path, arcname=rel)
 
         if sites_publish:
             publish_via_sites(client_id, TAR_FILE, initial, sites_conf)

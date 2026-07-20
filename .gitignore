@@ -22,6 +22,8 @@ mls-102051/*
 types/*
 servers/*.conf
 .pm2.generated.cjs
+.publish-obj/
+.publish.sources.tgz
 tsconfig.build.json
 releases
 current
