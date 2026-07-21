@@ -1,3 +1,10 @@
+# Context
+
+Each prompt to use in collab-messages must have a modelType preference, example:
+
+const prompt = `<!-- modelType: code -->
+ ...`;
+
 # Model Types
 
 Use this guide to select the best `ModelType` for each task.

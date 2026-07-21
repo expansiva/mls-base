@@ -141,6 +141,35 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
 - No-work runs must exit fast and clean ("nothing to do" path straight to the summary), not walk the
   whole pipeline.
 
+## 9. Tool (function-call) schemas: write for the strictest provider
+
+- The `function.parameters` schema is validated by the PROVIDER before the model runs, not only by
+  your own AJV. A rejected schema is an HTTP 400 with zero output — worse than a bad completion, and
+  retry/fallback on the same provider just repeats it. Author to the strictest provider you route to
+  (e.g. xAI/Grok, OpenAI strict), never to the most lenient one that happened to work.
+- `$ref` resolves from the ROOT of `function.parameters`. If you nest an artifact schema under a
+  wrapper property (a `result`/envelope shape), hoist its `$defs` up to the parameters root — a
+  `#/$defs/...` ref is unresolvable when `$defs` lives under the nested property, and strict providers
+  reject the whole request. Keep `$defs` at the parameters root and refs root-relative.
+- `$id` must be an absolute URI (`https://…`) or a valid URI-reference; a bare `name/path` (especially
+  with a dot in the first segment) is rejected as "not a uri-reference". Strip `$id` from schemas
+  embedded into a tool wrapper — the provider does not need it.
+- Every `enum` (and `const`) property must ALSO declare its `type` (e.g. `type: "string"`). Some
+  providers (Moonshot/Kimi) reject a bare `enum`/`const` with "type is not defined" — an HTTP 400 on
+  the whole tool. A property that fails this can also silently disqualify the tool from strict mode,
+  so the model then free-forms and drops required fields.
+- Recursive shapes need `$defs` + `$ref` (infinite nesting can't be inlined) — which is exactly why
+  the hoist above matters: recursive artifacts are where it bites.
+- Keep strict-mode invariants: `additionalProperties: false` on every object, single-typed properties
+  (no `["boolean","string"]` unions), every property listed in `required`. Loosening the schema to
+  "absorb" a model's near-misses breaks strict validation/AJV — keep the contract strict and normalize
+  the accepted output in code (the gate/reader coerces), never by weakening the schema.
+- Pick a strict-tool-capable model for tool-heavy steps; a model without strict tool-calling free-forms
+  the arguments and drifts (extra keys, wrong scalar types), which then only fails at the provider/AJV
+  layer, per item.
+- Unit-test the ASSEMBLED tool schema (the full wrapper), not just the inner artifact schema — the bugs
+  live in how the wrapper composes `$defs`/`$ref`/`$id`.
+
 ## What to avoid (hard-earned)
 
 - **Flat folders.** Dozens of sibling agent/helper files with no `steps/` and `helpers/` boundary —
@@ -150,6 +179,9 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
   a shared module every step imports is a change with total blast radius.
 - **flow.json drift.** Aspirational specs, phantom steps, referenced files that don't exist.
 - **Discarded LLM output.** If nothing reads it, the step shouldn't exist.
+- **Loose or root-broken tool schemas for strict providers** (see §9): `additionalProperties: true`,
+  type unions, non-URI `$id`, or `$defs` nested under a wrapper property with root-relative `$ref`s —
+  a strict provider 400s the request before the model even runs.
 - **Inline prompts** in TypeScript; prompt+code mixed diffs.
 - **Multi-role agent files** (dispatcher + worker + validator + repair in one file, switched by a
   mode field).
