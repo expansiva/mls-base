@@ -18,7 +18,7 @@ const execFileAsync = promisify(execFile);
 
 // Arquivos de raiz que entram como l0/ (mesma lista do mls-ci); package.json e
 // tsconfig.json são pulados quando existe a versão "lib"/config que os gera.
-const ROOT_FILES = ['package.json', 'README.md', 'readme.md', 'tsconfig.json', 'config.json', 'packagelib.json', 'tsconfiglib.json'];
+const ROOT_FILES = ['package.json', 'README.md', 'readme.md', 'tsconfig.json', 'config.json', 'mlsDep.json', 'packagelib.json', 'tsconfiglib.json'];
 
 async function git(cwd, args) {
   const { stdout } = await execFileAsync('git', args, { cwd });
@@ -61,6 +61,7 @@ export async function createFileInfo({ targetDir, levels, log }) {
   const hasPackageLib = rootEntries.includes('packagelib.json');
   const hasTsconfigLib = rootEntries.includes('tsconfiglib.json');
   const hasConfig = rootEntries.includes('config.json');
+  const hasDep = rootEntries.includes('mlsDep.json');
 
   // ordem do gabarito: entradas da raiz em ordem alfabética, recursão inline
   const files = []; // {shortPath, dataPath}
@@ -71,7 +72,7 @@ export async function createFileInfo({ targetDir, levels, log }) {
       }
     } else if (ROOT_FILES.includes(name)) {
       if (name === 'package.json' && hasPackageLib) continue;
-      if (name === 'tsconfig.json' && (hasTsconfigLib || hasConfig)) continue;
+      if (name === 'tsconfig.json' && (hasTsconfigLib || hasConfig || hasDep)) continue;
       files.push({ shortPath: `l0/${name}`, dataPath: name });
     }
   }
