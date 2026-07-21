@@ -12,7 +12,7 @@ export async function runCallWork({ id, orgName, lastModify, log }) {
   const driver = process.env.COLLAB_DRIVER || 'GitHub';
   const collabToken = process.env.COLLAB_TOKEN; // secret configured in the gitHub or gitLab Actions secrets
   
-  log('Secret:' + collabToken +' prj:'+id+' orgName:'+orgName +' lastModify:'+lastModify);
+  log('callWork', 'Secret:' + collabToken +' prj:'+id+' orgName:'+orgName +' lastModify:'+lastModify);
 
   if (!collabToken) {
     log('callWork', 'COLLAB_TOKEN ausente — notificação ao backend pulada');
