@@ -85,9 +85,9 @@ async function main() {
 
   // Etapa 9 — callWork: DESATIVADO na fase de testes (decisão #13 do
   // taskNewBuildCI.md). Descomentar apenas na Etapa 11 (produção).
-  // const { runCallWork } = await import('./callWork.mjs');
-  // await runCallWork({ id, orgName, lastModify, log });
-  log('callWork', 'notificação ao backend DESATIVADA (fase de testes — decisão #13)');
+  const { runCallWork } = await import('./callWork.mjs');
+  await runCallWork({ id, orgName, lastModify, log });
+  //log('callWork', 'notificação ao backend DESATIVADA (fase de testes — decisão #13)');
   void lastModify; // usado pelo callWork quando reativado
 
   log('done', `build do mls-${id} finalizado`);
