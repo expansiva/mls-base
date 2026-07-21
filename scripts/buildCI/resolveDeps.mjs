@@ -19,7 +19,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 // URL default quando o manifesto não traz `repo` (ou a dep veio de um header
@@ -92,8 +92,57 @@ async function scanEnhancementRefs(projectDir, levels) {
   return ids;
 }
 
-function clone(repoUrl, destDir) {
-  execFileSync('git', ['clone', '--depth', '1', repoUrl, destDir], { stdio: 'inherit' });
+// Autenticação sob demanda (decisão #16): tenta clone anônimo primeiro (a
+// maioria dos mls-* é pública); só usa GH_PAT como fallback se o repo for
+// privado. Evita depender de um `git config --global insteadOf` que forçaria
+// token em TODO clone, até nos públicos.
+function withToken(repoUrl, token) {
+  return repoUrl.replace(/^https:\/\//, `https://x-access-token:${token}@`);
+}
+
+// NUNCA usar publicError.message / privateError.message ou .cmd — o Node
+// embute o argv completo (com o token na URL) nesses campos. Só stderr do
+// próprio git chega aqui, e o git já redaciona a URL nas mensagens dele
+// (ex.: "fatal: Authentication failed for 'https://github.com/...'", sem o
+// token) — mesmo assim aplicamos um redact defensivo do valor do token.
+function redact(text, token) {
+  return token ? text.split(token).join('***') : text;
+}
+
+// Um clone que falha no meio do caminho pode deixar destDir parcialmente
+// criado (ex.: .git vazio) — sem limpar, a próxima chamada veria
+// existsSync(destDir) === true e pularia o clone silenciosamente.
+async function cloneAttempt(args, destDir) {
+  try {
+    execFileSync('git', args, { stdio: 'pipe' });
+  } catch (error) {
+    await rm(destDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function clone(repoUrl, destDir, log) {
+  try {
+    await cloneAttempt(['clone', '--depth', '1', repoUrl, destDir], destDir);
+    return;
+  } catch (publicError) {
+    const token = process.env.GH_PAT;
+    if (!token) {
+      throw new Error(
+        `clone anônimo falhou para ${repoUrl} (repo pode ser privado) e GH_PAT não está definido: ` +
+        `${redact(publicError.stderr?.toString().trim() ?? '(sem stderr)', token)}`,
+      );
+    }
+    log?.('deps', `clone anônimo falhou para ${repoUrl} — tentando com GH_PAT (repo privado)`);
+    try {
+      await cloneAttempt(['clone', '--depth', '1', withToken(repoUrl, token), destDir], destDir);
+    } catch (privateError) {
+      throw new Error(
+        `clone com GH_PAT falhou para ${repoUrl}: ` +
+        `${redact(privateError.stderr?.toString().trim() ?? '(sem stderr)', token)}`,
+      );
+    }
+  }
 }
 
 // Resolve e materializa o fechamento de dependências do alvo.
@@ -112,7 +161,7 @@ export async function resolveDeps({ root, targetId, orgName, levels, log }) {
     if (!existsSync(dir)) {
       const url = repo ?? defaultRepo(id);
       log('deps', `clonando mls-${id} (pedido por ${requestedBy}) de ${url}`);
-      clone(url, dir);
+      await clone(url, dir, log);
       cloned = true;
     }
     projects.set(id, { dir, repo, requestedBy, cloned });
