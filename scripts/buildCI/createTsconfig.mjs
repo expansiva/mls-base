@@ -1,0 +1,87 @@
+// createTsconfig.mjs — gera os dois tsconfigs do build em .generated/<id>/.
+//
+//   tsconfig.json    -> compila o código (outDir preBuild/_<id>_/)
+//   tsconfig.d.json  -> bundle de declarações (outFile preBuild/types/index.d.ts)
+//
+// As opções espelham o tsconfig_p.json / tsconfig_d.json do mls-ci (decisão #8
+// do taskNewBuildCI.md): module ES2020, noImplicitAny/strictNullChecks
+// desligados etc. — fidelidade ao obj/ do fluxo standalone, NÃO às opções do
+// workspace. O tsconfig.json raiz do mls-base nunca é tocado.
+
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
+  // /_<x>_/* -> ./project/_<x>_/* para todo projeto do fechamento (alvo incluso)
+  const paths = Object.fromEntries(
+    [...projects.keys()].map((id) => [`/_${id}_/*`, [`./project/_${id}_/*`]]),
+  );
+
+  const include = [
+    `project/_${targetId}_/**/*`,
+    '../../types/monaco.d.ts',
+    '../../types/mls.d.ts',
+  ];
+  // **/node_modules: os symlinks expõem as pastas mls-* inteiras — garante que
+  // um node_modules dentro de um projeto nunca entre no programa
+  const exclude = ['**/node_modules', '**/*.spec.ts'];
+
+  const common = {
+    // project/_<x>_ são symlinks para mls-<x> (stage.mjs) — sem preserveSymlinks
+    // o tsc resolveria o realpath e os módulos sairiam "mls-<x>/..." no d.ts
+    preserveSymlinks: true,
+    target: 'es2020',
+    module: 'ES2020',
+    esModuleInterop: true,
+    removeComments: false,
+    noUnusedParameters: false,
+    skipLibCheck: true,
+    forceConsistentCasingInFileNames: true,
+    sourceMap: false,
+    experimentalDecorators: true,
+    emitDecoratorMetadata: false,
+    noImplicitAny: false,
+    strictNullChecks: false,
+    paths,
+    lib: ['dom', 'ES2022'],
+  };
+
+  // rootDir é ./project (não ./project/_<id>_): as deps entram no programa via
+  // imports e precisam estar sob o rootDir (TS6059). O alvo emite em
+  // preBuild/_<id>_/ do mesmo jeito; as deps emitidas junto são ignoradas pelo
+  // pack (só SHIP_LEVELS do alvo entram no compiled.zip).
+  const tsconfigCode = {
+    compilerOptions: {
+      ...common,
+      outDir: './preBuild',
+      rootDir: './project',
+      strict: true,
+      declaration: false,
+    },
+    include,
+    exclude,
+  };
+
+  const tsconfigDecl = {
+    compilerOptions: {
+      ...common,
+      outFile: './preBuild/types/index.d.ts',
+      rootDir: './project',
+      strict: false,
+      declaration: true,
+      declarationMap: false,
+      emitDeclarationOnly: true,
+      noEmitOnError: false,
+    },
+    include,
+    exclude,
+  };
+
+  const codePath = join(stageRoot, 'tsconfig.json');
+  const declPath = join(stageRoot, 'tsconfig.d.json');
+  await writeFile(codePath, JSON.stringify(tsconfigCode, null, 2), 'utf8');
+  await writeFile(declPath, JSON.stringify(tsconfigDecl, null, 2), 'utf8');
+  log('tsconfig', `gerados tsconfig.json e tsconfig.d.json (paths: ${Object.keys(paths).join(' ')})`);
+
+  return { codePath, declPath };
+}

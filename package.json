@@ -4,6 +4,7 @@
     "private": true,
     "scripts": {
         "install:dev": "node scripts/install/runInstallDevs.js",
+        "buildCI": "node scripts/buildCI/buildCI.mjs",
         "postInstall": "node scripts/install/runInstallLibs.js",
         "build": "node scripts/runtime/addNewVersion.mjs",
         "compile": "node scripts/build.mjs",
