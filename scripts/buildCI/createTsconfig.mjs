@@ -27,9 +27,10 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
   const exclude = ['**/node_modules', '**/*.spec.ts'];
 
   const common = {
-    // project/_<x>_ são symlinks para mls-<x> (stage.mjs) — sem preserveSymlinks
-    // o tsc resolveria o realpath e os módulos sairiam "mls-<x>/..." no d.ts
-    preserveSymlinks: true,
+    // NÃO usar preserveSymlinks: o staging (stage.mjs) copia os arquivos —
+    // não há symlinks para preservar, e o preserveSymlinks quebraria a
+    // resolução dos symlinks INTERNOS do pnpm para pacotes npm reais
+    // (decisão #18 do taskNewBuildCI.md).
     target: 'es2020',
     module: 'ES2020',
     // Sem isso, module: ES2020 faz o tsc usar moduleResolution "classic" por

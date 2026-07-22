@@ -1,25 +1,48 @@
-// stage.mjs — monta a área de compilação .generated/<id>/project/ com
-// SYMLINKS para as pastas mls-* já baixadas na raiz (nada é copiado).
+// stage.mjs — monta a área de compilação .generated/<id>/project/ copiando
+// os fontes (.ts/.less) das pastas mls-* já baixadas na raiz.
 //
-// O layout `project/_<id>_/` é obrigatório mesmo assim: o bundle de
-// declarações (tsconfig com outFile) nomeia os módulos pelo caminho relativo
-// ao rootDir, e o runtime espera `_<id>_/l2/...` (paridade com o mls-ci).
-// O symlink dá o nome `_<id>_` ao mls-<id> sem duplicar arquivos — requer
-// `preserveSymlinks: true` nos tsconfigs (createTsconfig.mjs).
+// O layout `project/_<id>_/` é obrigatório: o bundle de declarações
+// (tsconfig com outFile) nomeia os módulos pelo caminho relativo ao rootDir,
+// e o runtime espera `_<id>_/l2/...` (paridade com o mls-ci).
+//
+// NÃO usar symlinks aqui (decisão revertida em 2026-07-22 — ver decisão #18
+// do taskNewBuildCI.md): symlink exige `preserveSymlinks: true` no tsconfig
+// para o nome do módulo sair `_<id>_/...` em vez do caminho real; mas
+// preserveSymlinks é global no tsc e também impede resolver os symlinks
+// INTERNOS do pnpm (.pnpm/<pkg>/node_modules/<pkg>), quebrando a resolução
+// de pacotes npm reais que dependem de outros pacotes via "exports" (ex.:
+// lit -> lit-element -> lit-html). Copiar evita o conflito por completo.
 
-import { mkdir, rm, symlink } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { cp, mkdir, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
-export async function stage({ root, targetId, projects, log }) {
+const STAGE_EXTENSIONS = ['.ts', '.less'];
+
+export async function stage({ root, targetId, projects, levels, log }) {
   const stageRoot = join(root, '.generated', targetId);
-  const projectDir = join(stageRoot, 'project');
-  await rm(stageRoot, { recursive: true, force: true }); // remove só os links, não os alvos
-  await mkdir(projectDir, { recursive: true });
+  await rm(stageRoot, { recursive: true, force: true });
+  await mkdir(join(stageRoot, 'project'), { recursive: true });
 
+  let copiedProjects = 0;
   for (const [id, { dir }] of projects) {
-    await symlink(relative(projectDir, dir), join(projectDir, `_${id}_`), 'dir');
+    const destRoot = join(stageRoot, 'project', `_${id}_`);
+    let hasLevel = false;
+    for (const level of levels) {
+      const src = join(dir, level);
+      if (!existsSync(src)) continue;
+      await cp(src, join(destRoot, level), {
+        recursive: true,
+        filter: (source) =>
+          !source.includes('node_modules') &&
+          (!/\.[^/\\]+$/.test(source) || STAGE_EXTENSIONS.some((ext) => source.endsWith(ext))),
+      });
+      hasLevel = true;
+    }
+    if (hasLevel) copiedProjects += 1;
+    else log('stage', `mls-${id}: nenhum nível ${levels.join('/')} encontrado — nada copiado`);
   }
 
-  log('stage', `staging pronto em .generated/${targetId}/project (${projects.size} symlinks)`);
+  log('stage', `staging pronto em .generated/${targetId}/project (${copiedProjects} projetos copiados)`);
   return stageRoot;
 }

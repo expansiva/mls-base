@@ -46,7 +46,17 @@ export async function compileDeclarations({ root, stageRoot, declPath, log }) {
   runTsc(root, declPath, log, 'declarações', { tolerant: true });
 
   const indexDts = join(stageRoot, 'preBuild', 'types', 'index.d.ts');
-  if (!existsSync(indexDts)) throw new Error(`bundle de declarações não gerado: ${indexDts}`);
+  if (!existsSync(indexDts)) {
+    // Alguns erros (ex.: TS2742 "cannot be named without a reference to...",
+    // comum em monorepos pnpm) impedem o tsc de emitir o outFile inteiro, não
+    // só degradar o símbolo problemático para `unknown`. O mls-ci original
+    // tolerava isso do mesmo jeito (fixFileDefinition captura ENOENT e só
+    // loga, sem re-lançar) — obj/compiled.zip sai sem types/index.d.ts nesse
+    // caso, em vez de abortar o build inteiro.
+    log('compile', `AVISO: bundle de declarações não foi gerado (${indexDts}) — ` +
+      'seguindo sem types/index.d.ts, mesma tolerância do mls-ci original.');
+    return;
+  }
 
   // fixFileDefinition: from '/_x_/foo.js' -> from '_x_/foo'
   const content = await readFile(indexDts, 'utf8');

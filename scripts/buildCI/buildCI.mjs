@@ -64,7 +64,7 @@ async function main() {
   await downloadTypes({ root: ROOT, log });
   // Etapa 4 — staging .generated/<id>/project/
   const { stage } = await import('./stage.mjs');
-  const stageRoot = await stage({ root: ROOT, targetId: id, projects, log });
+  const stageRoot = await stage({ root: ROOT, targetId: id, projects, levels: COMPILE_LEVELS, log });
   // Etapa 5 — tsconfigs gerados
   const { createTsconfigs } = await import('./createTsconfig.mjs');
   const { codePath, declPath } = await createTsconfigs({ stageRoot, targetId: id, projects, log });

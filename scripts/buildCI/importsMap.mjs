@@ -3,7 +3,7 @@
 // alvo, a lista de specifiers importados (via AST do TypeScript).
 
 import { createRequire } from 'node:module';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
@@ -27,7 +27,12 @@ export async function writeImportsMap({ stageRoot, targetDir, log }) {
     importsJson[file] = extractImports(await readFile(join(l2Dir, file), 'utf8'));
   }
 
-  const outPath = join(stageRoot, 'preBuild', 'types', 'importsMap.json');
+  // preBuild/types/ normalmente já existe (criado pelo tsc ao emitir
+  // index.d.ts), mas alguns erros de tipo impedem o tsc de emitir o outFile
+  // inteiro (ver compile.mjs) — garantir aqui para não depender disso.
+  const typesDir = join(stageRoot, 'preBuild', 'types');
+  await mkdir(typesDir, { recursive: true });
+  const outPath = join(typesDir, 'importsMap.json');
   await writeFile(outPath, JSON.stringify(importsJson, null, 2), 'utf8');
   log('importsMap', `${files.length} arquivos mapeados`);
 }
