@@ -32,6 +32,11 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
     preserveSymlinks: true,
     target: 'es2020',
     module: 'ES2020',
+    // Sem isso, module: ES2020 faz o tsc usar moduleResolution "classic"
+    // por default — que NUNCA olha node_modules para pacotes de terceiros
+    // (só projetos mls-* via `paths`). Qualquer import real de npm (lit,
+    // etc.) quebra com "Cannot find module" sem este ajuste.
+    moduleResolution: 'node',
     esModuleInterop: true,
     removeComments: false,
     noUnusedParameters: false,
