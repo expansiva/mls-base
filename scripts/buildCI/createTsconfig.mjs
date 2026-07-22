@@ -33,18 +33,6 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
     // (decisão #18 do taskNewBuildCI.md).
     target: 'es2020',
     module: 'ES2020',
-    // Sem isso, module: ES2020 faz o tsc usar moduleResolution "classic" por
-    // default — que NUNCA olha node_modules para pacotes de terceiros (só
-    // projetos mls-* via `paths`). 'node'/'node10' até acha os pacotes, mas
-    // ignora o campo "exports" do package.json — pacotes modernos como o
-    // `lit` só declaram tipos via "exports" (mapa condicional por subpath),
-    // sem "types"/"typings" na raiz. Sob 'node10' isso só "funciona" por
-    // coincidência de arquivos .d.ts legados soltos no pacote instalado — e
-    // quebra quando o pnpm resolve outra versão sem esses arquivos (o
-    // pnpm-lock.yaml é gitignored, cada install pode trazer versão diferente
-    // dentro do range do semver). 'bundler' entende "exports" de verdade —
-    // mesma estratégia que o tsconfig.json raiz do workspace já usa.
-    moduleResolution: 'bundler',
     esModuleInterop: true,
     removeComments: false,
     noUnusedParameters: false,
@@ -70,6 +58,13 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
   const tsconfigCode = {
     compilerOptions: {
       ...common,
+      // Só no passe de CÓDIGO (decisão #25 do taskNewBuildCI.md):
+      // 'bundler' entende o campo "exports" do package.json de verdade —
+      // pacotes modernos como o `lit` só declaram tipos via "exports" (mapa
+      // condicional por subpath), sem "types"/"typings" na raiz. Sem isso,
+      // module: ES2020 usaria moduleResolution "classic" por default, que
+      // nunca olha node_modules para pacotes de terceiros.
+      moduleResolution: 'bundler',
       outDir: './preBuild',
       rootDir: './project',
       strict: true,
@@ -82,6 +77,15 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
   const tsconfigDecl = {
     compilerOptions: {
       ...common,
+      // moduleResolution DE PROPÓSITO ausente aqui (fica 'classic', default do
+      // TS para module: ES2020) — decisão #25. Validado byte a byte contra um
+      // index.d.ts real do fluxo standalone: sob 'classic' o tsc nem enxerga
+      // o caminho de pacotes como lit-html dentro do pnpm, e símbolos
+      // não-inferíveis caem em `any` silenciosamente. Com 'bundler' (usado no
+      // passe de código) o tsc ENXERGA o caminho real
+      // (.pnpm/lit-html@.../node_modules/lit-html/directive.js) mas o
+      // rejeita como "não portátil" (TS2742) — e em modo outFile isso
+      // bloqueia a emissão do bundle INTEIRO, não só degrada o símbolo.
       outFile: './preBuild/types/index.d.ts',
       rootDir: './project',
       strict: false,
