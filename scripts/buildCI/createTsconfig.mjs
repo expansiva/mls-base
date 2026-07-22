@@ -56,7 +56,11 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
     noImplicitAny: false,
     strictNullChecks: false,
     paths,
-    lib: ['dom', 'ES2022'],
+    // DOM.Iterable: sem isso, HTMLCollection/NodeList/CSSStyleDeclaration não
+    // têm [Symbol.iterator] e `for...of` sobre eles quebra (TS2488). O
+    // tsconfig.json raiz do workspace já inclui — só afeta checagem de tipos,
+    // não o JS emitido, então não fere a fidelidade da decisão #8.
+    lib: ['dom', 'ES2022', 'DOM.Iterable'],
   };
 
   // rootDir é ./project (não ./project/_<id>_): as deps entram no programa via

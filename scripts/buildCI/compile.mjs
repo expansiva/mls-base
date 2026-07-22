@@ -5,18 +5,16 @@
 //                         + remoção do ".js" nos imports do bundle
 //                           (fixFileDefinition do mls-ci)
 //
-// Divergência consciente do mls-ci: aqui o exit code do tsc é respeitado no
-// passe de CÓDIGO — erro de tipo derruba o build (o mls-ci só rejeitava
-// quando havia stderr; erros do tsc saem no stdout, então builds com erro de
-// tipo sempre passaram por lá, silenciosamente).
-//
-// O passe de DECLARAÇÕES é deliberadamente tolerante a erro de tipo (mesmo
-// comportamento do mls-ci original): já roda com strict:false/noImplicitAny:
-// false/noEmitOnError:false porque é best-effort — o índice de tipos serve
-// para consumo entre projetos, quem precisa estar certo é o .js do passe de
-// código. Um tipo local mal formado (ex.: interface declarada dentro de um
-// método, inacessível no escopo do bundle) pode gerar `unknown` no d.ts sem
-// que o .js publicado esteja errado. Erros aqui só geram aviso, não abortam.
+// Ambos os passes são TOLERANTES a erro de tipo/sintaxe (decisão #19,
+// revisando a #8): o mls-ci original nunca derrubava o build por isso — seu
+// runCompileTsAllFiles usa exec() checando só `stderr`, e o tsc manda erros
+// de tipo para o STDOUT, então ficavam sempre silenciosamente tolerados, nos
+// dois passes. tsc emite o .js mesmo com erros (noEmitOnError não é setado
+// em nenhum dos tsconfigs gerados, default é false) — só um crash real do
+// próprio tsc (não um erro de tipo) derrubaria o processo com stdout vazio.
+// Replicamos esse comportamento de propósito: builda projetos reais com
+// dívida técnica de tipos acumulada (nunca antes checada), em vez de exigir
+// corrigi-la manualmente antes de todo primeiro build no pipeline novo.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -39,7 +37,7 @@ function runTsc(root, tsconfigPath, log, label, { tolerant = false } = {}) {
 }
 
 export async function compileCode({ root, codePath, log }) {
-  runTsc(root, codePath, log, 'código');
+  runTsc(root, codePath, log, 'código', { tolerant: true });
 }
 
 export async function compileDeclarations({ root, stageRoot, declPath, log }) {
