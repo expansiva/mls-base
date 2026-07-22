@@ -32,11 +32,18 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
     preserveSymlinks: true,
     target: 'es2020',
     module: 'ES2020',
-    // Sem isso, module: ES2020 faz o tsc usar moduleResolution "classic"
-    // por default — que NUNCA olha node_modules para pacotes de terceiros
-    // (só projetos mls-* via `paths`). Qualquer import real de npm (lit,
-    // etc.) quebra com "Cannot find module" sem este ajuste.
-    moduleResolution: 'node',
+    // Sem isso, module: ES2020 faz o tsc usar moduleResolution "classic" por
+    // default — que NUNCA olha node_modules para pacotes de terceiros (só
+    // projetos mls-* via `paths`). 'node'/'node10' até acha os pacotes, mas
+    // ignora o campo "exports" do package.json — pacotes modernos como o
+    // `lit` só declaram tipos via "exports" (mapa condicional por subpath),
+    // sem "types"/"typings" na raiz. Sob 'node10' isso só "funciona" por
+    // coincidência de arquivos .d.ts legados soltos no pacote instalado — e
+    // quebra quando o pnpm resolve outra versão sem esses arquivos (o
+    // pnpm-lock.yaml é gitignored, cada install pode trazer versão diferente
+    // dentro do range do semver). 'bundler' entende "exports" de verdade —
+    // mesma estratégia que o tsconfig.json raiz do workspace já usa.
+    moduleResolution: 'bundler',
     esModuleInterop: true,
     removeComments: false,
     noUnusedParameters: false,

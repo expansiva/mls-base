@@ -5,21 +5,35 @@
 //                         + remoção do ".js" nos imports do bundle
 //                           (fixFileDefinition do mls-ci)
 //
-// Divergência consciente do mls-ci: aqui o exit code do tsc é respeitado —
-// erro de tipo derruba o build. O mls-ci só rejeitava quando havia stderr
-// (erros do tsc saem no stdout), então builds com erro de tipo passavam.
+// Divergência consciente do mls-ci: aqui o exit code do tsc é respeitado no
+// passe de CÓDIGO — erro de tipo derruba o build (o mls-ci só rejeitava
+// quando havia stderr; erros do tsc saem no stdout, então builds com erro de
+// tipo sempre passaram por lá, silenciosamente).
+//
+// O passe de DECLARAÇÕES é deliberadamente tolerante a erro de tipo (mesmo
+// comportamento do mls-ci original): já roda com strict:false/noImplicitAny:
+// false/noEmitOnError:false porque é best-effort — o índice de tipos serve
+// para consumo entre projetos, quem precisa estar certo é o .js do passe de
+// código. Um tipo local mal formado (ex.: interface declarada dentro de um
+// método, inacessível no escopo do bundle) pode gerar `unknown` no d.ts sem
+// que o .js publicado esteja errado. Erros aqui só geram aviso, não abortam.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-function runTsc(root, tsconfigPath, log, label) {
+function runTsc(root, tsconfigPath, log, label, { tolerant = false } = {}) {
   const tscBin = join(root, 'node_modules', '.bin', 'tsc');
   log('compile', `tsc -p ${tsconfigPath} (${label})`);
   const result = spawnSync(tscBin, ['-p', tsconfigPath], { cwd: root, encoding: 'utf8' });
   if (result.status !== 0) {
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+    if (tolerant) {
+      log('compile', `AVISO: tsc (${label}) reportou erro(s) de tipo (exit ${result.status}) — ` +
+        `best-effort, noEmitOnError:false garante que o arquivo saiu mesmo assim:\n${output}`);
+      return;
+    }
     throw new Error(`tsc (${label}) falhou com exit ${result.status}:\n${output}`);
   }
 }
@@ -29,7 +43,7 @@ export async function compileCode({ root, codePath, log }) {
 }
 
 export async function compileDeclarations({ root, stageRoot, declPath, log }) {
-  runTsc(root, declPath, log, 'declarações');
+  runTsc(root, declPath, log, 'declarações', { tolerant: true });
 
   const indexDts = join(stageRoot, 'preBuild', 'types', 'index.d.ts');
   if (!existsSync(indexDts)) throw new Error(`bundle de declarações não gerado: ${indexDts}`);
