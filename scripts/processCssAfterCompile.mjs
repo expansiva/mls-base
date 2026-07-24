@@ -92,6 +92,10 @@ async function processProject(mlsCiDir, id, distDir) {
   await cp(mlsCiDir, join(stage, 'node_modules', 'mls-ci'), { recursive: true, dereference: true });
   const jsCount = await copyTree(join(distDir, 'l2'), join(stage, 'preBuild', `_${id}_`, 'l2'), ['.js']);
   log(`mls-${id}: staged ${jsCount} js / ${lessCount} less`);
+  if (jsCount === 0) {
+    log(`mls-${id}: no compiled .js, skipped`);
+    return false;
+  }
 
   const runner = join(stage, 'node_modules', 'mls-ci', 'processCSS.js');
   // Capture mls-ci's stdout (it logs one "Processed CSS for file: …" line per file — pure noise)

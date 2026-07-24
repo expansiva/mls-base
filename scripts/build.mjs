@@ -26,10 +26,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(ROOT, 'dist');
 const LOCAL_DIST = resolve(DIST, 'local');
+const TSC_BIN = resolve(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
 const TS_SEGMENTS = ['core', 'l1', 'l2'];
 const RES_SEGMENTS = ['core', 'l1', 'l2', 'l5'];
 const RES_EXT = new Set(['.html', '.css', '.less', '.json', '.svg', '.md', '.sql']);
 const FAIL_ON_TSC_ERRORS = process.env.COLLAB_FAIL_ON_TSC_ERRORS === '1';
+const RUN_TSC_TYPECHECK = process.env.COLLAB_RUN_TSC_TYPECHECK === '1' || FAIL_ON_TSC_ERRORS;
+const TSC_EMIT_BATCH_SIZE = Number.parseInt(process.env.COLLAB_TSC_EMIT_BATCH_SIZE ?? '40', 10);
 // Matches absolute project specifiers in emitted JS: from '/_102034_/l1/...'
 // Matches every form of project specifier in emitted JS:
 //   from '/_..._/...'  | import '/_..._/...'  | import('/_..._/...')  | require('/_..._/...')
@@ -51,28 +54,107 @@ function run(cmd, args) {
   }
 }
 
-function runTsc(tsconfigPath) {
-  const args = ['exec', 'tsc', '-p', tsconfigPath];
-  if (!FAIL_ON_TSC_ERRORS) {
-    run('pnpm', args);
-    return;
-  }
-
-  log(`pnpm ${args.join(' ')}`);
-  const result = spawnSync('pnpm', args, { cwd: ROOT, encoding: 'utf8' });
+function runTscCommand(args, label) {
+  const fullArgs = [TSC_BIN, ...args];
+  const displayBin = toPosix(relative(ROOT, TSC_BIN));
+  log(`node ${displayBin} ${args.join(' ')}`);
+  const result = spawnSync(process.execPath, fullArgs, { cwd: ROOT, encoding: 'utf8' });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.error) {
     throw new Error(`Failed to start TypeScript compiler: ${result.error.message}`);
   }
-  if (result.status !== 0) {
-    const summary = summarizeTypeScriptOutput(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+  if (result.status === 0) return { ok: true, label };
+
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  const status = result.signal ? `signal ${result.signal}` : `exit ${result.status}`;
+  const fatal = Boolean(result.signal) ||
+    /SIGKILL|Killed|ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL|JavaScript heap out of memory/iu.test(output);
+  return { ok: false, label, status, fatal, output };
+}
+
+async function runTsc(tsconfigPath, ids, compilerOptions) {
+  if (RUN_TSC_TYPECHECK) {
+    const check = runTscCommand(['-p', tsconfigPath, '--noEmit', '--pretty', 'false'], 'typecheck');
+    if (!check.ok) {
+      const summary = summarizeTypeScriptOutput(check.output) || tailOutput(check.output);
+      if (FAIL_ON_TSC_ERRORS) {
+        throw new Error([
+          `TypeScript ${check.label} failed during publish (${check.status}).`,
+          summary,
+        ].filter(Boolean).join('\n'));
+      }
+      if (check.fatal) {
+        log(`tsc typecheck could not complete (${check.status}); continuing with noCheck emit for low-memory publish:\n${summary}`);
+      } else {
+        log(`tsc reported type errors (continuing because COLLAB_FAIL_ON_TSC_ERRORS is not 1):\n${summary}`);
+      }
+    }
+  } else {
+    log('tsc typecheck skipped (set COLLAB_RUN_TSC_TYPECHECK=1 to run it before emit)');
+  }
+
+  // Emit one project per tsc process. The monolithic emit can be killed by Lima's
+  // small VM memory limit; split emit keeps the release path reliable without swap.
+  for (const id of ids) {
+    const files = await collectProjectTsFiles(id);
+    const emit = await runTscEmitConfig(`mls-${id}`, `.tsconfig.build.${id}.json`, files, compilerOptions);
+    if (emit.ok) continue;
+
+    if (emit.fatal && files.length > TSC_EMIT_BATCH_SIZE) {
+      log(`tsc emit for mls-${id} could not complete (${emit.status}); retrying in batches of ${TSC_EMIT_BATCH_SIZE}`);
+      const batched = await runTscEmitBatches(id, files, compilerOptions);
+      if (batched) continue;
+    }
+
     throw new Error([
-      'TypeScript compilation failed during publish. Fix the errors below and publish again.',
-      summary,
-      `Command failed (${result.status}): pnpm ${args.join(' ')}`,
+      `TypeScript emit failed during publish for mls-${id} (${emit.status}).`,
+      'No release will be activated because dist/local may be incomplete.',
+      summarizeTypeScriptOutput(emit.output) || tailOutput(emit.output),
     ].filter(Boolean).join('\n'));
   }
+}
+
+async function runTscEmitConfig(label, configName, files, compilerOptions) {
+  const configPath = resolve(ROOT, configName);
+  await writeFile(configPath, `${JSON.stringify({
+    extends: './tsconfig.json',
+    compilerOptions: {
+      ...compilerOptions,
+      noResolve: true,
+    },
+    files,
+  }, null, 2)}\n`, 'utf8');
+  try {
+    return runTscCommand(['-p', configPath, '--noCheck', '--pretty', 'false'], `emit ${label}`);
+  } finally {
+    await unlink(configPath).catch(() => undefined);
+  }
+}
+
+async function runTscEmitBatches(id, files, compilerOptions) {
+  const dtsFiles = files.filter((file) => file.endsWith('.d.ts'));
+  const tsFiles = files.filter((file) => !file.endsWith('.d.ts'));
+  const batchSize = Number.isFinite(TSC_EMIT_BATCH_SIZE) && TSC_EMIT_BATCH_SIZE > 0
+    ? TSC_EMIT_BATCH_SIZE
+    : 40;
+  for (let start = 0, batch = 1; start < tsFiles.length; start += batchSize, batch += 1) {
+    const batchFiles = [...dtsFiles, ...tsFiles.slice(start, start + batchSize)];
+    const emit = await runTscEmitConfig(
+      `mls-${id} batch ${batch}`,
+      `.tsconfig.build.${id}.${batch}.json`,
+      batchFiles,
+      compilerOptions,
+    );
+    if (!emit.ok) {
+      throw new Error([
+        `TypeScript emit failed during publish for mls-${id} batch ${batch} (${emit.status}).`,
+        'No release will be activated because dist/local may be incomplete.',
+        summarizeTypeScriptOutput(emit.output) || tailOutput(emit.output),
+      ].filter(Boolean).join('\n'));
+    }
+  }
+  return true;
 }
 
 function summarizeTypeScriptOutput(output) {
@@ -89,6 +171,11 @@ function summarizeTypeScriptOutput(output) {
   }
   if (selected.length > 0) return `TypeScript errors:\n${selected.slice(-40).join('\n')}`;
   const tail = lines.filter((line) => line.trim()).slice(-40).join('\n');
+  return tail ? `Compiler output:\n${tail}` : '';
+}
+
+function tailOutput(output) {
+  const tail = output.split(/\r?\n/u).filter((line) => line.trim()).slice(-40).join('\n');
   return tail ? `Compiler output:\n${tail}` : '';
 }
 
@@ -193,6 +280,71 @@ async function walkFiles(root) {
   return out;
 }
 
+async function collectProjectTsFiles(id) {
+  const roots = [
+    resolve(ROOT, 'types'),
+    ...TS_SEGMENTS.map((seg) => join(projectDir(id), seg)),
+  ];
+  const files = [];
+  for (const root of roots) {
+    for (const file of await walkFiles(root)) {
+      if (file.endsWith('.ts') || file.endsWith('.d.ts')) {
+        files.push(toPosix(relative(ROOT, file)));
+      }
+    }
+  }
+  return files;
+}
+
+async function pruneLocalDistProjects(ids) {
+  if (!existsSync(LOCAL_DIST)) return;
+  const keep = new Set(ids.map((id) => `_${id}_`));
+  let pruned = 0;
+  for (const entry of await readdir(LOCAL_DIST, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (!/^_\d+_$/.test(entry.name)) continue;
+    if (keep.has(entry.name)) continue;
+    await rm(join(LOCAL_DIST, entry.name), { recursive: true, force: true });
+    pruned += 1;
+  }
+  if (pruned > 0) log(`pruned ${pruned} extra dist/local project dir(s)`);
+}
+
+async function validateServerOutput(clientConfig) {
+  const files = await walkFiles(LOCAL_DIST);
+  const jsFiles = files.filter((file) => extname(file) === '.js');
+  if (jsFiles.length === 0) {
+    throw new Error([
+      'Server build emitted no JavaScript files in dist/local.',
+      'This usually means the TypeScript emit was killed or failed before completing.',
+      'No release will be activated because PM2 would not find the backend entrypoint.',
+    ].join('\n'));
+  }
+
+  const masterBackendId = Object.entries(clientConfig.projects ?? {})
+    .find(([, project]) => project?.type === 'master backend')?.[0];
+  if (masterBackendId) {
+    const entrypoint = resolve(
+      LOCAL_DIST,
+      `_${masterBackendId}_`,
+      'l1',
+      'server',
+      'layer_1_external',
+      'transport',
+      'http',
+      'startServer.js',
+    );
+    if (!existsSync(entrypoint)) {
+      throw new Error([
+        `Master backend entrypoint was not emitted: ${entrypoint}`,
+        'No release will be activated because PM2 would fail to start this release.',
+      ].join('\n'));
+    }
+  }
+
+  log(`server output validated (${jsFiles.length} js file(s) in dist/local)`);
+}
+
 // ── server build (dist/local) ────────────────────────────────────────────────
 async function buildServer(ids) {
   log(`server build -> dist/local (${ids.map((i) => 'mls-' + i).join(' ')})`);
@@ -212,22 +364,23 @@ async function buildServer(ids) {
       include.push(`./${segRel}/**/*.ts`, `./${segRel}/**/*.d.ts`);
     }
   }
+  const compilerOptions = {
+    // Force consistent ESM output for every file (dist/local/package.json is
+    // type:module). nodenext would emit CJS for files without a package.json
+    // type:module context, mixing CJS+ESM and breaking at runtime.
+    module: 'esnext',
+    moduleResolution: 'bundler',
+    outDir: toPosix(relative(ROOT, LOCAL_DIST)),
+    rootDir: '.',
+    paths,
+    sourceMap: true,
+    declaration: false,
+    noEmit: false,
+    noEmitOnError: FAIL_ON_TSC_ERRORS,
+  };
   const tsconfig = {
     extends: './tsconfig.json',
-    compilerOptions: {
-      // Force consistent ESM output for every file (dist/local/package.json is
-      // type:module). nodenext would emit CJS for files without a package.json
-      // type:module context, mixing CJS+ESM and breaking at runtime.
-      module: 'esnext',
-      moduleResolution: 'bundler',
-      outDir: toPosix(relative(ROOT, LOCAL_DIST)),
-      rootDir: '.',
-      paths,
-      sourceMap: true,
-      declaration: false,
-      noEmit: false,
-      noEmitOnError: FAIL_ON_TSC_ERRORS,
-    },
+    compilerOptions,
     include,
   };
   // Single, inspectable tsconfig at the project root (where the build runs).
@@ -235,15 +388,7 @@ async function buildServer(ids) {
   const tmp = resolve(ROOT, 'tsconfig.build.json');
   await writeFile(tmp, `${JSON.stringify(tsconfig, null, 2)}\n`, 'utf8');
   log('tsconfig written: tsconfig.build.json');
-  try {
-    runTsc('tsconfig.build.json');
-  } catch (error) {
-    if (FAIL_ON_TSC_ERRORS) {
-      throw error;
-    }
-    // noEmitOnError=false: files are emitted even if pinned deps report errors.
-    log(`tsc reported errors (continuing): ${error instanceof Error ? error.message : error}`);
-  }
+  await runTsc('tsconfig.build.json', ids, compilerOptions);
 
   // rename dist/local/mls-<id> -> dist/local/_<id>_
   if (existsSync(LOCAL_DIST)) {
@@ -256,6 +401,7 @@ async function buildServer(ids) {
       }
     }
   }
+  await pruneLocalDistProjects(ids);
 
   // mark the emitted tree as ESM so Node treats the .js as modules
   await mkdir(LOCAL_DIST, { recursive: true });
@@ -556,7 +702,8 @@ async function main() {
     // post-compile: compile each project's .less and inject into the per-file JS
     // (same mls-ci routine the GitHub Action uses; requires the /// <mls header,
     // so it applies to dist/local only — esbuild output strips it)
-    run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local']);
+    run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local', ...ids]);
+    await validateServerOutput(clientConfig);
     // make the chosen client config discoverable at the projects-dir root
     await cp(configPath, resolve(ROOT, 'config.json'));
     log('copied generated client config to project root');
