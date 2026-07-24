@@ -29,6 +29,7 @@ const LOCAL_DIST = resolve(DIST, 'local');
 const TS_SEGMENTS = ['core', 'l1', 'l2'];
 const RES_SEGMENTS = ['core', 'l1', 'l2', 'l5'];
 const RES_EXT = new Set(['.html', '.css', '.less', '.json', '.svg', '.md', '.sql']);
+const FAIL_ON_TSC_ERRORS = process.env.COLLAB_FAIL_ON_TSC_ERRORS === '1';
 // Matches absolute project specifiers in emitted JS: from '/_102034_/l1/...'
 // Matches every form of project specifier in emitted JS:
 //   from '/_..._/...'  | import '/_..._/...'  | import('/_..._/...')  | require('/_..._/...')
@@ -42,9 +43,53 @@ function log(msg) {
 function run(cmd, args) {
   log(`${cmd} ${args.join(' ')}`);
   const result = spawnSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
+  if (result.error) {
+    throw new Error(`Failed to start command: ${cmd} ${args.join(' ')}: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(`Command failed (${result.status}): ${cmd} ${args.join(' ')}`);
   }
+}
+
+function runTsc(tsconfigPath) {
+  const args = ['exec', 'tsc', '-p', tsconfigPath];
+  if (!FAIL_ON_TSC_ERRORS) {
+    run('pnpm', args);
+    return;
+  }
+
+  log(`pnpm ${args.join(' ')}`);
+  const result = spawnSync('pnpm', args, { cwd: ROOT, encoding: 'utf8' });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error) {
+    throw new Error(`Failed to start TypeScript compiler: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    const summary = summarizeTypeScriptOutput(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+    throw new Error([
+      'TypeScript compilation failed during publish. Fix the errors below and publish again.',
+      summary,
+      `Command failed (${result.status}): pnpm ${args.join(' ')}`,
+    ].filter(Boolean).join('\n'));
+  }
+}
+
+function summarizeTypeScriptOutput(output) {
+  const lines = output.split(/\r?\n/u);
+  const selected = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/\berror TS\d+:/u.test(lines[i])) continue;
+    selected.push(lines[i]);
+    for (let j = i + 1; j < lines.length && j <= i + 3; j += 1) {
+      if (!lines[j].trim()) break;
+      if (/\berror TS\d+:/u.test(lines[j])) break;
+      selected.push(lines[j]);
+    }
+  }
+  if (selected.length > 0) return `TypeScript errors:\n${selected.slice(-40).join('\n')}`;
+  const tail = lines.filter((line) => line.trim()).slice(-40).join('\n');
+  return tail ? `Compiler output:\n${tail}` : '';
 }
 
 function composeGeneratedConfig(clientId) {
@@ -58,9 +103,23 @@ function composeGeneratedConfig(clientId) {
   for (const side of ['backend', 'frontend']) {
     const master = l5.masters?.[side];
     if (!master) continue;
+    if (side === 'frontend' && FAIL_ON_TSC_ERRORS && hasMaterializedFrontendConfig(clientId)) {
+      log(`frontend config already materialized for ${clientId}; skipping frontend composer during publish`);
+      continue;
+    }
     const composer = `mls-${master.masterProject}/l2/${master.agentFolder}/nodejsSaveConfigJson.ts`;
     if (existsSync(resolve(ROOT, composer))) run('pnpm', ['exec', 'tsx', composer, clientId]);
   }
+}
+
+function hasMaterializedFrontendConfig(clientId) {
+  const configPath = join(ROOT, `mls-${clientId}`, 'l5', 'config.json');
+  if (!existsSync(configPath)) return false;
+  let config;
+  try { config = JSON.parse(readFileSync(configPath, 'utf8')); } catch { return false; }
+  const client = config.projects?.[clientId];
+  if (!client || client.type !== 'client') return false;
+  return (client.modules ?? []).some((mod) => (mod.frontend?.pages ?? []).length > 0);
 }
 
 function toPosix(p) {
@@ -167,7 +226,7 @@ async function buildServer(ids) {
       sourceMap: true,
       declaration: false,
       noEmit: false,
-      noEmitOnError: false,
+      noEmitOnError: FAIL_ON_TSC_ERRORS,
     },
     include,
   };
@@ -177,8 +236,11 @@ async function buildServer(ids) {
   await writeFile(tmp, `${JSON.stringify(tsconfig, null, 2)}\n`, 'utf8');
   log('tsconfig written: tsconfig.build.json');
   try {
-    run('pnpm', ['exec', 'tsc', '-p', 'tsconfig.build.json']);
+    runTsc('tsconfig.build.json');
   } catch (error) {
+    if (FAIL_ON_TSC_ERRORS) {
+      throw error;
+    }
     // noEmitOnError=false: files are emitted even if pinned deps report errors.
     log(`tsc reported errors (continuing): ${error instanceof Error ? error.message : error}`);
   }

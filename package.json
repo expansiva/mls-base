@@ -4,7 +4,9 @@
     "private": true,
     "scripts": {
         "install:dev": "node scripts/install/runInstallDevs.js",
+        "updateTypes": "node scripts/install/runInstallLibs.js",
         "buildCI": "node scripts/buildCI/buildCI.mjs",
+        "postinstall": "node scripts/install/runInstallLibs.js",
         "postInstall": "node scripts/install/runInstallLibs.js",
         "build": "node scripts/runtime/addNewVersion.mjs",
         "compile": "node scripts/build.mjs",
@@ -23,11 +25,11 @@
         "publish": "pnpm run buildClientObj && node scripts/runPublishMlsBase.mjs",
 
         "publish:initial": "node scripts/runPublishMlsBase.mjs --initial",
-        "buildClientObj": "node scripts/buildClientObj.mjs  --client 102051",
         "test": "node scripts/run-tests.mjs --all",
-        "test:102020": "node scripts/run-tests.mjs 102020",
         "test:l1": "node scripts/run-tests.mjs --all l1",
-        "test:l2": "node scripts/run-tests.mjs --all l2"
+        "test:l2": "node scripts/run-tests.mjs --all l2",
+        "test:1_mechanical": "AGENT_LIVE_TESTS=0 node scripts/run-tests.mjs --all",
+        "test:2_llm": "AGENT_LIVE_TESTS=1 node scripts/run-tests.mjs --all"
     },
     "dependencies": {
         "@aws-sdk/client-dynamodb": "^3.922.0",

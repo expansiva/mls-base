@@ -14,10 +14,6 @@ appconfig.json
 .claude
 pnpm-lock.yaml
 mls-*
-!mls-102051/
-mls-102051/*
-!mls-102051/package.json
-!mls-102051/publish.*.conf.example
 .DS_Store
 types/*
 servers/*.conf
@@ -29,3 +25,5 @@ releases
 current
 .cssStage
 .cssStage-old-sandbox
+mls.d.ts
+**.js

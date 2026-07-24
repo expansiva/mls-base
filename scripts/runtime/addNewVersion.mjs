@@ -21,7 +21,19 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const run = (cmd, cwd = ROOT) => execSync(cmd, { cwd, stdio: 'inherit' });
+const run = (cmd, cwd = ROOT) => {
+  try {
+    return execSync(cmd, { cwd, stdio: 'inherit' });
+  } catch (error) {
+    const status = typeof error?.status === 'number' ? error.status : 1;
+    throw new Error(`Command failed (${status}): ${cmd}`);
+  }
+};
+
+process.on('uncaughtException', (error) => {
+  console.error(`[addNewVersion] aborted: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+});
 
 // Directories named exactly mls-<digits> (skip "-temp" and other variants).
 function discoverProjects() {
