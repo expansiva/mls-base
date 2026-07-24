@@ -98,7 +98,7 @@ export async function runEnhancement({ stageRoot, targetId, log }) {
       if (!mod) {
         const info = parseEnhancementRef(ref);
         const entry = join(stageRoot, 'project', info.project, info.folder, `${info.name}.ts`);
-        if (!existsSync(entry)) throw new Error(`enhancement não encontrado no staging: ${entry}`);
+        if (!existsSync(entry)) throw new Error(`enhancement not found in staging: ${entry}`);
         const outfile = join(stageRoot, 'enhancementCompiled', info.project, info.folder, `${info.name}.js`);
         await mkdir(dirname(outfile), { recursive: true });
         // bundles são ESM — evita o reparse/warning MODULE_TYPELESS do node
@@ -132,14 +132,14 @@ export async function runEnhancement({ stageRoot, targetId, log }) {
       if (newSource && newSource !== content) {
         await writeFile(jsPath, newSource, 'utf8');
         stats.applied += 1;
-        log('enhancement', `${relPath}: enhancement ${ref} aplicado`);
+        log('enhancement', `${relPath}: enhancement ${ref} applied`);
       }
     } catch (error) {
       stats.failed.push({ file: relPath, error: error.message });
-      log('enhancement', `AVISO ${relPath}: ${error.message}`);
+      log('enhancement', `WARNING ${relPath}: ${error.message}`);
     }
   }
 
-  log('enhancement', `processados=${stats.processed} aplicados=${stats.applied} falhas=${stats.failed.length}`);
+  log('enhancement', `processed=${stats.processed} applied=${stats.applied} failed=${stats.failed.length}`);
   return stats;
 }

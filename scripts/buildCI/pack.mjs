@@ -38,7 +38,7 @@ export async function pack({ stageRoot, targetDir, targetId, shipLevels, levels,
   compiled.addLocalFile(join(preBuild, 'fileinfos.json'), '');
   await addDirFiltered(compiled, join(preBuild, 'types'), 'types');
   compiled.writeZip(join(objDir, 'compiled.zip'));
-  log('pack', `.generated/${targetId}/obj/compiled.zip gravado (${compiled.getEntries().length} arquivos)`);
+  log('pack', `.generated/${targetId}/obj/compiled.zip written (${compiled.getEntries().length} files)`);
 
   // source.zip
   const source = new AdmZip();
@@ -47,5 +47,5 @@ export async function pack({ stageRoot, targetDir, targetId, shipLevels, levels,
     if (existsSync(dir)) source.addLocalFolder(dir, level);
   }
   source.writeZip(join(objDir, 'source.zip'));
-  log('pack', `.generated/${targetId}/obj/source.zip gravado (${source.getEntries().length} arquivos)`);
+  log('pack', `.generated/${targetId}/obj/source.zip written (${source.getEntries().length} files)`);
 }

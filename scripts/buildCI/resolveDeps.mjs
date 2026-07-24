@@ -1,33 +1,36 @@
-// resolveDeps.mjs — fechamento transitivo das dependências de um projeto mls-*.
+// resolveDeps.mjs — transitive closure of a mls-* project's dependencies.
 //
-// SÓ baixa o que está DECLARADO no manifesto de cada projeto (decisão #4),
-// na primeira destas fontes que existir:
-//   1. mlsDep.json -> workspaceDependencies   (nome novo/preferido; mesmo
-//      formato do config.json — decisão #15 do taskNewBuildCI.md)
-//   2. config.json -> workspaceDependencies   (campo `commit` é IGNORADO:
-//      baixamos sempre a última versão do main — decisão #5 do taskNewBuildCI.md)
-//   3. packagelib.json -> dependencies "mls-\d+" com URL git+https (fallback)
+// ONLY downloads what's DECLARED in each project's manifest (decision #4),
+// in the first of these sources that exists:
+//   1. mlsDep.json -> workspaceDependencies   (new/preferred name; same
+//      format as config.json — decision #15 of taskNewBuildCI.md)
+//   2. config.json -> workspaceDependencies   (the `commit` field is IGNORED:
+//      we always download the latest main — decision #5 of taskNewBuildCI.md)
+//   3. package.json -> dependencies "mls-\d+" with a git+https URL (fallback,
+//      decision #26 of taskNewBuildCI.md)
+//   4. packagelib.json -> same format as package.json (fallback)
 //
-// Nenhum projeto fixo/implícito é baixado. Os headers
-// `/// <mls ... enhancement="_<id>_..."` do ALVO são apenas VALIDADOS ao
-// final: enhancement que aponte para projeto fora do fechamento declarado
-// derruba o build com erro (a correção é declarar a dependência no manifesto).
+// No fixed/implicit project is ever downloaded. The target's
+// `/// <mls ... enhancement="_<id>_..."` headers are only VALIDATED at the
+// end: an enhancement pointing to a project outside the declared closure
+// fails the build with an error (the fix is to declare the dependency in
+// the manifest).
 //
-// Clona o que faltar na raiz do mls-base (git clone --depth 1, branch default),
-// pulando pastas existentes, e caminha pelos manifestos dos clones até fechar
-// o grafo (visited-set protege contra ciclos).
+// Clones whatever is missing at the mls-base root (git clone --depth 1,
+// default branch), skipping existing folders, and walks the clones'
+// manifests until the graph is closed (a visited-set guards against cycles).
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-// URL default quando o manifesto não traz `repo` (ou a dep veio de um header
-// de enhancement): montada com o orgName do l5/project.json do alvo.
+// Default URL when the manifest doesn't carry a `repo` (or the dep came from
+// an enhancement header): built from the target's l5/project.json orgName.
 function makeDefaultRepo(orgName) {
   return (id) => {
     if (!orgName) {
-      throw new Error(`sem URL de repo para mls-${id} e sem orgName no l5/project.json do alvo para montar a default`);
+      throw new Error(`no repo URL for mls-${id} and no orgName in the target's l5/project.json to build the default`);
     }
     return `https://github.com/${orgName}/mls-${id}.git`;
   };
@@ -38,41 +41,51 @@ async function readJsonIfExists(path) {
   try {
     return JSON.parse(await readFile(path, 'utf8'));
   } catch (error) {
-    throw new Error(`JSON inválido em ${path}: ${error.message}`);
+    throw new Error(`invalid JSON at ${path}: ${error.message}`);
   }
 }
 
-// deps declaradas no manifesto do projeto: Map<id, repoUrl>
-// Ordem: mlsDep.json (novo/preferido) -> config.json -> packagelib.json (fallback)
-async function readManifestDeps(projectDir, defaultRepo) {
+// dependencies declared "mls-\d+" -> repoUrl, filtered from a
+// dependencies-style manifest (package.json / packagelib.json)
+function readGitDeps(manifest, defaultRepo) {
   const deps = new Map();
+  for (const [name, spec] of Object.entries(manifest?.dependencies ?? {})) {
+    const m = /^mls-(\d+)$/.exec(name);
+    if (!m) continue;
+    const url = /^git\+(https:\/\/.+?)(?:#.*)?$/.exec(spec)?.[1] ?? defaultRepo(m[1]);
+    deps.set(m[1], url);
+  }
+  return deps;
+}
 
+// deps declared in the project's manifest: Map<id, repoUrl>
+// Order: mlsDep.json (new/preferred) -> config.json -> package.json ->
+// packagelib.json (fallback, decision #26 of taskNewBuildCI.md)
+async function readManifestDeps(projectDir, defaultRepo) {
   for (const manifestName of ['mlsDep.json', 'config.json']) {
     const manifest = await readJsonIfExists(join(projectDir, manifestName));
     if (manifest?.workspaceDependencies) {
+      const deps = new Map();
       for (const [id, dep] of Object.entries(manifest.workspaceDependencies)) {
-        deps.set(id, dep.repo ?? defaultRepo(id)); // `dep.commit` ignorado de propósito
+        deps.set(id, dep.repo ?? defaultRepo(id)); // `dep.commit` intentionally ignored
       }
       return { deps, source: manifestName };
     }
   }
 
-  const packagelib = await readJsonIfExists(join(projectDir, 'packagelib.json'));
-  if (packagelib?.dependencies) {
-    for (const [name, spec] of Object.entries(packagelib.dependencies)) {
-      const m = /^mls-(\d+)$/.exec(name);
-      if (!m) continue;
-      const url = /^git\+(https:\/\/.+?)(?:#.*)?$/.exec(spec)?.[1] ?? defaultRepo(m[1]);
-      deps.set(m[1], url);
+  for (const manifestName of ['package.json', 'packagelib.json']) {
+    const manifest = await readJsonIfExists(join(projectDir, manifestName));
+    if (manifest?.dependencies) {
+      const deps = readGitDeps(manifest, defaultRepo);
+      if (deps.size > 0) return { deps, source: manifestName };
     }
-    return { deps, source: 'packagelib.json' };
   }
 
-  return { deps, source: undefined };
+  return { deps: new Map(), source: undefined };
 }
 
-// refs de enhancement nos headers /// <mls dos .ts: Set<id>
-// Formas aceitas: enhancement="_102027_/l2/enhancementLit" | "_100554_enhancementLit"
+// enhancement refs in the .ts /// <mls headers: Set<id>
+// Accepted forms: enhancement="_102027_/l2/enhancementLit" | "_100554_enhancementLit"
 async function scanEnhancementRefs(projectDir, levels) {
   const ids = new Set();
   for (const level of levels) {
@@ -92,26 +105,26 @@ async function scanEnhancementRefs(projectDir, levels) {
   return ids;
 }
 
-// Autenticação sob demanda (decisão #16): tenta clone anônimo primeiro (a
-// maioria dos mls-* é pública); só usa GH_PAT como fallback se o repo for
-// privado. Evita depender de um `git config --global insteadOf` que forçaria
-// token em TODO clone, até nos públicos.
+// On-demand authentication (decision #16): tries an anonymous clone first
+// (most mls-* are public); only uses GH_PAT as a fallback if the repo is
+// private. Avoids depending on a `git config --global insteadOf` that would
+// force a token on EVERY clone, even public ones.
 function withToken(repoUrl, token) {
   return repoUrl.replace(/^https:\/\//, `https://x-access-token:${token}@`);
 }
 
-// NUNCA usar publicError.message / privateError.message ou .cmd — o Node
-// embute o argv completo (com o token na URL) nesses campos. Só stderr do
-// próprio git chega aqui, e o git já redaciona a URL nas mensagens dele
-// (ex.: "fatal: Authentication failed for 'https://github.com/...'", sem o
-// token) — mesmo assim aplicamos um redact defensivo do valor do token.
+// NEVER use publicError.message / privateError.message or .cmd — Node embeds
+// the full argv (with the token in the URL) in those fields. Only git's own
+// stderr reaches here, and git already redacts the URL in its own messages
+// (e.g. "fatal: Authentication failed for 'https://github.com/...'", without
+// the token) — we still apply a defensive redact of the token value anyway.
 function redact(text, token) {
   return token ? text.split(token).join('***') : text;
 }
 
-// Um clone que falha no meio do caminho pode deixar destDir parcialmente
-// criado (ex.: .git vazio) — sem limpar, a próxima chamada veria
-// existsSync(destDir) === true e pularia o clone silenciosamente.
+// A clone that fails partway through can leave destDir partially created
+// (e.g. an empty .git) — without cleaning it up, the next call would see
+// existsSync(destDir) === true and silently skip the clone.
 async function cloneAttempt(args, destDir) {
   try {
     execFileSync('git', args, { stdio: 'pipe' });
@@ -129,28 +142,29 @@ async function clone(repoUrl, destDir, log) {
     const token = process.env.GH_PAT;
     if (!token) {
       throw new Error(
-        `clone anônimo falhou para ${repoUrl} (repo pode ser privado) e GH_PAT não está definido: ` +
-        `${redact(publicError.stderr?.toString().trim() ?? '(sem stderr)', token)}`,
+        `anonymous clone failed for ${repoUrl} (repo might be private) and GH_PAT isn't set: ` +
+        `${redact(publicError.stderr?.toString().trim() ?? '(no stderr)', token)}`,
       );
     }
-    log?.('deps', `clone anônimo falhou para ${repoUrl} — tentando com GH_PAT (repo privado)`);
+    log?.('deps', `anonymous clone failed for ${repoUrl} — retrying with GH_PAT (private repo)`);
     try {
       await cloneAttempt(['clone', '--depth', '1', withToken(repoUrl, token), destDir], destDir);
     } catch (privateError) {
       throw new Error(
-        `clone com GH_PAT falhou para ${repoUrl}: ` +
-        `${redact(privateError.stderr?.toString().trim() ?? '(sem stderr)', token)}`,
+        `clone with GH_PAT failed for ${repoUrl}: ` +
+        `${redact(privateError.stderr?.toString().trim() ?? '(no stderr)', token)}`,
       );
     }
   }
 }
 
-// Resolve e materializa o fechamento de dependências do alvo.
-// Retorna Map<id, {dir, repo, requestedBy, cloned}> incluindo o próprio alvo.
+// Resolves and materializes the target's dependency closure.
+// Returns Map<id, {dir, repo, requestedBy, cloned}> including the target itself.
 export async function resolveDeps({ root, targetId, orgName, levels, log }) {
   const defaultRepo = makeDefaultRepo(orgName);
   const projects = new Map();
-  const queue = [{ id: targetId, repo: undefined, requestedBy: '(alvo)' }];
+  const queue = [{ id: targetId, repo: undefined, requestedBy: '(target)' }];
+  let targetManifestSource;
 
   while (queue.length > 0) {
     const { id, repo, requestedBy } = queue.shift();
@@ -160,30 +174,37 @@ export async function resolveDeps({ root, targetId, orgName, levels, log }) {
     let cloned = false;
     if (!existsSync(dir)) {
       const url = repo ?? defaultRepo(id);
-      log('deps', `clonando mls-${id} (pedido por ${requestedBy}) de ${url}`);
+      log('deps', `cloning mls-${id} (requested by ${requestedBy}) from ${url}`);
       await clone(url, dir, log);
       cloned = true;
     }
     projects.set(id, { dir, repo, requestedBy, cloned });
 
     const { deps, source } = await readManifestDeps(dir, defaultRepo);
-    const declared = [...deps.keys()].join(' ') || '(nenhuma)';
-    log('deps', `mls-${id}: manifesto=${source ?? '(ausente)'} deps=${declared}`);
+    if (id === targetId) targetManifestSource = source;
+    const declared = [...deps.keys()].join(' ') || '(none)';
+    log('deps', `mls-${id}: manifest=${source ?? '(none)'} deps=${declared}`);
 
     for (const [depId, depRepo] of deps) {
       if (depId !== id) queue.push({ id: depId, repo: depRepo, requestedBy: `mls-${id}` });
     }
   }
 
-  // Validação dos enhancements do ALVO: projeto referenciado fora do
-  // fechamento declarado é erro — nada é baixado implicitamente.
+  // Validate the TARGET's enhancements: a project referenced outside the
+  // declared closure is an error — nothing is downloaded implicitly.
   const enhancementIds = await scanEnhancementRefs(resolve(root, `mls-${targetId}`), levels);
   const missing = [...enhancementIds].filter((depId) => !projects.has(depId));
   if (missing.length > 0) {
+    // Point at whichever manifest the target actually uses — not a generic
+    // "config.json or package.json" that may not match reality for this
+    // project (e.g. it only has package.json, no config.json at all).
+    const manifestHint = targetManifestSource
+      ? `mls-${targetId}'s ${targetManifestSource}`
+      : `mls-${targetId}'s mlsDep.json, config.json, package.json, or packagelib.json`;
     throw new Error(
-      `enhancement do mls-${targetId} referencia projeto(s) fora das dependências declaradas: ` +
+      `mls-${targetId}'s enhancement references project(s) outside the declared dependencies: ` +
       missing.map((d) => `mls-${d}`).join(', ') +
-      ` — declare no config.json (workspaceDependencies) ou packagelib.json do mls-${targetId}`,
+      ` — declare it in ${manifestHint}`,
     );
   }
 

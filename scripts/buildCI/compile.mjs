@@ -1,20 +1,20 @@
-// compile.mjs — os dois passes do tsc sobre o staging.
+// compile.mjs — the two tsc passes over the staging area.
 //
 //   compileCode        -> tsc -p tsconfig.json    (preBuild/_<id>_/l*/*.js)
 //   compileDeclarations-> tsc -p tsconfig.d.json  (preBuild/types/index.d.ts)
-//                         + remoção do ".js" nos imports do bundle
-//                           (fixFileDefinition do mls-ci)
+//                         + removing ".js" from the bundle's imports
+//                           (mls-ci's fixFileDefinition)
 //
-// Ambos os passes são TOLERANTES a erro de tipo/sintaxe (decisão #19,
-// revisando a #8): o mls-ci original nunca derrubava o build por isso — seu
-// runCompileTsAllFiles usa exec() checando só `stderr`, e o tsc manda erros
-// de tipo para o STDOUT, então ficavam sempre silenciosamente tolerados, nos
-// dois passes. tsc emite o .js mesmo com erros (noEmitOnError não é setado
-// em nenhum dos tsconfigs gerados, default é false) — só um crash real do
-// próprio tsc (não um erro de tipo) derrubaria o processo com stdout vazio.
-// Replicamos esse comportamento de propósito: builda projetos reais com
-// dívida técnica de tipos acumulada (nunca antes checada), em vez de exigir
-// corrigi-la manualmente antes de todo primeiro build no pipeline novo.
+// Both passes are TOLERANT of type/syntax errors (decision #19, revising
+// #8): the original mls-ci never failed the build over this — its
+// runCompileTsAllFiles uses exec() checking only `stderr`, and tsc sends
+// type errors to STDOUT, so they were always silently tolerated in both
+// passes. tsc emits the .js even with errors (noEmitOnError isn't set in
+// either generated tsconfig, default is false) — only a real crash of tsc
+// itself (not a type error) would kill the process with empty stdout. We
+// replicate this on purpose: it builds real projects with accumulated type
+// debt (never checked before) instead of requiring it to be fixed manually
+// before every first build in the new pipeline.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -28,31 +28,32 @@ function runTsc(root, tsconfigPath, log, label, { tolerant = false } = {}) {
   if (result.status !== 0) {
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
     if (tolerant) {
-      log('compile', `AVISO: tsc (${label}) reportou erro(s) de tipo (exit ${result.status}) — ` +
-        `best-effort, noEmitOnError:false garante que o arquivo saiu mesmo assim:\n${output}`);
+      log('compile', `WARNING: tsc (${label}) reported type error(s) (exit ${result.status}) — ` +
+        `best-effort, noEmitOnError:false ensures the file was still emitted:\n${output}`);
       return;
     }
-    throw new Error(`tsc (${label}) falhou com exit ${result.status}:\n${output}`);
+    throw new Error(`tsc (${label}) failed with exit ${result.status}:\n${output}`);
   }
 }
 
 export async function compileCode({ root, codePath, log }) {
-  runTsc(root, codePath, log, 'código', { tolerant: true });
+  runTsc(root, codePath, log, 'code', { tolerant: true });
 }
 
 export async function compileDeclarations({ root, stageRoot, declPath, log }) {
-  runTsc(root, declPath, log, 'declarações', { tolerant: true });
+  runTsc(root, declPath, log, 'declarations', { tolerant: true });
 
   const indexDts = join(stageRoot, 'preBuild', 'types', 'index.d.ts');
   if (!existsSync(indexDts)) {
-    // Alguns erros (ex.: TS2742 "cannot be named without a reference to...",
-    // comum em monorepos pnpm) impedem o tsc de emitir o outFile inteiro, não
-    // só degradar o símbolo problemático para `unknown`. O mls-ci original
-    // tolerava isso do mesmo jeito (fixFileDefinition captura ENOENT e só
-    // loga, sem re-lançar) — obj/compiled.zip sai sem types/index.d.ts nesse
-    // caso, em vez de abortar o build inteiro.
-    log('compile', `AVISO: bundle de declarações não foi gerado (${indexDts}) — ` +
-      'seguindo sem types/index.d.ts, mesma tolerância do mls-ci original.');
+    // Some errors (e.g. TS2742 "cannot be named without a reference to...",
+    // common in pnpm monorepos) prevent tsc from emitting the whole outFile,
+    // not just degrading the problematic symbol to `unknown`. The original
+    // mls-ci tolerated this the same way (fixFileDefinition catches ENOENT
+    // and just logs it, without rethrowing) — obj/compiled.zip comes out
+    // without types/index.d.ts in that case, instead of aborting the whole
+    // build.
+    log('compile', `WARNING: declarations bundle was not generated (${indexDts}) — ` +
+      'continuing without types/index.d.ts, same tolerance as the original mls-ci.');
     return;
   }
 
@@ -61,6 +62,6 @@ export async function compileDeclarations({ root, stageRoot, declPath, log }) {
   const fixed = content.replace(/(from\s*['"])\/?(.*?)\.js(['"])/g, '$1$2$3');
   if (fixed !== content) {
     await writeFile(indexDts, fixed, 'utf8');
-    log('compile', 'index.d.ts: imports ".js" normalizados');
+    log('compile', 'index.d.ts: ".js" imports normalized');
   }
 }

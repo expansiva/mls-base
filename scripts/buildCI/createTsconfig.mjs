@@ -102,7 +102,7 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
   const declPath = join(stageRoot, 'tsconfig.d.json');
   await writeFile(codePath, JSON.stringify(tsconfigCode, null, 2), 'utf8');
   await writeFile(declPath, JSON.stringify(tsconfigDecl, null, 2), 'utf8');
-  log('tsconfig', `gerados tsconfig.json e tsconfig.d.json (paths: ${Object.keys(paths).join(' ')})`);
+  log('tsconfig', `generated tsconfig.json and tsconfig.d.json (paths: ${Object.keys(paths).join(' ')})`);
 
   return { codePath, declPath };
 }

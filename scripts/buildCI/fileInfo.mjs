@@ -18,7 +18,7 @@ const execFileAsync = promisify(execFile);
 
 // Arquivos de raiz que entram como l0/ (mesma lista do mls-ci); package.json e
 // tsconfig.json são pulados quando existe a versão "lib"/config que os gera.
-const ROOT_FILES = ['package.json', 'README.md', 'readme.md', 'tsconfig.json', 'config.json', 'mlsDep.json', 'packagelib.json', 'tsconfiglib.json'];
+const ROOT_FILES = ['package.json', 'README.md', 'readme.md'];//'tsconfig.json', 'config.json', 'mlsDep.json', 'packagelib.json', 'tsconfiglib.json'
 
 async function git(cwd, args) {
   const { stdout } = await execFileAsync('git', args, { cwd });
@@ -91,7 +91,7 @@ export async function createFileInfo({ targetDir, levels, log }) {
 
   const lastModify = new Date().toISOString();
   const result = { lastModified: lastModify, files: fileInfos };
-  log('fileinfo', `${fileInfos.length} arquivos inventariados`);
+  log('fileinfo', `${fileInfos.length} files inventoried`);
   return { result, lastModify };
 }
 
