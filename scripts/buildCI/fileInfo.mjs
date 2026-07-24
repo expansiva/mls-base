@@ -91,7 +91,7 @@ export async function createFileInfo({ targetDir, levels, log }) {
 
   const lastModify = new Date().toISOString();
   const result = { lastModified: lastModify, files: fileInfos };
-  log('fileinfo', `${fileInfos.length} arquivos inventariados`);
+  log('fileinfo', `${fileInfos.length} files inventoried`);
   return { result, lastModify };
 }
 

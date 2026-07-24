@@ -40,9 +40,9 @@ export async function stage({ root, targetId, projects, levels, log }) {
       hasLevel = true;
     }
     if (hasLevel) copiedProjects += 1;
-    else log('stage', `mls-${id}: nenhum nível ${levels.join('/')} encontrado — nada copiado`);
+    else log('stage', `mls-${id}: no ${levels.join('/')} level found — nothing copied`);
   }
 
-  log('stage', `staging pronto em .generated/${targetId}/project (${copiedProjects} projetos copiados)`);
+  log('stage', `staging ready at .generated/${targetId}/project (${copiedProjects} projects copied)`);
   return stageRoot;
 }

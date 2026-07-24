@@ -34,5 +34,5 @@ export async function writeImportsMap({ stageRoot, targetDir, log }) {
   await mkdir(typesDir, { recursive: true });
   const outPath = join(typesDir, 'importsMap.json');
   await writeFile(outPath, JSON.stringify(importsJson, null, 2), 'utf8');
-  log('importsMap', `${files.length} arquivos mapeados`);
+  log('importsMap', `${files.length} files mapped`);
 }

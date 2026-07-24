@@ -26,18 +26,18 @@ export function log(stage, msg) {
 
 // "102046" | "mls-102046" -> "102046"
 export function parseTargetId(raw) {
-  if (!raw) throw new Error('informe o projeto alvo: pnpm run buildCI <id>  (ex.: 102046 ou mls-102046)');
+  if (!raw) throw new Error('missing target project: pnpm run buildCI <id>  (e.g. 102046 or mls-102046)');
   const m = /^(?:mls-)?(\d+)$/.exec(raw.trim());
-  if (!m) throw new Error(`alvo inválido: "${raw}" (esperado 102046 ou mls-102046)`);
+  if (!m) throw new Error(`invalid target: "${raw}" (expected 102046 or mls-102046)`);
   return m[1];
 }
 
-// orgName vem do l5/project.json do alvo (mesma fonte do runGetOrgName do
-// mls-ci); necessário no callWork. Ausência não bloqueia o build.
+// orgName comes from the target's l5/project.json (same source as mls-ci's
+// runGetOrgName); required by callWork. Its absence doesn't block the build.
 async function readOrgName(targetDir) {
   const projectJsonPath = join(targetDir, 'l5', 'project.json');
   if (!existsSync(projectJsonPath)) {
-    log('target', `l5/project.json não encontrado — orgName vazio (callWork será pulado)`);
+    log('target', `l5/project.json not found — orgName empty (callWork will be skipped)`);
     return '';
   }
   const info = JSON.parse(await readFile(projectJsonPath, 'utf8'));
@@ -48,52 +48,52 @@ async function main() {
   const id = parseTargetId(process.argv[2]);
   const targetDir = resolve(ROOT, `mls-${id}`);
   if (!existsSync(targetDir)) {
-    throw new Error(`projeto mls-${id} não encontrado em ${ROOT} — faça o checkout dele na raiz do mls-base`);
+    throw new Error(`project mls-${id} not found in ${ROOT} — check it out at the mls-base root`);
   }
-  log('start', `alvo=mls-${id} root=${ROOT}`);
+  log('start', `target=mls-${id} root=${ROOT}`);
 
-  // Etapa 1 — resolução do alvo
+  // Step 1 — target resolution
   const orgName = await readOrgName(targetDir);
-  log('target', `orgName=${orgName || '(vazio)'}`);
-  // Etapa 2 — fechamento de dependências + clones
+  log('target', `orgName=${orgName || '(empty)'}`);
+  // Step 2 — dependency closure + clones
   const { resolveDeps } = await import('./resolveDeps.mjs');
   const projects = await resolveDeps({ root: ROOT, targetId: id, orgName, levels: COMPILE_LEVELS, log });
-  log('deps', `fechamento: ${[...projects.keys()].map((p) => `mls-${p}`).join(' ')}`);
-  // Etapa 3 — types/ (mls.d.ts, monaco.d.ts)
+  log('deps', `closure: ${[...projects.keys()].map((p) => `mls-${p}`).join(' ')}`);
+  // Step 3 — types/ (mls.d.ts, monaco.d.ts)
   const { downloadTypes } = await import('./downloadTypes.mjs');
   await downloadTypes({ root: ROOT, log });
-  // Etapa 4 — staging .generated/<id>/project/
+  // Step 4 — staging .generated/<id>/project/
   const { stage } = await import('./stage.mjs');
   const stageRoot = await stage({ root: ROOT, targetId: id, projects, levels: COMPILE_LEVELS, log });
-  // Etapa 5 — tsconfigs gerados
+  // Step 5 — generated tsconfigs
   const { createTsconfigs } = await import('./createTsconfig.mjs');
   const { codePath, declPath } = await createTsconfigs({ stageRoot, targetId: id, projects, log });
-  // Etapa 6 — tsc + enhancement + declarações
+  // Step 6 — tsc + enhancement + declarations
   const { compileCode, compileDeclarations } = await import('./compile.mjs');
   const { runEnhancement } = await import('./enhancement.mjs');
   await compileCode({ root: ROOT, codePath, log });
   await runEnhancement({ stageRoot, targetId: id, log });
   await compileDeclarations({ root: ROOT, stageRoot, declPath, log });
-  // Etapa 7 — fileinfos.json + importsMap.json
+  // Step 7 — fileinfos.json + importsMap.json
   const { writeFileInfo } = await import('./fileInfo.mjs');
   const { writeImportsMap } = await import('./importsMap.mjs');
   const lastModify = await writeFileInfo({ stageRoot, targetDir, levels: COMPILE_LEVELS, log });
   await writeImportsMap({ stageRoot, targetDir, log });
-  // Etapa 8 — compiled.zip + source.zip -> mls-<id>/obj/
+  // Step 8 — compiled.zip + source.zip -> mls-<id>/obj/
   const { pack } = await import('./pack.mjs');
   await pack({ stageRoot, targetDir, targetId: id, shipLevels: SHIP_LEVELS, levels: COMPILE_LEVELS, log });
 
-  // Etapa 9 — callWork: DESATIVADO na fase de testes (decisão #13 do
-  // taskNewBuildCI.md). Descomentar apenas na Etapa 11 (produção).
+  // Step 9 — callWork: DISABLED during the testing phase (decision #13 of
+  // taskNewBuildCI.md). Only uncomment in Step 11 (production).
   const { runCallWork } = await import('./callWork.mjs');
   await runCallWork({ id, orgName, lastModify, log });
-  //log('callWork', 'notificação ao backend DESATIVADA (fase de testes — decisão #13)');
-  void lastModify; // usado pelo callWork quando reativado
+  //log('callWork', 'backend notification DISABLED (testing phase — decision #13)');
+  void lastModify; // used by callWork once reactivated
 
-  log('done', `build do mls-${id} finalizado`);
+  log('done', `build of mls-${id} finished`);
 }
 
 main().catch((error) => {
-  console.error(`[buildCI] abortado: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`[buildCI] aborted: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });
