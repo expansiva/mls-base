@@ -280,6 +280,35 @@ async function walkFiles(root) {
   return out;
 }
 
+/**
+ * Copy every project's l3 ASSET payload (`l3/<module>/assets/**`) into `<destRoot>/_<id>_/l3/...`.
+ *
+ * Seed images live in l3 (`l3/cafeFlow/assets/seed/MenuItem/x.webp`) and the BFF hands the browser
+ * `/cafeFlow/assets/seed/MenuItem/x.webp`. Neither copy pass reached them: the local pass walks
+ * RES_SEGMENTS (core/l1/l2/l5 — no l3) and the web pass walks only l2, and BOTH filter by RES_EXT,
+ * which has no image extension. So the request fell through to the SPA shell and the browser got HTML
+ * with 200 instead of the WebP (todo/runtime/bugimage.md).
+ *
+ * No extension filter here: an `assets` directory IS static payload by definition, so filtering would
+ * only re-create the same silent gap for the next format (png, woff2, mp4...).
+ */
+async function copyL3Assets(ids, destRoot) {
+  let copied = 0;
+  for (const id of ids) {
+    const l3 = join(projectDir(id), 'l3');
+    if (!existsSync(l3)) continue;
+    for (const file of await walkFiles(l3)) {
+      const rel = toPosix(relative(l3, file));
+      if (!/^[^/]+\/assets\//u.test(rel)) continue;      // only <module>/assets/**
+      const dest = resolve(destRoot, `_${id}_`, 'l3', rel);
+      await mkdir(dirname(dest), { recursive: true });
+      await cp(file, dest);
+      copied += 1;
+    }
+  }
+  return copied;
+}
+
 async function collectProjectTsFiles(id) {
   const roots = [
     resolve(ROOT, 'types'),
@@ -441,6 +470,7 @@ async function buildServer(ids) {
       }
     }
   }
+  copied += await copyL3Assets(ids, LOCAL_DIST);
   log(`copied ${copied} resource file(s) to dist/local`);
 }
 
@@ -574,6 +604,7 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
       copied += 1;
     }
   }
+  copied += await copyL3Assets(ids, outdir);
   log(`copied ${copied} static file(s) to dist/${targetName}`);
 
   // compile Tailwind for each master-frontend project, overwriting the copied

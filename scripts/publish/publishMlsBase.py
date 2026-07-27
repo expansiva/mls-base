@@ -33,7 +33,10 @@ DEFAULT_CLIENT_ID = "102048"
 DEFAULT_PROFILE = "dev"
 # same set publishMlsBase.sh passes to rsync --exclude
 EXCLUDED_NAMES = {"node_modules", ".git", "dist", "distBackend", "distFrontend", ".DS_Store"}
-EXCLUDED_PATTERNS = [re.compile(r"^publish\.[A-Za-z0-9_.-]+\.conf$")]
+EXCLUDED_PATTERNS = [
+    re.compile(r"^publish\.[A-Za-z0-9_.-]+\.conf$"),
+    re.compile(r"^publish[A-Z][A-Za-z0-9_.-]*\.conf$"),
+]
 # scaffold files needed to build on the VM (copied when they exist)
 SCAFFOLD_FILES = [
     "package.json",
@@ -51,6 +54,10 @@ TAR_FILE = ".publish.sources.tgz"
 # generated zip never matches the CI-committed one byte-for-byte, so writing in
 # place left every published project permanently "modified" in git.
 OBJ_STAGE_DIR = ".publish-obj"
+# Projects used by the remote build pipeline itself. They are synced so Lima
+# does not reuse stale generator code, but they are not added to config.json,
+# obj generation, or the runtime project set.
+BUILD_TOOL_PROJECTS = ["mls-102020", "mls-102021"]
 
 COPY_DESIGN_SYSTEMS_JS = r"""
 node <<'NODE'
@@ -98,10 +105,11 @@ def which(cmd):
 
 
 def run(cmd, **kwargs):
-    log(" ".join(str(c) for c in cmd))
+    display = kwargs.pop("display", None)
+    log(display or " ".join(str(c) for c in cmd))
     result = subprocess.run(cmd, cwd=ROOT, **kwargs)
     if result.returncode != 0:
-        raise RuntimeError(f"Command failed ({result.returncode}): {' '.join(str(c) for c in cmd)}")
+        raise RuntimeError(f"Command failed ({result.returncode}): {display or ' '.join(str(c) for c in cmd)}")
 
 
 def http_json(method, url, payload=None):
@@ -195,8 +203,8 @@ class MultipassRemote:
         self.remote_base = remote_base
         self.label = f"multipass:{instance}"
 
-    def run(self, command):
-        run([which("multipass"), "exec", self.instance, "--", "bash", "-lc", command])
+    def run(self, command, display=None):
+        run([which("multipass"), "exec", self.instance, "--", "bash", "-lc", command], display=display)
 
     def upload(self, local_tgz):
         remote_tmp = "/tmp/mls-base-publish.tgz"
@@ -217,8 +225,8 @@ class SshRemote:
         self.remote_base = remote_base
         self.label = conf["SSH_HOST"]
 
-    def run(self, command):
-        run([which("ssh"), *self.ssh_args, f"bash -lc {sh_quote(command)}"])
+    def run(self, command, display=None):
+        run([which("ssh"), *self.ssh_args, f"bash -lc {sh_quote(command)}"], display=display)
 
     def upload(self, local_tgz):
         with open(ROOT / local_tgz, "rb") as fh:
@@ -286,8 +294,8 @@ def resolve_conf_path(profile, client_root):
 
     Project-local configs are preferred so each client project can carry its
     own local/remote targets without growing mls-base/servers indefinitely.
-    The canonical location is mls-<client>/l5/publish.<profile>.conf; the
-    previous root location remains as a compatibility fallback.
+    The canonical location is mls-<client>/l5/publish<Profile>.conf; the
+    previous dotted project-local location remains as a compatibility fallback.
     Legacy mls-base/servers/<profile>.conf remains supported.
     """
     raw = Path(profile)
@@ -295,9 +303,12 @@ def resolve_conf_path(profile, client_root):
     if raw.is_absolute() or raw.suffix == ".conf" or len(raw.parts) > 1:
         candidates.append(raw if raw.is_absolute() else ROOT / raw)
     else:
+        camel_profile = profile[:1].upper() + profile[1:]
         candidates.extend([
+            client_root / "l5" / f"publish{camel_profile}.conf",
             client_root / "l5" / f"publish.{profile}.conf",
             client_root / "l5" / f"{profile}.conf",
+            client_root / f"publish{camel_profile}.conf",
             client_root / f"publish.{profile}.conf",
             client_root / f"{profile}.conf",
             ROOT / "servers" / f"{profile}.conf",
@@ -383,6 +394,12 @@ def main():
         if not (ROOT / project).is_dir():
             raise RuntimeError(f"project {project} declared in config.json but missing on disk")
     log(f"projects to publish: {' '.join(projects)}")
+    build_tool_projects = [
+        project for project in BUILD_TOOL_PROJECTS
+        if (ROOT / project).is_dir() and project not in projects
+    ]
+    if build_tool_projects:
+        log(f"build tool sources to sync: {' '.join(build_tool_projects)}")
 
     # --- 3b. Regenerate obj/ for ALL published projects -------------------------
     # The runtime VM's cbe login serves each project's sources/js from
@@ -413,7 +430,7 @@ def main():
     files = [f for f in SCAFFOLD_FILES if (ROOT / f).is_file()]
     # "static" ships the cbe libs disk cache (mls.js etc.) so the runtime VM can
     # serve /libs/* without reaching the remote origin (see mls-102034 cbe module).
-    for directory in [".generated", "types", "scripts", "static", *projects]:
+    for directory in [".generated", "types", "scripts", "static", *build_tool_projects, *projects]:
         if (ROOT / directory).is_dir():
             collect_files(ROOT / directory, directory, files)
     # the freshly staged obj zips replace (or add to) the working-tree ones in the tar
@@ -437,7 +454,7 @@ def main():
             raise RuntimeError("remote target was not resolved")
         remote.run(f"mkdir -p {sh_quote(remote_base)}")
         # project dirs are replaced wholesale (the rsync --delete equivalent)
-        remote.run(f"cd {sh_quote(remote_base)} && rm -rf {' '.join(projects)}")
+        remote.run(f"cd {sh_quote(remote_base)} && rm -rf {' '.join([*build_tool_projects, *projects])}")
         remote.upload(TAR_FILE)
         # shell scripts must reach the VM with LF endings even when the Windows
         # checkout uses CRLF (bash fails on '\r')
@@ -460,7 +477,10 @@ def main():
     # /_<client>/l2/designSystem.js, so esbuild does not discover it as a web
     # entrypoint. The server build already emits the module in dist/local; copy
     # that compiled JS into each published web target after release activation.
-    remote.run(f"cd {sh_quote(remote_base)} && {COPY_DESIGN_SYSTEMS_JS}")
+    remote.run(
+        f"cd {sh_quote(remote_base)} && {COPY_DESIGN_SYSTEMS_JS}",
+        display="copy designSystem.js into published web targets",
+    )
     log("publish done")
 
 

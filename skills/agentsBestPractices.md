@@ -81,6 +81,18 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
   fan-out with mixed ranks.
 - Host the fan-out under the step that must wait for it, so its completion anchors the next
   `waiting_dependency` step (or a done-anchor, see below).
+- **A "whole-layer in one call" step IS N independent items — split it.** A single LLM call that must
+  emit the entire layer (every domain entity, every table, …) produces a large strict-schema output
+  that reasoning models truncate: e.g. grok-4.5 spent ~90s reasoning then emitted ~150 tokens →
+  `items/0 must have required property 'fields'` (TOOL_ARGS_SCHEMA), so the step passed only on the
+  rare roll where the fallback model produced the full output. Fan out one worker per item instead:
+  each call is small, gets the full token budget, and never truncates — this raises quality, it does
+  not lower it, because the per-item prompt/schema are unchanged (the worker just receives ONE item).
+  Canonical examples in `agentChangeBackend`: `cb-domain-fanout` (one worker per aggregate/event, 10
+  slots), `cb-usecase-fanout` (one per operation owner, 10 slots). The dispatcher lists the items from
+  the deterministic scan and passes their ids as the fan-out arg queue; `cb-gen-port` joins the domain
+  fan-out. A failed slot leaves its domain missing and a re-run (not `/rebuild`) regenerates only that
+  one via the worker's reuse check.
 
 ## 5. Prompts are data, not code
 
