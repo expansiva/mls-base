@@ -6,8 +6,9 @@
 //      format as config.json — decision #15 of taskNewBuildCI.md)
 //   2. config.json -> workspaceDependencies   (the `commit` field is IGNORED:
 //      we always download the latest main — decision #5 of taskNewBuildCI.md)
-//   3. package.json -> dependencies "mls-\d+" with a git+https URL (fallback,
-//      decision #26 of taskNewBuildCI.md)
+//   3. package.json -> actionDependencies (if present, REPLACES dependencies —
+//      decision #28) or dependencies, filtered to "mls-\d+" with a git+https
+//      URL (fallback, decision #26 of taskNewBuildCI.md)
 //   4. packagelib.json -> same format as package.json (fallback)
 //
 // No fixed/implicit project is ever downloaded. The target's
@@ -45,11 +46,11 @@ async function readJsonIfExists(path) {
   }
 }
 
-// dependencies declared "mls-\d+" -> repoUrl, filtered from a
-// dependencies-style manifest (package.json / packagelib.json)
-function readGitDeps(manifest, defaultRepo) {
+// dependencies declared "mls-\d+" -> repoUrl, filtered from a plain
+// { name: gitSpec } dependencies-style object (package.json / packagelib.json)
+function readGitDeps(depsObject, defaultRepo) {
   const deps = new Map();
-  for (const [name, spec] of Object.entries(manifest?.dependencies ?? {})) {
+  for (const [name, spec] of Object.entries(depsObject ?? {})) {
     const m = /^mls-(\d+)$/.exec(name);
     if (!m) continue;
     const url = /^git\+(https:\/\/.+?)(?:#.*)?$/.exec(spec)?.[1] ?? defaultRepo(m[1]);
@@ -75,8 +76,17 @@ async function readManifestDeps(projectDir, defaultRepo) {
 
   for (const manifestName of ['package.json', 'packagelib.json']) {
     const manifest = await readJsonIfExists(join(projectDir, manifestName));
-    if (manifest?.dependencies) {
-      const deps = readGitDeps(manifest, defaultRepo);
+    if (!manifest) continue;
+    // actionDependencies (decision #28) REPLACES dependencies when present —
+    // a CI-only override so `npm install` (which ignores unknown fields)
+    // keeps using `dependencies` for whatever it normally installs, while
+    // buildCI's closure comes from actionDependencies instead.
+    if (manifest.actionDependencies) {
+      const deps = readGitDeps(manifest.actionDependencies, defaultRepo);
+      if (deps.size > 0) return { deps, source: `${manifestName} (actionDependencies)` };
+    }
+    if (manifest.dependencies) {
+      const deps = readGitDeps(manifest.dependencies, defaultRepo);
       if (deps.size > 0) return { deps, source: manifestName };
     }
   }
