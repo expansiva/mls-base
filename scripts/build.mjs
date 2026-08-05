@@ -14,6 +14,8 @@
 //   node scripts/build.mjs --only server   # only dist/local
 //   node scripts/build.mjs --only web      # only dist/web
 //   node scripts/build.mjs --client 102043 # pick the client app config
+//   node scripts/build.mjs --client 102043 --use-existing-config --only server
+//                                             # publish: compile without recomposing config
 //   node scripts/build.mjs --targets web,cdncloudflare
 
 import { build as esbuild } from 'esbuild';
@@ -694,11 +696,12 @@ function detectClientId(explicit) {
 }
 
 function parseArgs(argv) {
-  const args = { only: '', client: '', targets: '' };
+  const args = { only: '', client: '', targets: '', useExistingConfig: false };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--only') args.only = argv[++i] ?? '';
     else if (argv[i] === '--client') args.client = argv[++i] ?? '';
     else if (argv[i] === '--targets') args.targets = argv[++i] ?? '';
+    else if (argv[i] === '--use-existing-config') args.useExistingConfig = true;
   }
   return args;
 }
@@ -706,13 +709,16 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  // ALWAYS run the composers (idempotent), not only with an explicit --client: the Studio-written
-  // l5/config.json lacks the master runtime manifest merge (masterModules.json -> 102034
-  // modules/persistenceModules). Publishing it raw ships a runtime without the platform tables —
-  // the schema rebuild then creates only the client module's tables and migrate.js dies on
-  // INSERT INTO "_schema_migrations" (publish 102049, 17/jul).
   const clientId = detectClientId(args.client);
-  composeGeneratedConfig(clientId);
+  if (args.useExistingConfig) {
+    log(`using existing client config for ${clientId} (composer skipped)`);
+  } else {
+    // Normally run the composers: the Studio-written l5/config.json lacks the
+    // master runtime manifest merge (masterModules.json -> 102034
+    // modules/persistenceModules). The publish client validates that merge
+    // before invoking this build with --use-existing-config.
+    composeGeneratedConfig(clientId);
+  }
   const clientRoot = resolve(ROOT, `mls-${clientId}`);
   const configPath = clientConfigPath(clientId);
   if (!existsSync(configPath)) throw new Error(`generated config not found: ${configPath}`);

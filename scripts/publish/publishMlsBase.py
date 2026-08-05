@@ -48,12 +48,13 @@ SCAFFOLD_FILES = [
 ]
 # staging tarball at the project root (gitignored); removed after the upload
 TAR_FILE = ".publish.sources.tgz"
-# staging area for the regenerated obj zips (gitignored, kept between publishes so
-# fileinfos.json update_at stays stable). The zips are packed into the tar under
+# staging area for the regenerated obj zips (gitignored and removed after a
+# successful publish). The zips are packed into the tar under
 # mls-<id>/obj/, but the git-tracked project trees are never touched — a locally
 # generated zip never matches the CI-committed one byte-for-byte, so writing in
 # place left every published project permanently "modified" in git.
 OBJ_STAGE_DIR = ".publish-obj"
+SUCCESS_CLEANUP_DIRS = (".generated", "dist", OBJ_STAGE_DIR)
 # Projects used by the remote build pipeline itself. They are synced so Lima
 # does not reuse stale generator code, but they are not added to config.json,
 # obj generation, or the runtime project set.
@@ -110,6 +111,29 @@ def run(cmd, **kwargs):
     result = subprocess.run(cmd, cwd=ROOT, **kwargs)
     if result.returncode != 0:
         raise RuntimeError(f"Command failed ({result.returncode}): {display or ' '.join(str(c) for c in cmd)}")
+
+
+def cleanup_after_successful_publish():
+    """Remove local build/publish artifacts only after deployment succeeds."""
+    removed = []
+    failures = []
+    for name in SUCCESS_CLEANUP_DIRS:
+        path = ROOT / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        try:
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            else:
+                shutil.rmtree(path)
+            removed.append(name)
+        except OSError as error:
+            failures.append(f"{name}: {error}")
+
+    if removed:
+        log(f"post-publish cleanup: removed {' '.join(removed)}")
+    if failures:
+        log(f"warning: publish succeeded but cleanup was incomplete: {'; '.join(failures)}")
 
 
 def http_json(method, url, payload=None):
@@ -401,7 +425,26 @@ def main():
     if build_tool_projects:
         log(f"build tool sources to sync: {' '.join(build_tool_projects)}")
 
-    # --- 3b. Regenerate obj/ for ALL published projects -------------------------
+    # --- 3b. Refresh the mls lib from S3 ---------------------------------------
+    # Both outputs are needed below: types/ by the local and remote TypeScript
+    # builds, and static/ by the runtime /libs/* handler.
+    log("refreshing mls lib from S3 (types/ + static/libs/)")
+    run([which("node"), str(ROOT / "scripts" / "install" / "runInstallLibs.js")])
+
+    # --- 3c. Build fresh local server output for obj/ ---------------------------
+    # A previous successful publish removes dist/. Rebuild it from the already
+    # validated client config so compiled.zip always includes current local edits.
+    # Do not run the composers here: publish must preserve the exact config.json
+    # produced or edited before this command.
+    log("building fresh dist/local for publish obj")
+    run([
+        which("node"), str(ROOT / "scripts" / "build.mjs"),
+        "--client", client_id,
+        "--use-existing-config",
+        "--only", "server",
+    ])
+
+    # --- 3d. Regenerate obj/ for ALL published projects -------------------------
     # The runtime VM's cbe login serves each project's sources/js from
     # mls-<id>/obj/compiled.zip. Masters/libs get their obj from CI on git push,
     # but a local edit that is not pushed would ship a STALE obj to the VM — so
@@ -417,20 +460,12 @@ def main():
         "--out-root", OBJ_STAGE_DIR,
     ])
 
-    # --- 3c. Refresh the mls lib from S3 ---------------------------------------
-    # runInstallLibs.js downloads the type defs (types/mls.d.ts, monaco.d.ts) AND
-    # the runtime lib (static/libs/mls.js etc.) from S3, but on its own only runs
-    # on install — so local copies can be stale. The tarball below ships both
-    # types/ and static/ to the VM, so refresh from S3 on every publish to
-    # guarantee the VM gets the latest published lib (types + runtime window.mls).
-    log("refreshing mls lib from S3 (types/ + static/libs/)")
-    run([which("node"), str(ROOT / "scripts" / "install" / "runInstallLibs.js")])
-
     # --- 4. Pack sources + scaffold and ship them to the VM --------------------
     files = [f for f in SCAFFOLD_FILES if (ROOT / f).is_file()]
-    # "static" ships the cbe libs disk cache (mls.js etc.) so the runtime VM can
-    # serve /libs/* without reaching the remote origin (see mls-102034 cbe module).
-    for directory in [".generated", "types", "scripts", "static", *build_tool_projects, *projects]:
+    # Both directories are required: types/ is consumed by the remote TypeScript
+    # build, while static/ is the runtime /libs/* disk cache. .generated/ is only
+    # local buildCI staging and must not be shipped.
+    for directory in ["types", "scripts", "static", *build_tool_projects, *projects]:
         if (ROOT / directory).is_dir():
             collect_files(ROOT / directory, directory, files)
     # the freshly staged obj zips replace (or add to) the working-tree ones in the tar
@@ -448,6 +483,7 @@ def main():
 
         if sites_publish:
             publish_via_sites(client_id, TAR_FILE, initial, sites_conf)
+            cleanup_after_successful_publish()
             return
 
         if remote is None:
@@ -482,6 +518,7 @@ def main():
         display="copy designSystem.js into published web targets",
     )
     log("publish done")
+    cleanup_after_successful_publish()
 
 
 if __name__ == "__main__":
