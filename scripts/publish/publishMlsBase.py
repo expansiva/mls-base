@@ -365,11 +365,16 @@ def main():
     positional = []
     initial = bool(os.environ.get("INITIAL"))
     sites_publish = False
+    all_projects_flag = None  # None = decide by target (ssh/multipass yes, sites no)
     for arg in sys.argv[1:]:
         if arg == "--initial":
             initial = True
         elif arg == "--sites":
             sites_publish = True
+        elif arg == "--all-projects":
+            all_projects_flag = True
+        elif arg == "--no-all-projects":
+            all_projects_flag = False
         else:
             positional.append(arg)
 
@@ -417,7 +422,36 @@ def main():
     for project in projects:
         if not (ROOT / project).is_dir():
             raise RuntimeError(f"project {project} declared in config.json but missing on disk")
-    log(f"projects to publish: {' '.join(projects)}")
+
+    # --- 3a. Optionally sync EVERY mls-* project on disk ------------------------
+    # "All projects on the VM": besides the runtime workspace (config.json), the
+    # VM also hosts the studio projects (mls-100554, libs, agents...) so the cbe
+    # login can serve them to the browser and the VM compiles their obj locally
+    # (scripts/runtime/buildProjectsObj.mjs) — replacing the per-repo GitHub
+    # Actions builds. Default: ON for direct ssh/multipass targets, OFF for
+    # --sites (upload size); override with --all-projects/--no-all-projects or
+    # PUBLISH_ALL_PROJECTS=0/1 (env or the target conf).
+    conf_all = os.environ.get("PUBLISH_ALL_PROJECTS", "").strip()
+    if all_projects_flag is None and conf_all in {"0", "1"}:
+        all_projects_flag = conf_all == "1"
+    if all_projects_flag is None:
+        conf_source = sites_conf if sites_publish else conf
+        conf_value = str(conf_source.get("PUBLISH_ALL_PROJECTS", "")).strip()
+        if conf_value in {"0", "1"}:
+            all_projects_flag = conf_value == "1"
+    if all_projects_flag is None:
+        # Local edits reach the VM without a GitHub round-trip: EVERY mls-*
+        # on disk ships by default, for ssh/multipass AND sites publishes
+        # (disable per client with PUBLISH_ALL_PROJECTS=0 / --no-all-projects).
+        all_projects_flag = True
+    extra_projects = []
+    if all_projects_flag:
+        for entry in sorted(ROOT.iterdir(), key=lambda e: e.name):
+            if entry.is_dir() and re.fullmatch(r"mls-\d+", entry.name) and entry.name not in projects:
+                extra_projects.append(entry.name)
+        projects.extend(extra_projects)
+    log(f"projects to publish: {' '.join(projects)}"
+        + (f" (all-projects: +{len(extra_projects)})" if extra_projects else ""))
     build_tool_projects = [
         project for project in BUILD_TOOL_PROJECTS
         if (ROOT / project).is_dir() and project not in projects
@@ -489,8 +523,13 @@ def main():
         if remote is None:
             raise RuntimeError("remote target was not resolved")
         remote.run(f"mkdir -p {sh_quote(remote_base)}")
-        # project dirs are replaced wholesale (the rsync --delete equivalent)
-        remote.run(f"cd {sh_quote(remote_base)} && rm -rf {' '.join([*build_tool_projects, *projects])}")
+        # project dirs are replaced wholesale (the rsync --delete equivalent).
+        # static/ is included too: it doubles as the runtime /libs/* disk cache
+        # (cbeStaticFiles.ts writes cache-miss fetches into it), so stray files
+        # accumulated there since the last publish would otherwise never be
+        # purged. The fresh tar always repopulates the known files (types/,
+        # scripts/, static/libs/{mls.js,...}) right after this.
+        remote.run(f"cd {sh_quote(remote_base)} && rm -rf {' '.join([*build_tool_projects, *projects, 'static'])}")
         remote.upload(TAR_FILE)
         # shell scripts must reach the VM with LF endings even when the Windows
         # checkout uses CRLF (bash fails on '\r')

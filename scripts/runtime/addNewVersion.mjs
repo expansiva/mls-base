@@ -183,4 +183,18 @@ console.log(`--- pm2 reload (${pm2Config})`);
 run(`pm2 startOrReload ${pm2Config} --update-env`);
 try { run('pm2 save'); } catch { /* non-fatal */ }
 
+// Refresh the per-project obj zips the cbe login serves (mls-<id>/obj/*.zip).
+// This replaces the GitHub Actions (mls-ci) builds: the VM compiles its own
+// copies from the synced sources. Incremental + best-effort, AFTER activation:
+// a project that fails to build keeps its previous obj and never blocks the
+// release. Disable with CBE_BUILD_OBJS=false in the .env.
+if (process.env.CBE_BUILD_OBJS !== 'false') {
+  console.log('--- building project objs for the cbe login (CBE_BUILD_OBJS=false to skip)');
+  try {
+    run('node scripts/runtime/buildProjectsObj.mjs');
+  } catch (error) {
+    console.error(`[addNewVersion] obj build failed (release stays active): ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 console.log(`addNewVersion done (release ${releaseId}).`);

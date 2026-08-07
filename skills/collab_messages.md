@@ -69,6 +69,16 @@ Import alias: `/_102027_/l2/x.js` → `mls-102027/l2/x.ts`, `/_102025_/...` → 
   This is how `e1-draft` runs after `e1-clarification-answer`, and `e2-journeys` after the checkpoint.
 - Client-side re-run of the loop after applying intents: `continuePoolingTask(ctx)` in
   `aiAgentOrchestration.ts`.
+- **A dependency unlock is immediate and may execute in a fresh client context.** A permanent file
+  created just before the completed done-anchor can briefly be absent from that context's
+  `mls.stor.files` index. Put a bounded, approved handoff in the completed result anchor when the
+  immediate successor needs that contract. The successor should prefer the permanent artifact for
+  later resumes and use the result handoff only across the live boundary. If the contract is too
+  large for the task record, insert a deterministic visibility/commit barrier instead.
+- Treat pipeline states as monotonic checkpoints. A late or duplicate hook may still attempt to
+  write `running`, `waitingHuman` or `failed` after a human approval; transition helpers must refuse
+  to replace `approved` with any of those earlier states. On resume, reconcile a lagging pipeline
+  only from matching permanent artifacts plus an approved module checkpoint, never from a draft.
 
 ## Rendering a checkpoint / custom widget (IMPORTANT)
 

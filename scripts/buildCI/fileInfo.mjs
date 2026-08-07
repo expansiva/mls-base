@@ -9,8 +9,9 @@
 // projeto, não o do mls-base). Retorna o lastModify (ISO) usado no callWork.
 
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readdir, stat, writeFile } from 'node:fs/promises';
+import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -77,15 +78,25 @@ export async function createFileInfo({ targetDir, levels, log }) {
     }
   }
 
-  const oids = await gitBlobOids(targetDir);
+  // versionRef: git blob OIDs when the project is a git checkout (CI parity).
+  // Projects synced without .git (runtime VM, collab-synced clients) fall back
+  // to sha1 of the content + file mtime — same scheme as buildClientObj.mjs.
+  const isGitCheckout = existsSync(join(targetDir, '.git'));
+  const oids = isGitCheckout ? await gitBlobOids(targetDir) : new Map();
+  if (!isGitCheckout) log('fileinfo', 'no .git — versionRef falls back to content sha1, update_at to file mtime');
   const fileInfos = [];
   for (const { shortPath, dataPath } of files) {
-    const { size } = await stat(join(targetDir, dataPath));
+    const absPath = join(targetDir, dataPath);
+    const { size, mtime } = await stat(absPath);
+    let versionRef = oids.get(dataPath);
+    if (!versionRef) {
+      versionRef = createHash('sha1').update(await readFile(absPath)).digest('hex');
+    }
     fileInfos.push({
       shortPath,
-      versionRef: oids.get(dataPath) ?? 'notfound',
+      versionRef,
       Length: size,
-      update_at: await gitLastCommitDate(targetDir, dataPath),
+      update_at: isGitCheckout ? await gitLastCommitDate(targetDir, dataPath) : mtime.toISOString(),
     });
   }
 

@@ -114,12 +114,19 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
   (agentChangeBackend's pattern; reordering required editing ~20 files).
 - Use stable **done-anchors** (a tiny completed marker step like `{step}-done` emitted when a gate
   passes) as dependency targets, so retries and repair rounds don't break downstream `dependsOn`.
+- Done-anchor completion unlocks the successor immediately, possibly in a client whose storage index
+  has not observed the just-created file yet. Carry the bounded approved successor input in the
+  anchor (or add a deterministic commit/visibility barrier for large contracts); later resumes read
+  the permanent artifact. Never make the successor depend on a newly written draft file.
 - Autonomous agents bootstrap deterministically (skip the root LLM call) and expose a tiny CLI
   (`/run`, `/rebuild`, `/help`) — cheap, predictable entry.
 - Persist pipeline state and artifacts on disk (a pipeline/status file per module plus one artifact
   per step), not in the task record. The task is orchestration; the disk is truth. This is what
   makes resume/rerun possible.
 - Write a trace file per step attempt; never `console.log` as a logging strategy.
+- Make checkpoint transitions monotonic: once approved, stale or duplicate callbacks cannot write
+  running, waiting or failed over that approval. Resume reconciliation requires both the approved
+  module checkpoint and its permanent artifact.
 - Once a step's artifact is safely on disk, complete the step with the interaction cleaner
   (`input_output`) so the task record stays small — DynamoDB caps items at 400KB and a full run
   without cleaning WILL exceed it. Never clean a step hosting a pending clarification.

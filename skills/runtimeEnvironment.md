@@ -83,13 +83,43 @@ Operations UI: `/monitor` (overview, process health, postgres/dynamo inspection,
 releases with deploy/rollback and pm2 logs, config, generated BFF tests). Served by 102034
 (`l2/monitor/module.ts` routes → `l1/monitor` handlers).
 
-## Known gaps (as of 2026-07-28)
+## The cbe module (studio-on-VM) and login
+
+The VM is also a mini-studio. mls-102034 exposes cbe-compatible endpoints
+(`l1/server/layer_1_external/cbe/`): `POST /exec` (login / authSession / authLogout),
+`GET /libs/*` (mls lib, disk cache + `on.collab.codes` origin) and the service worker. The
+shell templates load `mls-102033/l2/cbe/cbeMiniCfe.ts`, which boots the mls lib and performs
+the cbe login; the cfe then fills the browser's IndexedDB with each project's compiled sources,
+delivered incrementally from `mls-<id>/obj/compiled.zip` at the VM base. The login serves ALL
+`mls-*` projects present at the base (config.json set plus studio projects).
+
+Authentication mirrors the central cbe: collab-auth issues RS256 JWTs
+(`auth.collab.codes/auth/login/<provider>?returnTo=<origin>/?collabauth=1` → tokens in the URL
+fragment → cfe posts `authSession`), the VM validates offline via JWKS and keeps
+`cauth`/`crefresh` httpOnly cookies + the JS-readable `loginUser` (UI gate). Client helpers live
+in `mls-102033/l2/cbe/cbeAuth.ts` (`window.collabRuntimeAuth.login()/logout()/user()`).
+`AUTH_JWT_ENABLED=false` disables the JWT path; `CBE_TEST_LOGIN_USER` is the localhost test user.
+NOTE: the VM origin must be an allowed returnTo on collab-auth.
+
+## Project compilation ON the VM (replaces GitHub Actions)
+
+The per-repo GitHub Actions (mls-ci) used to produce each project's `obj/*.zip`; the VM now
+builds its own: `scripts/runtime/buildProjectsObj.mjs` (run by addNewVersion after pm2 reload;
+`pnpm build:objs` manually; `CBE_BUILD_OBJS=false` skips) iterates every `mls-*` at the base,
+rebuilds stale projects through the local `scripts/buildCI` pipeline in offline mode (shipped
+`types/`, sha1 versionRefs when there is no `.git`) and copies the zips into `mls-<id>/obj/`.
+Incremental by source mtime; a project that fails to build keeps its previous obj. The publish
+syncs ALL `mls-*` projects to ssh/multipass targets by default (`PUBLISH_ALL_PROJECTS` /
+`--all-projects` to override; sites publishes default to the config.json set only).
+
+## Known gaps (as of 2026-08-06)
 
 - **collab-messages in production**: will run as an additional pm2 app named `msg` on the
   production VM. Not wired yet (today collab-messages runs only in the Studio environment).
-- **Login/auth routine**: the runtime has no authentication yet. Monitor admin actions
-  (releases activate, logs) are marked "ADMIN ONLY once auth exists". The auth backend exists
-  (collab-auth, OAuth2) but is not integrated into the runtime shell.
+- **Monitor admin gating**: the cbe login now identifies the user (JWT), but monitor admin
+  actions (releases activate, logs) are not yet gated by it ("ADMIN ONLY once auth exists").
+- **collab-auth returnTo allowlist** must include the VM domains (`*.collabcodes.com`) for the
+  login redirect to come back (collab-auth service config, outside this repo).
 - **Test execution in production**: solved by the memory sandbox — when `TESTS_ENABLED` is on and
   `RUNTIME_MODE=postgres`, each `/monitor/tests` run builds its own in-memory runtime (tables and
   mdm seeded from the definitions), so nothing reaches Postgres and sandbox runs are kept out of

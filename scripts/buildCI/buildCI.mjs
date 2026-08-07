@@ -59,9 +59,16 @@ async function main() {
   const { resolveDeps } = await import('./resolveDeps.mjs');
   const projects = await resolveDeps({ root: ROOT, targetId: id, orgName, levels: COMPILE_LEVELS, log });
   log('deps', `closure: ${[...projects.keys()].map((p) => `mls-${p}`).join(' ')}`);
-  // Step 3 — types/ (mls.d.ts, monaco.d.ts)
-  const { downloadTypes } = await import('./downloadTypes.mjs');
-  await downloadTypes({ root: ROOT, log });
+  // Step 3 — types/ (mls.d.ts, monaco.d.ts). Offline mode (BUILDCI_OFFLINE=1,
+  // used by the VM's buildProjectsObj) trusts the types/ the publish shipped
+  // instead of fetching latest.json — the VM build must not depend on network.
+  const typesReady = existsSync(join(ROOT, 'types', 'mls.d.ts')) && existsSync(join(ROOT, 'types', 'monaco.d.ts'));
+  if (process.env.BUILDCI_OFFLINE === '1' && typesReady) {
+    log('types', 'offline mode — using existing types/ (mls.d.ts, monaco.d.ts)');
+  } else {
+    const { downloadTypes } = await import('./downloadTypes.mjs');
+    await downloadTypes({ root: ROOT, log });
+  }
   // Step 4 — staging .generated/<id>/project/
   const { stage } = await import('./stage.mjs');
   const stageRoot = await stage({ root: ROOT, targetId: id, projects, levels: COMPILE_LEVELS, log });
