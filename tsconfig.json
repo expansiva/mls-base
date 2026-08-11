@@ -54,6 +54,7 @@
     "include": [
         "**/l2/**/*",
         "**/l1/**/*",
+        "**/l4/**/*.defs.ts",
         "**/l5/*.ts",
         "./types/monaco.d.ts",
         "./types/mls.d.ts"

@@ -5,6 +5,12 @@ Each prompt to use in collab-messages must have a modelType preference, example:
 const prompt = `<!-- modelType: code -->
  ...`;
 
+This marker is mandatory for every independently loaded prompt file, including judge, repair,
+fan-out and post-processing prompts added after the initial agent implementation. Do not rely on the
+provider fallback: an omitted marker may be routed to a deployment-specific alias such as `cost`,
+which can be absent or inactive and fail before the LLM produces a payload. Add a mechanical test that
+enumerates all prompt files owned by the agent and asserts an explicit active `modelType` marker.
+
 # Model Types
 
 Use this guide to select the best `ModelType` for each task.

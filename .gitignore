@@ -1,6 +1,7 @@
 node_modules
 __pycache__/
 /.generated/
+.generated
 /config.json
 /mls-*/config.json
 dist
