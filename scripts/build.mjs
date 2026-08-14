@@ -125,6 +125,11 @@ async function runTscEmitConfig(label, configName, files, compilerOptions) {
       ...compilerOptions,
       noResolve: true,
     },
+    // extends merges files with the base tsconfig's "include" instead of
+    // replacing it — without this override every emit (and every batch) was
+    // silently compiling the whole repo's l1/l2 (~3458 files) instead of just
+    // `files`, which is what actually blew up memory, not project/batch size.
+    include: [],
     files,
   }, null, 2)}\n`, 'utf8');
   try {
