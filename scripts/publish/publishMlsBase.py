@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""scripts/publish/publishMlsBase.py — cross-platform dev publish for mls-base.
+"""scripts/publish/publishMlsBase2.py — TEST COPY of publishMlsBase.py.
+
+Only difference from publishMlsBase.py: http_upload() streams the .tgz to the
+collab-sites uploadUrl in chunks straight from disk (instead of loading it
+fully into memory) and retries a few times on transient connection failures
+(BrokenPipeError/ConnectionError/etc.). Everything else is identical. This is
+a throwaway file for testing that change in isolation — once validated, port
+it back into publishMlsBase.py and delete this copy.
+
+Original docstring follows:
+
+scripts/publish/publishMlsBase.py — cross-platform dev publish for mls-base.
 
 Python port of publishMlsBase.sh:
 composes the generated client config, copies the referenced project SOURCES to
@@ -14,8 +25,17 @@ Usage:
   python scripts/publish/publishMlsBase.py [clientProjectId] [serverProfile] [--initial]
 Both positional arguments are prompted if omitted. --initial (or INITIAL=1)
 runs scripts/vmInitialSetup.sh on the VM before the build.
+
+--skip-build (or SKIP_BUILD=1) skips the S3 lib refresh, the local dist/local
+build and the obj/ regeneration, reusing whatever is already staged (from a
+previous run) or already in each project's own obj/. --skip-publish (or
+SKIP_PUBLISH=1) does the opposite: runs the build/obj-generation step and then
+stops, without packing/uploading/deploying. Pair them to build once and
+publish repeatedly while iterating on the pack/upload/deploy path. They are
+mutually exclusive.
 """
 
+import http.client
 import json
 import os
 import re
@@ -27,6 +47,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CLIENT_ID = "102048"
@@ -152,19 +173,51 @@ def http_json(method, url, payload=None):
         raise RuntimeError(f"HTTP {error.code} {url}: {body}") from error
 
 
+UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MiB per write; never loads the whole file into memory
+UPLOAD_MAX_ATTEMPTS = 3
+UPLOAD_RETRY_DELAY = 5  # seconds between attempts
+
+
 def http_upload(url, path):
-    request = urllib.request.Request(
-        url,
-        data=path.read_bytes(),
-        method="PUT",
-        headers={"Content-Type": "application/gzip", "Accept": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=300) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {error.code} {url}: {body}") from error
+    """PUT `path` to `url`, streamed from disk in chunks, retrying a few times
+    on transient connection failures (broken pipe, reset, etc.). Content-Length
+    is sent up front (not chunked transfer-encoding): the uploadUrl looks like a
+    presigned (S3-style) URL, and those are typically signed against a known
+    Content-Length and reject chunked encoding."""
+    parts = urlsplit(url)
+    size = path.stat().st_size
+    target = parts.path + (f"?{parts.query}" if parts.query else "")
+    connection_cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+
+    last_error = None
+    for attempt in range(1, UPLOAD_MAX_ATTEMPTS + 1):
+        conn = connection_cls(parts.netloc, timeout=300)
+        try:
+            conn.putrequest("PUT", target)
+            conn.putheader("Content-Type", "application/gzip")
+            conn.putheader("Accept", "application/json")
+            conn.putheader("Content-Length", str(size))
+            conn.endheaders()
+            with path.open("rb") as fh:
+                while True:
+                    chunk = fh.read(UPLOAD_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    conn.send(chunk)
+            response = conn.getresponse()
+            body = response.read().decode("utf-8", errors="replace")
+            if response.status >= 400:
+                raise RuntimeError(f"HTTP {response.status} {url}: {body}")
+            return json.loads(body)
+        except (BrokenPipeError, ConnectionError, OSError, http.client.HTTPException) as error:
+            last_error = error
+            if attempt < UPLOAD_MAX_ATTEMPTS:
+                log(f"upload attempt {attempt}/{UPLOAD_MAX_ATTEMPTS} failed ({error}); retrying in {UPLOAD_RETRY_DELAY}s")
+                time.sleep(UPLOAD_RETRY_DELAY)
+                continue
+            raise RuntimeError(f"upload to {url} failed after {UPLOAD_MAX_ATTEMPTS} attempts: {last_error}") from last_error
+        finally:
+            conn.close()
 
 
 def ask(question, default):
@@ -365,6 +418,8 @@ def main():
     positional = []
     initial = bool(os.environ.get("INITIAL"))
     sites_publish = False
+    skip_build = bool(os.environ.get("SKIP_BUILD"))
+    skip_publish = bool(os.environ.get("SKIP_PUBLISH"))
     all_projects_flag = None  # None = decide by target (ssh/multipass yes, sites no)
     for arg in sys.argv[1:]:
         if arg == "--initial":
@@ -375,8 +430,14 @@ def main():
             all_projects_flag = True
         elif arg == "--no-all-projects":
             all_projects_flag = False
+        elif arg == "--skip-build":
+            skip_build = True
+        elif arg == "--skip-publish":
+            skip_publish = True
         else:
             positional.append(arg)
+    if skip_build and skip_publish:
+        raise RuntimeError("--skip-build and --skip-publish are mutually exclusive")
 
     # --- 1. Resolve the client base project (e.g. 102048) ----------------------
     client_id = positional[0] if positional else ask("Client base project id", DEFAULT_CLIENT_ID)
@@ -459,40 +520,66 @@ def main():
     if build_tool_projects:
         log(f"build tool sources to sync: {' '.join(build_tool_projects)}")
 
-    # --- 3b. Refresh the mls lib from S3 ---------------------------------------
-    # Both outputs are needed below: types/ by the local and remote TypeScript
-    # builds, and static/ by the runtime /libs/* handler.
-    log("refreshing mls lib from S3 (types/ + static/libs/)")
-    run([which("node"), str(ROOT / "scripts" / "install" / "runInstallLibs.js")])
+    if skip_build:
+        # --skip-build: reuse whatever obj/ artifacts already exist (staged from a
+        # previous run under OBJ_STAGE_DIR, or the project's own obj/) instead of
+        # refreshing the lib, rebuilding dist/local and regenerating the zips.
+        # Lets you iterate on the pack+upload+deploy path without re-paying for a
+        # full local build every time.
+        log("--skip-build: skipping S3 lib refresh, local build and obj regeneration")
+        missing = [
+            pid for pid in ids
+            if not (ROOT / OBJ_STAGE_DIR / f"mls-{pid}" / "obj" / "source.zip").is_file()
+            and not (ROOT / f"mls-{pid}" / "obj" / "source.zip").is_file()
+        ]
+        if missing:
+            raise RuntimeError(
+                "--skip-build: no existing obj/source.zip found for: " + ", ".join(missing)
+                + f" (looked under {OBJ_STAGE_DIR}/ and each project's own obj/). "
+                "Run a publish without --skip-build at least once first."
+            )
+    else:
+        # --- 3b. Refresh the mls lib from S3 ---------------------------------------
+        # Both outputs are needed below: types/ by the local and remote TypeScript
+        # builds, and static/ by the runtime /libs/* handler.
+        log("refreshing mls lib from S3 (types/ + static/libs/)")
+        run([which("node"), str(ROOT / "scripts" / "install" / "runInstallLibs.js")])
 
-    # --- 3c. Build fresh local server output for obj/ ---------------------------
-    # A previous successful publish removes dist/. Rebuild it from the already
-    # validated client config so compiled.zip always includes current local edits.
-    # Do not run the composers here: publish must preserve the exact config.json
-    # produced or edited before this command.
-    log("building fresh dist/local for publish obj")
-    run([
-        which("node"), str(ROOT / "scripts" / "build.mjs"),
-        "--client", client_id,
-        "--use-existing-config",
-        "--only", "server",
-    ])
+        # --- 3c. Build fresh local server output for obj/ ---------------------------
+        # A previous successful publish removes dist/. Rebuild it from the already
+        # validated client config so compiled.zip always includes current local edits.
+        # Do not run the composers here: publish must preserve the exact config.json
+        # produced or edited before this command.
+        log("building fresh dist/local for publish obj")
+        run([
+            which("node"), str(ROOT / "scripts" / "build.mjs"),
+            "--client", client_id,
+            "--use-existing-config",
+            "--only", "server",
+        ])
 
-    # --- 3d. Regenerate obj/ for ALL published projects -------------------------
-    # The runtime VM's cbe login serves each project's sources/js from
-    # mls-<id>/obj/compiled.zip. Masters/libs get their obj from CI on git push,
-    # but a local edit that is not pushed would ship a STALE obj to the VM — so
-    # the publish regenerates every obj from the LOCAL build (dist/local).
-    # source.zip is always rebuilt; compiled.zip only when dist/local/_<id>_
-    # exists (otherwise the project's existing zip is shipped, with a note).
-    # The zips are staged under OBJ_STAGE_DIR (NOT written into the git-tracked
-    # project trees) and packed into the tar as mls-<id>/obj/*.zip below.
-    log("generating obj for ALL published projects (source.zip [+ compiled.zip if dist/local present])")
-    run([
-        which("node"), str(ROOT / "scripts" / "buildClientObj.mjs"),
-        "--projects", ",".join(ids),
-        "--out-root", OBJ_STAGE_DIR,
-    ])
+        # --- 3d. Regenerate obj/ for ALL published projects -------------------------
+        # The runtime VM's cbe login serves each project's sources/js from
+        # mls-<id>/obj/compiled.zip. Masters/libs get their obj from CI on git push,
+        # but a local edit that is not pushed would ship a STALE obj to the VM — so
+        # the publish regenerates every obj from the LOCAL build (dist/local).
+        # source.zip is always rebuilt; compiled.zip only when dist/local/_<id>_
+        # exists (otherwise the project's existing zip is shipped, with a note).
+        # The zips are staged under OBJ_STAGE_DIR (NOT written into the git-tracked
+        # project trees) and packed into the tar as mls-<id>/obj/*.zip below.
+        log("generating obj for ALL published projects (source.zip [+ compiled.zip if dist/local present])")
+        run([
+            which("node"), str(ROOT / "scripts" / "buildClientObj.mjs"),
+            "--projects", ",".join(ids),
+            "--out-root", OBJ_STAGE_DIR,
+        ])
+
+    if skip_publish:
+        # --skip-publish: stop right after the build/obj-generation step so the
+        # slow part can be run standalone, ahead of one or more later
+        # --skip-build runs that just pack + upload + deploy the staged result.
+        log("--skip-publish: build/obj generation complete, skipping pack + upload + deploy")
+        return
 
     # --- 4. Pack sources + scaffold and ship them to the VM --------------------
     files = [f for f in SCAFFOLD_FILES if (ROOT / f).is_file()]

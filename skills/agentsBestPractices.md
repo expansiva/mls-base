@@ -159,6 +159,19 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
   flips owner statuses so reruns are idempotent.
 - No-work runs must exit fast and clean ("nothing to do" path straight to the summary), not walk the
   whole pipeline.
+- **Nest dynamic/technical nodes under their phase step — never append them flat at the root.**
+  Judges, repair rounds, extra review rounds, relationship binders and finalizers belong INSIDE the
+  phase they serve: pass the phase step's id as `parentStepId` to `addTaskAISteps` when creating
+  them. The engine already gives you the right lifecycle for free: completing a parent with open
+  children is held as `in_progress` ("completion delayed until child step(s) finish") and the parent
+  auto-completes when the last child finishes (`setStepCompletedIfChildrenCompleted`). The task tree
+  UI (102025 default feedback) auto-collapses fully-completed branches into a single row —
+  "Explore the main work journeys (4)" — so a run with many technical satellites still reads as a
+  short, clean checklist. Constraints: children can only be added while the parent is still open
+  (adding to a `completed`/`failed` parent throws), so create the next round BEFORE completing the
+  current one; and never attach technical nodes to a fan-out parent (a step with `progress`) — its
+  status machine is the parallel one. Nesting is generic engine behavior: any agent that passes the
+  right `parentStepId` gets grouping + collapse with zero extra code.
 
 ## 9. Tool (function-call) schemas: write for the strictest provider
 
@@ -209,6 +222,10 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
   readmes, and ideally in gates.
 - **Unbounded repair loops** or retries by re-emitting `prompt_ready` from an after-hook.
 - **Sequential chains for independent items** — if items don't depend on each other, fan out.
+- **Flat dynamic nodes.** Judge/repair/round/finalize steps appended at the root instead of nested
+  under their phase (`parentStepId`): the Todo tree turns into a long tail of loose technical rows
+  after the phases they belong to (the pre-11/08 agentNewSolution4 symptom), and the auto-collapse
+  in the task UI has nothing to group.
 - **Secrets in versioned config files** (a real incident: an API token committed in a materialize
   config). Local, ignored config files only.
 - **Re-scanning the world in every hook.** Cache or pass reduced context; a full l4/l5 re-scan in
