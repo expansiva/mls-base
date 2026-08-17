@@ -163,6 +163,28 @@ function buildImportsMap(clientRoot) {
 // yields an empty filesInfo and breaks the frontend ("Invalid project information ... file length:0").
 // The CI uses git OIDs as versionRef; a collab-synced client has no git, so we use a content sha1
 // (stable across runs, changes when the file changes — enough for the update comparison).
+/**
+ * types/index.d.ts of the previous compiled.zip.
+ *
+ * The local build does NOT emit declarations (tsconfig.build.json sets declaration:false) — that
+ * file only comes from the CI declaration compile. Regenerating the zip without it would DROP the
+ * project's index, and the studio reads exactly that (`readPrjInfo().indexModules`) to model the
+ * project in Monaco: no index, no cross-project types.
+ */
+function readPreviousIndexDts(...objDirs) {
+  for (const objDir of objDirs) {
+    const compiledZip = join(objDir, 'compiled.zip');
+    if (!existsSync(compiledZip)) continue;
+    try {
+      const entry = new AdmZip(compiledZip).getEntry('types/index.d.ts');
+      if (entry) return entry.getData();
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 function readPreviousFileInfos(...objDirs) {
   for (const objDir of objDirs) {
     const compiledZip = join(objDir, 'compiled.zip');
@@ -265,8 +287,20 @@ function buildCompiledZip(clientId, clientRoot, objDir, previousObjDirs) {
   // types/importsMap.json (reproduced) + types/index.d.ts (only if the build emitted one).
   addStableFile(zip, 'types/importsMap.json', Buffer.from(`${JSON.stringify(buildImportsMap(clientRoot), null, 2)}\n`, 'utf8'));
   const dts = join(compiledRoot, 'types', 'index.d.ts');
-  if (existsSync(dts)) addStableFile(zip, 'types/index.d.ts', readFileSync(dts));
-  else log('compiled.zip: types/index.d.ts not present locally (it comes from the CI declaration compile) — omitted; validate against a CI-built project.');
+  if (existsSync(dts)) {
+    addStableFile(zip, 'types/index.d.ts', readFileSync(dts));
+  } else {
+    // Carry the CI-built index forward instead of dropping it: the local build cannot produce
+    // declarations, so omitting would leave the project without `indexModules` on the VM and
+    // Monaco would flag every cross-project import as a missing module.
+    const previousDts = readPreviousIndexDts(...previousObjDirs);
+    if (previousDts) {
+      addStableFile(zip, 'types/index.d.ts', previousDts);
+      log(`compiled.zip: types/index.d.ts kept from the previous obj (${previousDts.length} bytes) — the local build emits no declarations.`);
+    } else {
+      log('compiled.zip: types/index.d.ts not present locally NOR in a previous obj — the project will have no indexModules (Monaco types unavailable for it).');
+    }
+  }
   const out = join(objDir, 'compiled.zip');
   return writeZipIfChanged(
     zip,
