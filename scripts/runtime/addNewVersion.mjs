@@ -30,6 +30,22 @@ const run = (cmd, cwd = ROOT) => {
   }
 };
 
+// Retries `cmd` only after a failure (never pre-emptively) — for `pm2
+// startOrReload`, which self-triggered rebuilds (cbeRebuildOnSave.ts) have been
+// observed to fail on the first attempt (the app reloading itself mid-command),
+// while an immediate manual retry succeeds every time.
+const runWithRetry = (cmd, cwd = ROOT, attempts = 3, delayMs = 3000) => {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return run(cmd, cwd);
+    } catch (error) {
+      if (attempt === attempts) throw error;
+      console.log(`--- retry ${attempt}/${attempts - 1} after failure: ${error.message}`);
+      execSync(`sleep ${delayMs / 1000}`);
+    }
+  }
+};
+
 process.on('uncaughtException', (error) => {
   console.error(`[addNewVersion] aborted: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
@@ -83,34 +99,49 @@ function makeReleaseId() {
 }
 
 // ── main ───────────────────────────────────────────────────────────────────
+// --skip-install / --skip-migrate: for the auto-rebuild-on-save trigger
+// (cbeRebuildOnSave.ts), which only needs to recompile+redeploy a pure source
+// edit — no new dependency, no schema change. Both are strictly opt-in; a
+// plain `pnpm build --client <id>` behaves exactly as before.
+const argv = process.argv.slice(2);
+const skipInstall = argv.includes('--skip-install');
+const skipMigrate = argv.includes('--skip-migrate');
+
 const ids = discoverProjects();
 console.log(`--- projects on disk: ${ids.map((i) => 'mls-' + i).join(' ') || '(none)'}`);
 
 console.log('--- updating tsconfig.json paths');
 updateTsconfigPaths(ids);
 
-console.log('--- pnpm install');
-// Dependency build scripts are gated by pnpm. The allowed ones are declared in
-// package.json "pnpm.onlyBuiltDependencies", so install runs non-interactively
-// without `pnpm approve-builds`. (@tailwindcss/oxide ships prebuilt binaries.)
-run('pnpm install');
+if (skipInstall) {
+  console.log('--- pnpm install skipped (--skip-install)');
+} else {
+  console.log('--- pnpm install');
+  // Dependency build scripts are gated by pnpm. The allowed ones are declared in
+  // package.json "pnpm.onlyBuiltDependencies", so install runs non-interactively
+  // without `pnpm approve-builds`. (@tailwindcss/oxide ships prebuilt binaries.)
+  run('pnpm install');
+}
 
-console.log('--- per-project migrate (where a "migrate" script exists)');
-for (const id of ids) {
-  const dir = join(ROOT, `mls-${id}`);
-  const pkgPath = join(dir, 'package.json');
-  if (!existsSync(pkgPath)) continue;
-  let pkg;
-  try { pkg = JSON.parse(readFileSync(pkgPath, 'utf8')); } catch { continue; }
-  if (pkg.scripts && pkg.scripts.migrate) {
-    console.log(`    migrate: mls-${id}`);
-    run('pnpm migrate', dir);
+if (skipMigrate) {
+  console.log('--- per-project migrate skipped (--skip-migrate)');
+} else {
+  console.log('--- per-project migrate (where a "migrate" script exists)');
+  for (const id of ids) {
+    const dir = join(ROOT, `mls-${id}`);
+    const pkgPath = join(dir, 'package.json');
+    if (!existsSync(pkgPath)) continue;
+    let pkg;
+    try { pkg = JSON.parse(readFileSync(pkgPath, 'utf8')); } catch { continue; }
+    if (pkg.scripts && pkg.scripts.migrate) {
+      console.log(`    migrate: mls-${id}`);
+      run('pnpm migrate', dir);
+    }
   }
 }
 
 // Client id (passed as `--client <id>` by the publish, or positionally). Forwarded
 // to the compiler so it picks the right client config when several exist on disk.
-const argv = process.argv.slice(2);
 const clientFlag = argv.indexOf('--client');
 const clientId = clientFlag >= 0 ? argv[clientFlag + 1] : argv.find((a) => !a.startsWith('--'));
 const clientArg = clientId ? ` --client ${clientId}` : '';
@@ -146,7 +177,9 @@ const masterBackendId = Object.entries(releaseConfig.projects ?? {})
 const migrateJs = masterBackendId
   ? join(releaseDir, 'dist', 'local', `_${masterBackendId}_`, 'l1', 'scripts', 'migrate.js')
   : '';
-if (migrateJs && existsSync(migrateJs)) {
+if (skipMigrate) {
+  console.log('--- db migrate skipped (--skip-migrate)');
+} else if (migrateJs && existsSync(migrateJs)) {
   console.log(`--- db migrate (master backend ${masterBackendId})`);
   run(`node '${migrateJs}'`, releaseDir);
 } else {
@@ -180,7 +213,7 @@ const pm2Config = existsSync(join(ROOT, 'pm2.config.js'))
   : 'servers/pm2.config.js';
 mkdirSync(join(ROOT, 'logs'), { recursive: true });
 console.log(`--- pm2 reload (${pm2Config})`);
-run(`pm2 startOrReload ${pm2Config} --update-env`);
+runWithRetry(`pm2 startOrReload ${pm2Config} --update-env`);
 try { run('pm2 save'); } catch { /* non-fatal */ }
 
 // Refresh the per-project obj zips the cbe login serves (mls-<id>/obj/*.zip).
