@@ -224,7 +224,7 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
 - **Sequential chains for independent items** — if items don't depend on each other, fan out.
 - **Flat dynamic nodes.** Judge/repair/round/finalize steps appended at the root instead of nested
   under their phase (`parentStepId`): the Todo tree turns into a long tail of loose technical rows
-  after the phases they belong to (the pre-11/08 agentNewSolution4 symptom), and the auto-collapse
+  after the phases they belong to (the pre-11/08 agentNewSolution symptom), and the auto-collapse
   in the task UI has nothing to group.
 - **Secrets in versioned config files** (a real incident: an API token committed in a materialize
   config). Local, ignored config files only.
