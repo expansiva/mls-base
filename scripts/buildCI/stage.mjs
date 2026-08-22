@@ -19,6 +19,13 @@ import { join } from 'node:path';
 
 const STAGE_EXTENSIONS = ['.ts', '.less'];
 
+// Trace dumps live under l4/<module>/trace (JSON, or leftover .defs.ts from a defsRef mix-up).
+// They are run evidence, never compile inputs — skip the whole folder at stage time.
+export function isL4TracePath(source) {
+  const normalized = String(source).replace(/\\/g, '/');
+  return /\/l4\/(?:[^/]+\/)*trace(?:\/|$)/.test(normalized);
+}
+
 export async function stage({ root, targetId, projects, levels, log }) {
   const stageRoot = join(root, '.generated', targetId);
   await rm(stageRoot, { recursive: true, force: true });
@@ -35,6 +42,7 @@ export async function stage({ root, targetId, projects, levels, log }) {
         recursive: true,
         filter: (source) =>
           !source.includes('node_modules') &&
+          !isL4TracePath(source) &&
           (!/\.[^/\\]+$/.test(source) || STAGE_EXTENSIONS.some((ext) => source.endsWith(ext))),
       });
       hasLevel = true;
