@@ -2,9 +2,11 @@
 
 How to design and build a new agent pipeline on the collab-messages engine so it stays fast,
 maintainable, and understandable by an LLM as it grows. Guidance only — no source code here.
-Lessons come from three generations of agents: `agentNewSolution` v1/v2 (flat folders that became
-unmaintainable), `agentNewSolution3` (the reference pattern), and the audits of `agentChangeBackend`
-and `agentChangeFrontend` (see `todo/modernizeChangeBackend.md` and `todo/modernizeChangeFrontend.md`).
+Lessons come from three generations of agents: the v1/v2 new-solution agents (flat folders that
+became unmaintainable), today's `agentNewSolution` (the reference pattern, ex-v3/ns4), and the
+audits of `agentChangeBackend`
+and `agentChangeFrontend` (flat helpers, whole-layer tool calls and prompts that grew past what a
+model can answer in one shot — the anti-patterns this skill exists to prevent).
 
 Engine mechanics (hooks, intents, scheduling, parallel system, auto-completion traps) live in
 `mls-base/skills/collab_messages.md`. Read that first; this skill is about *how to use* the engine well.
@@ -237,7 +239,6 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
 
 ## Canonical references
 
-- Pattern to copy: `mls-base/mls-102020/l2/agentNewSolution3/` (its `flow.json`, `steps/`,
+- Pattern to copy: `mls-base/mls-102020/l2/agentNewSolution/` (its `flow.json`, `steps/`,
   `skills/maintenance.md`, `helpers/`).
 - Engine mechanics and traps: `mls-base/skills/collab_messages.md`.
-- Anti-pattern audits: `todo/modernizeChangeBackend.md`, `todo/modernizeChangeFrontend.md`.

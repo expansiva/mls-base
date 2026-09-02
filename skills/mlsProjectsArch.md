@@ -46,6 +46,23 @@ mls-base/
             project.json -> plan, lista de módulos, etc, seguir modelo 
             petshop/
 
+## Três implementações da lib mls
+
+A superfície `mls.*` (o objeto global que o código do Studio e do runtime chama) tem **três
+implementações**, não uma. Conferido 01/09/2026.
+
+| # | onde corre | o que é | âncora |
+|---|---|---|---|
+| (a) **cfe** (browser / Studio) | gerada em `cfe-collab-front-end`, servida como `/libs/mls.js` | a lib "oficial": namespaces `mls.stor`, `mls.sites`, `mls.editor`, … `mls.sites` é um *forwarder* mudo — getters devolvem `undefined` e setters são no-op até alguém chamar `register()` | `cfe-collab-front-end/src/sites/sites.ts:33` (`register`), `:53` (`getLanguage`); declaração `cfe-collab-front-end/wwwroot/mls.d.ts:1502` (`declare namespace mls.sites`) |
+| (b) **host** collab-msg (Deno) | `installGlobalMls` monta `globalThis.mls` no CLI | subconjunto da superfície, descrito em `collab-msg/spec/04_superficie_mls.md`. Em 01/09/2026 monta `actualProject` / `stor` / `editor` / `l5` — **não** monta `mls.sites` | `collab-msg/collab-mls/src/stor.ts:267` |
+| (c) **runtime na VM** | shell `mls-102033` depois do mount | usa a lib da cfe (a) e **injeta** os handlers reais via `mls.sites.register(...)` (idioma, DS, header, aside, page). Antes do register, o comportamento é o da cfe: getters `undefined` | `mls-102033/l2/shared/shell.ts:737` (`registerSitesControls`); `getLanguage` do shell em `:644`, passado no `register` em `:744` |
+
+Espelho de tipos no `mls-base`: `mls-base/types/mls.d.ts:1502` (`mls.sites`, mesmo texto que o `wwwroot/mls.d.ts`).
+
+**Regra (01/09/2026):** mudança de **superfície** (novo método, nova assinatura, novo namespace) altera as **3** implementações, e os **espelhos** de `mls.d.ts` (`cfe-collab-front-end/wwwroot/mls.d.ts` e `mls-base/types/mls.d.ts`) quando a declaração muda. Mudança de **comportamento** (o que um método já existente devolve) confere as 3 — o host pode ser `parcial` ou `stub` (ver a tabela de fidelidade em `collab-msg/spec/04_superficie_mls.md`), mas não pode ficar em silêncio com a superfície velha.
+
+Consumo host-agnóstico da superfície: optional chaining (`mls.sites?.getLanguage?.()`), para o Studio antes do `register` e o host sem `sites` caírem no fallback local. `getMessageKey` (102029 `libCommom.ts:836`; 102025 `collabMessagesHelper.ts` importa essa exportação) resolve idioma nessa cadeia: `mls.sites.getLanguage` → `document.documentElement.lang` (com `typeof document`) → primeira chave (`en`). Cópias antigas, só `document`, ficam em `collabLitElement.ts:48` e `collabLandingPage.ts:34` (UI do Studio; o shell da VM escreve `document.documentElement.lang`, então hoje concordam com `mls.sites`).
+
 ## Bibliotecas e módulos compartilhados do runtime
 
 As versões abaixo correspondem ao manifesto atual do `mls-base`. Bibliotecas de build não devem ser confundidas com módulos JavaScript carregados pelo navegador.

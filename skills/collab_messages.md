@@ -205,8 +205,8 @@ step or the root. Helper: `findMutableParentStep` (exists in both `agentNs3Draft
 
 - Clarification via LLM + custom logic: `agentNewSolution2/agentNewSolution2Requirements.ts`.
 - No-LLM widget checkpoint (wrapper + child clarification): `agentNewSolution/agentNewSolutionFinal.ts`.
-- Spec-first step pipeline with gates + pipeline.json + resume: `agentNewSolution3/` (see its
-  `flow.json`, `agentNewSolution3.ts`, `steps/e1-draft/agentNs3Draft.ts`).
+- Spec-first step pipeline with gates + pipeline.json + resume: `agentNewSolution/` (see its
+  `flow.json`, `agentNewSolution.ts`, `steps/e1/agentNs4E1.ts`).
 
 ## Backend map (collab-messages) — where to add/understand intents
 

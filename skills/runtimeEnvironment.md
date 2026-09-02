@@ -24,16 +24,23 @@ collab-sites) for real production. The runtime is NOT the Studio: it is a self-c
 
 ## Publish flow
 
+> There is a **second** path since 30/08/2026: push to a git repo on the VM, where a `post-receive`
+> hook compiles and cuts the release. See [`publishGitBackend.md`](publishGitBackend.md) — it also
+> explains how a traditional publish destroys those repos and re-arms them.
+
 Entry point: `mls-<client>/package.json` scripts — `publish` (remote, `--sites`) and
 `publish:local`. Both call `mls-base/scripts/runPublishMlsBase.mjs`, a thin launcher for
 `mls-base/scripts/publish/publishMlsBase.py`, which composes the client `config.json`, packs the
 project SOURCES into a tarball and ships them — the **build always happens on the VM**.
 
-- **Local path**: tarball over ssh (Lima) or multipass transfer. Target comes from a profile
-  conf — canonical `mls-<client>/l5/publish<Profile>.conf`, legacy `mls-base/servers/<profile>.conf`
-  (e.g. `dev.conf` → `lima-ubuntu24`, `REMOTE_BASE=/data/mls-base`).
-- **Remote path (`--sites`)**: creates a publish job on collab-sites (upload → human authorization
-  via link → running → done). collab-sites executes the publish on the VM through AWS SSM:
+- **Local path**: tarball over ssh (Lima) or multipass transfer. Target comes from
+  `mls-base/.env` (gitignored): `PUBLISH_LOCAL_SSH_HOST`, `PUBLISH_LOCAL_SSH_CONFIG`,
+  `PUBLISH_LOCAL_REMOTE_BASE` (optional `PUBLISH_LOCAL_CERT` / `PUBLISH_LOCAL_MULTIPASS_INSTANCE`).
+  Ad-hoc profiles still use `mls-base/servers/<profile>.conf`.
+- **Remote path (`--sites`)**: CLI flags on the `publish` script in `package.json`
+  (`--ssh-host`, `--remote-base`, `--server-project-id`). Creates a publish job on collab-sites
+  (upload → human authorization via link → running → done). collab-sites executes the publish
+  on the VM through AWS SSM:
   download artifact, extract, write the per-app pm2 config, run the build, configure nginx.
   See `collab-sites/src/layer_3_usecases/publish.ts`.
 
@@ -75,7 +82,11 @@ the local Lima VM's `.env`, left off on remote VMs until the runtime has login),
 
 Persistence layout: client-project tables are physically namespaced with the project number
 (`mls<projectId>_` prefix, resolved in the 102034 registry), so several projects share one
-Postgres without name collisions. The **mdm tables are common to all projects** — treat them as
+Postgres without name collisions. Since 31/08/2026 the generated `tableName` also carries the
+lowercased module id (`mls102047_listaassinatura3_petition_signature`); regenerating a module that
+already exists therefore creates empty tables under the new name — a migration step before a real
+customer (the old unprefixed table is left behind). Lookup (`getTable('petition_signature')`,
+`seedFor`) still uses the unprefixed logical name. The **mdm tables are common to all projects** — treat them as
 shared state; project-scoped work must never assume exclusive ownership of mdm data. The Lima VM runs
 `APP_ENV=production` + `RUNTIME_MODE=postgres`, i.e. the local VM is a true production rehearsal.
 
@@ -125,7 +136,8 @@ syncs ALL `mls-*` projects to ssh/multipass targets by default (`PUBLISH_ALL_PRO
   mdm seeded from the definitions), so nothing reaches Postgres and sandbox runs are kept out of
   the monitor execution log/telemetry. Enabled on the local VM only until the runtime has login.
   Remaining wart: the run history ring is per pm2 process, so `recentRuns` depends on which of the
-  2 instances answers. Plan and decisions in `todo/runtimeTests/analise1.md`.
+  2 instances answers — a shared store would be needed if run history has to survive the process
+  that served it.
 
 ## Pointers
 
