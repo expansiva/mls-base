@@ -23,8 +23,25 @@ with the stdlib `tarfile` module, so no external tar/rsync is needed locally.
 
 Usage:
   python scripts/publish/publishMlsBase.py [clientProjectId] [serverProfile] [--initial]
+  [--ssh-host=…] [--remote-base=…] [--server-project-id=…] [--ssh-config=…]
+  [--app-env=production|homologation|development|presentation]
 Both positional arguments are prompted if omitted. --initial (or INITIAL=1)
 runs scripts/vmInitialSetup.sh on the VM before the build.
+
+Profile `local` reads machine config from mls-base/.env (gitignored):
+  PUBLISH_LOCAL_SSH_HOST, PUBLISH_LOCAL_SSH_CONFIG, PUBLISH_LOCAL_REMOTE_BASE,
+  optional PUBLISH_LOCAL_CERT / PUBLISH_LOCAL_MULTIPASS_INSTANCE,
+  optional PUBLISH_LOCAL_APP_ENV (overrides the local default of presentation).
+Profile `remote` (and --sites) reads the same keys as CLI flags from package.json.
+Legacy mls-base/servers/<profile>.conf remains for ad-hoc profiles.
+
+Every packed mls-*/l5/project.json is stamped with appEnv (the git-tracked files
+are left untouched). Default is presentation on both destinations (local/ssh
+and --sites): the VM is born in presentation and promoted later via override.
+The day a VM has DATABASE_URL, it also needs DATABASE_URL_TEST, or must be
+promoted to production before that URL is set — otherwise a declared
+presentation mode fails boot. Override with --app-env=…, PUBLISH_APP_ENV, or
+PUBLISH_LOCAL_APP_ENV. An invalid value fails the publish before any build.
 
 --skip-build (or SKIP_BUILD=1) skips the S3 lib refresh, the local dist/local
 build and the obj/ regeneration, reusing whatever is already staged (from a
@@ -33,6 +50,12 @@ SKIP_PUBLISH=1) does the opposite: runs the build/obj-generation step and then
 stops, without packing/uploading/deploying. Pair them to build once and
 publish repeatedly while iterating on the pack/upload/deploy path. They are
 mutually exclusive.
+
+After a successful ssh/multipass publish, gitReposSetup is re-run on the VM:
+the source wipe deletes each mls-* folder and the tar excludes .git, so the
+per-project git repos would otherwise stay gone (git-push publish needs them).
+A rearm failure is a warning only — the app is already up; run the setup by
+hand on the VM. --sites does not wipe source dirs and does not rearm.
 """
 
 import http.client
@@ -52,6 +75,24 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CLIENT_ID = "102048"
 DEFAULT_PROFILE = "dev"
+# Local publish (profile "local") reads these from mls-base/.env. The prefix
+# keeps them from colliding with the LLM keys already in that file.
+LOCAL_ENV_TO_CONF = {
+    "PUBLISH_LOCAL_SSH_HOST": "SSH_HOST",
+    "PUBLISH_LOCAL_SSH_CONFIG": "SSH_CONFIG",
+    "PUBLISH_LOCAL_REMOTE_BASE": "REMOTE_BASE",
+    "PUBLISH_LOCAL_CERT": "CERT",
+    "PUBLISH_LOCAL_MULTIPASS_INSTANCE": "MULTIPASS_INSTANCE",
+}
+# Remote publish values are versioned on the package.json command line.
+CLI_FLAG_TO_CONF = {
+    "--ssh-host": "SSH_HOST",
+    "--ssh-config": "SSH_CONFIG",
+    "--remote-base": "REMOTE_BASE",
+    "--server-project-id": "SERVER_PROJECT_ID",
+    "--server-id": "SERVER_ID",
+    "--multipass-instance": "MULTIPASS_INSTANCE",
+}
 # same set publishMlsBase.sh passes to rsync --exclude
 EXCLUDED_NAMES = {"node_modules", ".git", "dist", "distBackend", "distFrontend", ".DS_Store"}
 EXCLUDED_PATTERNS = [
@@ -80,6 +121,10 @@ SUCCESS_CLEANUP_DIRS = (".generated", "dist", OBJ_STAGE_DIR)
 # does not reuse stale generator code, but they are not added to config.json,
 # obj generation, or the runtime project set.
 BUILD_TOOL_PROJECTS = ["mls-102020", "mls-102021"]
+# Same set as mls-102034 ProjectMode / docs/appEnvAndAuth.md.
+PROJECT_MODES = ("production", "homologation", "development", "presentation")
+
+GIT_REPOS_SETUP = "scripts/runtime/gitReposSetup.mjs"
 
 COPY_DESIGN_SYSTEMS_JS = r"""
 node <<'NODE'
@@ -118,6 +163,61 @@ def log(msg):
     print(f"[buildAll] {msg}", flush=True)
 
 
+def resolve_publish_app_env(cli_value, env_value, local_value, sites_publish):
+    """Pick the appEnv stamped into packed l5/project.json.
+
+    Invalid values fail — never a silent fallback. Default is presentation for
+    every destination; sites_publish does not change it. Promote with --app-env,
+    PUBLISH_APP_ENV, or PUBLISH_LOCAL_APP_ENV. See the module docstring for the
+    DATABASE_URL condition.
+    """
+    if cli_value is not None:
+        mode = cli_value.strip()
+        if mode not in PROJECT_MODES:
+            raise RuntimeError(
+                f"invalid --app-env={cli_value!r}: must be one of {', '.join(PROJECT_MODES)}"
+            )
+        return mode, "--app-env"
+    env_mode = (env_value or "").strip()
+    if env_mode:
+        if env_mode not in PROJECT_MODES:
+            raise RuntimeError(
+                f"invalid PUBLISH_APP_ENV={env_mode!r}: must be one of {', '.join(PROJECT_MODES)}"
+            )
+        return env_mode, "PUBLISH_APP_ENV"
+    local_mode = (local_value or "").strip()
+    if local_mode:
+        if local_mode not in PROJECT_MODES:
+            raise RuntimeError(
+                f"invalid PUBLISH_LOCAL_APP_ENV={local_mode!r}: must be one of {', '.join(PROJECT_MODES)}"
+            )
+        return local_mode, "PUBLISH_LOCAL_APP_ENV"
+    return "presentation", "default"
+
+
+def stamped_project_json(text, app_env):
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise RuntimeError("l5/project.json is not a JSON object; cannot stamp appEnv")
+    data["appEnv"] = app_env
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def write_stamped_project_jsons(project_dirs, app_env, stage_dir):
+    """Write stamped copies under stage_dir; return {arcname: Path} overlays."""
+    stamped = {}
+    for name in project_dirs:
+        for filename in ("project.json", "runtime.project.json"):
+            src = ROOT / name / "l5" / filename
+            if not src.is_file():
+                continue
+            out = Path(stage_dir) / name / "l5" / filename
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(stamped_project_json(src.read_text(encoding="utf-8"), app_env), encoding="utf-8")
+            stamped[f"{name}/l5/{filename}"] = out
+    return stamped
+
+
 def which(cmd):
     """Resolve an executable via PATH (handles pnpm.cmd on Windows)."""
     path = shutil.which(cmd)
@@ -132,6 +232,28 @@ def run(cmd, **kwargs):
     result = subprocess.run(cmd, cwd=ROOT, **kwargs)
     if result.returncode != 0:
         raise RuntimeError(f"Command failed ({result.returncode}): {display or ' '.join(str(c) for c in cmd)}")
+
+
+def rearm_git_repos(remote, remote_base):
+    """Recreate mls-*/.git on the VM after a successful source wipe.
+
+    The tar excludes .git and the wipe deletes each project folder, so the
+    per-project git repos vanish. git-push publish needs them. A rearm
+    failure does not undo the release — the app is already up.
+    """
+    log("rearming git repos on the VM (source wipe removed .git)")
+    try:
+        remote.run(
+            f"cd {sh_quote(remote_base)} && node {GIT_REPOS_SETUP} --root {sh_quote(remote_base)}",
+            display="rearm git repos on the VM",
+        )
+    except RuntimeError as error:
+        print(
+            f"[buildAll] warning: git repo rearm failed ({error}). "
+            f"App is up. On the VM run: node {GIT_REPOS_SETUP} --root {remote_base}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def cleanup_after_successful_publish():
@@ -232,6 +354,21 @@ def sh_quote(s):
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def expand_conf_value(value):
+    home = str(Path.home())
+    if value.startswith("~"):
+        value = home + value[1:]
+    return value.replace("${HOME}", home).replace("$HOME", home)
+
+
+def apply_sites_aliases(conf):
+    if "SERVER_ID" in conf:
+        conf["SITES_SERVER_ID"] = conf["SERVER_ID"]
+    if "SERVER_PROJECT_ID" in conf:
+        conf["SITES_SERVER_PROJECT_ID"] = conf["SERVER_PROJECT_ID"]
+    return conf
+
+
 def parse_conf(path):
     """Read a publish target config.
 
@@ -246,15 +383,10 @@ def parse_conf(path):
         conf = {}
         for key, value in data.items():
             env_key = re.sub(r"(?<!^)([A-Z])", r"_\1", str(key)).upper()
-            conf[env_key] = str(value)
-        if "SERVER_ID" in conf:
-            conf["SITES_SERVER_ID"] = conf["SERVER_ID"]
-        if "SERVER_PROJECT_ID" in conf:
-            conf["SITES_SERVER_PROJECT_ID"] = conf["SERVER_PROJECT_ID"]
-        return conf
+            conf[env_key] = expand_conf_value(str(value))
+        return apply_sites_aliases(conf)
 
     conf = {}
-    home = str(Path.home())
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -265,11 +397,42 @@ def parse_conf(path):
         value = m.group(2).strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
-        if value.startswith("~"):
-            value = home + value[1:]
-        value = value.replace("${HOME}", home).replace("$HOME", home)
-        conf[m.group(1)] = value
+        conf[m.group(1)] = expand_conf_value(value)
+    return apply_sites_aliases(conf)
+
+
+def load_local_conf(path=None):
+    """Load profile `local` from mls-base/.env (PUBLISH_LOCAL_* keys)."""
+    env_path = Path(path) if path is not None else ROOT / ".env"
+    required = "PUBLISH_LOCAL_SSH_HOST"
+    if not env_path.is_file():
+        raise RuntimeError(
+            f"Missing {required} in {env_path}: file not found. "
+            "Add PUBLISH_LOCAL_SSH_HOST, PUBLISH_LOCAL_SSH_CONFIG and "
+            "PUBLISH_LOCAL_REMOTE_BASE (the file is gitignored; local publish "
+            "is machine-specific and is not read from l5/)."
+        )
+    raw = parse_conf(env_path)
+    conf = {}
+    for env_key, conf_key in LOCAL_ENV_TO_CONF.items():
+        value = raw.get(env_key, "").strip()
+        if value:
+            conf[conf_key] = value
+    if not conf.get("SSH_HOST") and not conf.get("MULTIPASS_INSTANCE"):
+        raise RuntimeError(
+            f"Missing {required} in {env_path} "
+            "(or set PUBLISH_LOCAL_MULTIPASS_INSTANCE). "
+            "Local publish reads this machine's target from that file."
+        )
     return conf
+
+
+def load_local_app_env(path=None):
+    """Optional PUBLISH_LOCAL_APP_ENV from mls-base/.env (local profile only)."""
+    env_path = Path(path) if path is not None else ROOT / ".env"
+    if not env_path.is_file():
+        return ""
+    return parse_conf(env_path).get("PUBLISH_LOCAL_APP_ENV", "").strip()
 
 
 class MultipassRemote:
@@ -367,13 +530,12 @@ def publish_via_sites(client_id, tar_file, initial=False, conf=None):
 
 
 def resolve_conf_path(profile, client_root):
-    """Resolve publish target config.
+    """Resolve a leftover profile conf file.
 
-    Project-local configs are preferred so each client project can carry its
-    own local/remote targets without growing mls-base/servers indefinitely.
-    The canonical location is mls-<client>/l5/publish<Profile>.conf; the
-    previous dotted project-local location remains as a compatibility fallback.
-    Legacy mls-base/servers/<profile>.conf remains supported.
+    Profile `local` reads mls-base/.env (PUBLISH_LOCAL_*). Profile `remote`
+    reads CLI flags from package.json. This helper remains for ad-hoc profiles
+    and the legacy mls-base/servers/<profile>.conf chain. mls-<client>/l5/ is
+    not searched — publish*.conf does not live there.
     """
     raw = Path(profile)
     candidates = []
@@ -382,9 +544,6 @@ def resolve_conf_path(profile, client_root):
     else:
         camel_profile = profile[:1].upper() + profile[1:]
         candidates.extend([
-            client_root / "l5" / f"publish{camel_profile}.conf",
-            client_root / "l5" / f"publish.{profile}.conf",
-            client_root / "l5" / f"{profile}.conf",
             client_root / f"publish{camel_profile}.conf",
             client_root / f"publish.{profile}.conf",
             client_root / f"{profile}.conf",
@@ -416,11 +575,13 @@ def collect_files(abs_dir, rel_dir, out):
 
 def main():
     positional = []
+    flag_conf = {}
     initial = bool(os.environ.get("INITIAL"))
     sites_publish = False
     skip_build = bool(os.environ.get("SKIP_BUILD"))
     skip_publish = bool(os.environ.get("SKIP_PUBLISH"))
     all_projects_flag = None  # None = decide by target (ssh/multipass yes, sites no)
+    app_env_flag = None  # None = flag not passed
     for arg in sys.argv[1:]:
         if arg == "--initial":
             initial = True
@@ -434,10 +595,29 @@ def main():
             skip_build = True
         elif arg == "--skip-publish":
             skip_publish = True
+        elif arg == "--app-env" or arg.startswith("--app-env="):
+            if arg == "--app-env":
+                raise RuntimeError(
+                    f"--app-env requires a value: --app-env={'|'.join(PROJECT_MODES)}"
+                )
+            app_env_flag = arg.split("=", 1)[1]
+        elif arg.startswith("--") and "=" in arg:
+            flag_name, flag_value = arg.split("=", 1)
+            conf_key = CLI_FLAG_TO_CONF.get(flag_name)
+            if conf_key:
+                flag_conf[conf_key] = expand_conf_value(flag_value)
+            else:
+                positional.append(arg)
         else:
             positional.append(arg)
+    apply_sites_aliases(flag_conf)
     if skip_build and skip_publish:
         raise RuntimeError("--skip-build and --skip-publish are mutually exclusive")
+    # Fail fast on a bad mode before SSH / S3 / the local build.
+    if app_env_flag is not None:
+        resolve_publish_app_env(app_env_flag, "", "", False)
+    elif os.environ.get("PUBLISH_APP_ENV", "").strip():
+        resolve_publish_app_env(None, os.environ.get("PUBLISH_APP_ENV", ""), "", False)
 
     # --- 1. Resolve the client base project (e.g. 102048) ----------------------
     client_id = positional[0] if positional else ask("Client base project id", DEFAULT_CLIENT_ID)
@@ -460,20 +640,43 @@ def main():
     # --- 2. Resolve the server profile (ssh or multipass + remote path) --------
     # Server profile is no longer prompted: use the positional arg or DEFAULT_PROFILE directly.
     profile = positional[1] if len(positional) > 1 else DEFAULT_PROFILE
-    if sites_publish:
-        try:
-            sites_conf = parse_conf(resolve_conf_path(profile, client_root))
-        except RuntimeError:
-            sites_conf = {}
-        remote_base = "/data/mls-base"
-        remote = None
-        log(f"client={client_id} target=collab-sites remoteBase={remote_base}")
-    else:
-        conf_path = resolve_conf_path(profile, client_root)
-        conf = parse_conf(conf_path)
+    if profile == "local":
+        conf = load_local_conf()
         remote_base = conf.get("REMOTE_BASE") or "/data/mls-base"
         remote = make_remote(conf, remote_base)
         log(f"client={client_id} target={remote.label} remoteBase={remote_base}")
+    elif sites_publish:
+        sites_conf = dict(flag_conf)
+        if not sites_conf.get("SITES_SERVER_PROJECT_ID") and not sites_conf.get("SSH_HOST"):
+            try:
+                file_conf = parse_conf(resolve_conf_path(profile, client_root))
+                file_conf.update(sites_conf)
+                sites_conf = apply_sites_aliases(file_conf)
+            except RuntimeError:
+                pass
+        remote_base = sites_conf.get("REMOTE_BASE") or "/data/mls-base"
+        remote = None
+        log(f"client={client_id} target=collab-sites remoteBase={remote_base}")
+    else:
+        conf = dict(flag_conf)
+        if not conf.get("SSH_HOST") and not conf.get("MULTIPASS_INSTANCE"):
+            conf_path = resolve_conf_path(profile, client_root)
+            file_conf = parse_conf(conf_path)
+            file_conf.update(conf)
+            conf = apply_sites_aliases(file_conf)
+        remote_base = conf.get("REMOTE_BASE") or "/data/mls-base"
+        remote = make_remote(conf, remote_base)
+        log(f"client={client_id} target={remote.label} remoteBase={remote_base}")
+
+    local_app_env = load_local_app_env() if profile == "local" else ""
+    app_env, app_env_reason = resolve_publish_app_env(
+        app_env_flag,
+        os.environ.get("PUBLISH_APP_ENV", ""),
+        local_app_env,
+        sites_publish,
+    )
+    dest_label = "collab-sites" if sites_publish else (remote.label if remote else profile)
+    log(f"appEnv={app_env} ({app_env_reason}) dest={dest_label} — will stamp packed l5/project.json")
 
     # --- 3. Discover referenced projects from the composed config.json ---------
     ids = list(json.loads(config_json.read_text(encoding="utf-8")).get("projects", {}).keys())
@@ -596,6 +799,17 @@ def main():
             staged = ROOT / OBJ_STAGE_DIR / f"mls-{pid}" / "obj" / zip_name
             if staged.is_file():
                 entries[f"mls-{pid}/obj/{zip_name}"] = staged
+    app_env_stage = ROOT / OBJ_STAGE_DIR / "_appEnv"
+    stamped_entries = write_stamped_project_jsons(projects, app_env, app_env_stage)
+    entries.update(stamped_entries)
+    log(
+        f"stamped appEnv={app_env} ({app_env_reason}) dest={dest_label} "
+        f"on {len(stamped_entries)} l5/project.json file(s)"
+    )
+    if not stamped_entries:
+        raise RuntimeError(
+            f"no l5/project.json found to stamp appEnv={app_env} among: {' '.join(projects)}"
+        )
     log(f"packing {len(entries)} file(s)")
     try:
         with tarfile.open(ROOT / TAR_FILE, "w:gz") as tar:
@@ -616,6 +830,9 @@ def main():
         # accumulated there since the last publish would otherwise never be
         # purged. The fresh tar always repopulates the known files (types/,
         # scripts/, static/libs/{mls.js,...}) right after this.
+        # The tar excludes .git, so this wipe also drops the per-project git
+        # repos. After a successful deploy we re-run gitReposSetup to recreate
+        # them from the files just published (git-push publish needs those repos).
         remote.run(f"cd {sh_quote(remote_base)} && rm -rf {' '.join([*build_tool_projects, *projects, 'static'])}")
         remote.upload(TAR_FILE)
         # shell scripts must reach the VM with LF endings even when the Windows
@@ -644,6 +861,7 @@ def main():
         display="copy designSystem.js into published web targets",
     )
     log("publish done")
+    rearm_git_repos(remote, remote_base)
     cleanup_after_successful_publish()
 
 

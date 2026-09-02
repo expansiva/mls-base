@@ -294,7 +294,7 @@ async function walkFiles(root) {
  * `/cafeFlow/assets/seed/MenuItem/x.webp`. Neither copy pass reached them: the local pass walks
  * RES_SEGMENTS (core/l1/l2/l5 — no l3) and the web pass walks only l2, and BOTH filter by RES_EXT,
  * which has no image extension. So the request fell through to the SPA shell and the browser got HTML
- * with 200 instead of the WebP (todo/runtime/bugimage.md).
+ * with 200 instead of the WebP.
  *
  * No extension filter here: an `assets` directory IS static payload by definition, so filtering would
  * only re-create the same silent gap for the next format (png, woff2, mp4...).

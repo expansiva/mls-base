@@ -123,23 +123,6 @@ if (skipInstall) {
   run('pnpm install');
 }
 
-if (skipMigrate) {
-  console.log('--- per-project migrate skipped (--skip-migrate)');
-} else {
-  console.log('--- per-project migrate (where a "migrate" script exists)');
-  for (const id of ids) {
-    const dir = join(ROOT, `mls-${id}`);
-    const pkgPath = join(dir, 'package.json');
-    if (!existsSync(pkgPath)) continue;
-    let pkg;
-    try { pkg = JSON.parse(readFileSync(pkgPath, 'utf8')); } catch { continue; }
-    if (pkg.scripts && pkg.scripts.migrate) {
-      console.log(`    migrate: mls-${id}`);
-      run('pnpm migrate', dir);
-    }
-  }
-}
-
 // Client id (passed as `--client <id>` by the publish, or positionally). Forwarded
 // to the compiler so it picks the right client config when several exist on disk.
 const clientFlag = argv.indexOf('--client');
@@ -178,12 +161,14 @@ const migrateJs = masterBackendId
   ? join(releaseDir, 'dist', 'local', `_${masterBackendId}_`, 'l1', 'scripts', 'migrate.js')
   : '';
 if (skipMigrate) {
-  console.log('--- db migrate skipped (--skip-migrate)');
+  console.log('--- migrate skipped (--skip-migrate)');
 } else if (migrateJs && existsSync(migrateJs)) {
-  console.log(`--- db migrate (master backend ${masterBackendId})`);
+  // Same script `pnpm migrate` / scripts/runMigrate.mjs would run after `current` switches;
+  // running it from the new release first keeps a failed migrate from activating.
+  console.log(`--- migrate (mls-base master backend ${masterBackendId})`);
   run(`node '${migrateJs}'`, releaseDir);
 } else {
-  console.log(`--- db migrate skipped (${migrateJs || 'no master backend in config.json'} not found)`);
+  console.log(`--- migrate skipped (${migrateJs || 'no master backend in config.json'} not found)`);
 }
 
 // Atomic activation: point current -> releases/<id> (ln -sfn replaces in place).
