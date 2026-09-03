@@ -319,6 +319,19 @@ What a fresh remote VM actually does today, in order. Read this before promising
    answers on its port, the door is up and every later release comes from `pnpm publish:remote`.
    The legacy alternative is the sites **publish job** (tarball + `pnpm build --client <id>`) —
    which is why gb51 item 4 gates turning it off.
+   The scaffold's `l5/config.json` (from the template) must declare four things or the release dies
+   in a way that names the wrong culprit: `defaultProjectId`, itself as `projects.<id>.type =
+   "client"`, a `publication` target, and — the one that costs a whole cycle — the **masters**
+   (102033/102034) in `projects`, with 102034 carrying its `modules` and `persistenceModules`.
+   Without the masters the build "finishes" and emits no platform; without 102034's
+   `persistenceModules` the table registry is empty (`registry:4f53cda1…`, the sha256 of `[]`) and
+   `migrate` fails with `relation "_schema_migrations" does not exist`. All four measured 03/09.
+
+   **Slot and release are independent halves, and the domain needs both**: the slot writes the vhost
+   (and gets the certificate), the release makes something listen on the port. Measured 03/09 on a
+   fresh VM: release done and no slot ⇒ the domain still answers the nginx default page and `/git/`
+   is a 404 from nginx — the app was running and simply not exposed. The order does not matter;
+   skipping either one does.
 
 Steps 7 and 8 do the same two things from two directions, on purpose: step 7 is the VM creating its
 own project during bootstrap (it knows the id from `--project-id`), step 8 is someone deciding later
