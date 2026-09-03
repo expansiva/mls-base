@@ -299,6 +299,9 @@ function setupRepo(dir) {
   if (ensureLocalConfig(dir, 'user.email', GIT_USER_EMAIL)) actions.push('user.email');
   if (ensureLocalConfig(dir, 'receive.denyCurrentBranch', 'updateInstead')) actions.push('updateInstead');
   if (ensureLocalConfig(dir, 'receive.denyDeletes', 'true')) actions.push('denyDeletes');
+  // gb13: sem isto o git NEGOCIA sem opções de push e o `-o skip-build` /
+  // `-o deps=…` some em silêncio — o hook compilaria tudo, ou nada, sem avisar.
+  if (ensureLocalConfig(dir, 'receive.advertisePushOptions', 'true')) actions.push('advertisePushOptions');
 
   const hook = ensureUpdateHook(dir);
   if (hook === 'foreign') {

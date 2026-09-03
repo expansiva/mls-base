@@ -24,6 +24,16 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  buildLitImportMap,
+  emitLitRuntime,
+  injectImportMap,
+  litExportEntries,
+  litExternals,
+  litPackageDir,
+  readLitRuntimeConfig,
+} from './litRuntime.mjs';
+import { BUNDLED_MODULES_MANIFEST, bundledModuleUrls } from './bundleManifest.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(ROOT, 'dist');
@@ -572,16 +582,28 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
   const outdir = resolve(DIST, targetName);
   await rm(outdir, { recursive: true, force: true });
 
+  // O Lit sai UMA vez, para os dois mundos (ver scripts/litRuntime.mjs). Tem de
+  // vir antes do bundle do app: e daqui que sai a lista de `external`.
+  const litConfig = readLitRuntimeConfig(ROOT);
+  const { dir: litPkgDir, pkgJson: litPkgJson } = litPackageDir(ROOT, litConfig.package);
+  const litEntries = litExportEntries(litPkgJson);
+  const litCount = await emitLitRuntime({
+    root: ROOT, outdir, config: litConfig, entries: litEntries, pkgDir: litPkgDir,
+  });
+  log(`lit runtime -> ${litConfig.outDir} (${litCount} módulos, servidos em ${litConfig.baseUrl})`);
+
   const entryPoints = collectEntrypoints(clientConfig, clientRoot);
   log(`web build -> dist/${targetName} (${Object.keys(entryPoints).length} entrypoints)`);
 
-  await esbuild({
+  const webBuild = await esbuild({
     absWorkingDir: ROOT,
     entryPoints,
     outdir,
+    metafile: true,
     platform: 'browser',
     format: 'esm',
     bundle: true,
+    external: litExternals(litConfig.package, litEntries),
     splitting: true,
     sourcemap: target.sourcemap === true,
     minify: target.minify === true,
@@ -594,6 +616,20 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
     plugins: [aliasPlugin()],
     logLevel: 'info',
   });
+
+  // Manifesto dos módulos que o esbuild ENGOLIU para dentro dos chunks. O
+  // fallback do `obj/compiled.zip` (cbeCompiledStatic) usa isto para recusar o
+  // gêmeo não-empacotado: servir as duas formas do mesmo módulo no mesmo
+  // documento cria duas cópias — para um custom element, `define` lança.
+  // Só os módulos INLINADOS entram; o que nunca foi ao bundle (designSystem.js,
+  // componentes do studio) continua a ser servido pelo zip, como hoje.
+  const bundledModules = bundledModuleUrls(webBuild.metafile);
+  await writeFile(
+    resolve(outdir, BUNDLED_MODULES_MANIFEST),
+    `${JSON.stringify(bundledModules, null, 2)}\n`,
+    'utf8',
+  );
+  log(`manifesto de módulos empacotados -> ${BUNDLED_MODULES_MANIFEST} (${bundledModules.length})`);
 
   // copy l2 static resources (html/css/svg/json/md/assets) into dist/<target>
   let copied = 0;
@@ -638,14 +674,20 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
 
   await writeComponentStylesForWeb(clientConfig, outdir, ids);
 
-  // copy shell templates referenced by config.json (kept in their _<id>_ path)
+  // copy shell templates referenced by config.json (kept in their _<id>_ path),
+  // injetando o importmap do Lit gerado acima — e a MESMA fonte que decidiu o
+  // `external` do bundle, para os dois mundos apontarem para as mesmas URLs.
+  const litImportMap = buildLitImportMap(litConfig.package, litConfig.baseUrl, litEntries);
+  let shells = 0;
   for (const shellPath of Object.values(clientConfig.shellTemplates ?? {})) {
     const { abs, rel } = resolveVirtual(shellPath);
     if (!existsSync(abs)) continue;
     const dest = resolve(outdir, rel);
     await mkdir(dirname(dest), { recursive: true });
-    await cp(abs, dest);
+    await writeFile(dest, injectImportMap(await readFile(abs, 'utf8'), litImportMap), 'utf8');
+    shells += 1;
   }
+  log(`lit importmap injetado em ${shells} shell(s), ${Object.keys(litImportMap.imports).length} specifiers`);
 }
 
 function extractInjectedCss(source) {

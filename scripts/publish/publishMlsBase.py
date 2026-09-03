@@ -125,6 +125,8 @@ BUILD_TOOL_PROJECTS = ["mls-102020", "mls-102021"]
 PROJECT_MODES = ("production", "homologation", "development", "presentation")
 
 GIT_REPOS_SETUP = "scripts/runtime/gitReposSetup.mjs"
+# vmInit.mjs writes this marker inside a project whose history lives on the VM.
+GIT_MANAGED_MARKER = ".collab-git"
 
 COPY_DESIGN_SYSTEMS_JS = r"""
 node <<'NODE'
@@ -232,6 +234,37 @@ def run(cmd, **kwargs):
     result = subprocess.run(cmd, cwd=ROOT, **kwargs)
     if result.returncode != 0:
         raise RuntimeError(f"Command failed ({result.returncode}): {display or ' '.join(str(c) for c in cmd)}")
+
+
+def git_managed_projects(remote, remote_base):
+    """Projects whose git history the VM OWNS (marked by vmInit with .collab-git).
+
+    The traditional publish wipes each project folder and the tar excludes .git,
+    so the rearm recreates those repos from scratch — which makes every later
+    `publishGit` demand a human `--align` (unrelated histories). For a VM-first
+    project that is wrong: it is updated by git push, not by this publish. The
+    VM is asked directly, so a project without a local clone is protected too.
+    """
+    if remote is None:
+        return set()
+    try:
+        out = remote.capture(
+            f"cd {sh_quote(remote_base)} && ls -d mls-*/{GIT_MANAGED_MARKER} 2>/dev/null || true"
+        )
+    except RuntimeError as error:
+        print(
+            f"[buildAll] warning: could not read {GIT_MANAGED_MARKER} markers on the VM ({error}). "
+            "Treating every project as publish-managed.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return set()
+    found = set()
+    for line in out.splitlines():
+        head = line.strip().split("/")[0]
+        if re.fullmatch(r"mls-\d+", head):
+            found.add(head)
+    return found
 
 
 def rearm_git_repos(remote, remote_base):
@@ -446,6 +479,15 @@ class MultipassRemote:
     def run(self, command, display=None):
         run([which("multipass"), "exec", self.instance, "--", "bash", "-lc", command], display=display)
 
+    def capture(self, command):
+        result = subprocess.run(
+            [which("multipass"), "exec", self.instance, "--", "bash", "-lc", command],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"multipass exec failed ({result.returncode}): {result.stderr.strip()}")
+        return result.stdout
+
     def upload(self, local_tgz):
         remote_tmp = "/tmp/mls-base-publish.tgz"
         run([which("multipass"), "transfer", local_tgz, f"{self.instance}:{remote_tmp}"])
@@ -467,6 +509,15 @@ class SshRemote:
 
     def run(self, command, display=None):
         run([which("ssh"), *self.ssh_args, f"bash -lc {sh_quote(command)}"], display=display)
+
+    def capture(self, command):
+        result = subprocess.run(
+            [which("ssh"), *self.ssh_args, f"bash -lc {sh_quote(command)}"],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ssh failed ({result.returncode}): {result.stderr.strip()}")
+        return result.stdout
 
     def upload(self, local_tgz):
         with open(ROOT / local_tgz, "rb") as fh:
@@ -714,6 +765,23 @@ def main():
             if entry.is_dir() and re.fullmatch(r"mls-\d+", entry.name) and entry.name not in projects:
                 extra_projects.append(entry.name)
         projects.extend(extra_projects)
+    # --- 3a-bis. Projects the VM owns through git are NOT touched here ---------
+    # Their folder is not wiped, their sources and obj are not packed: the VM's
+    # own history is the source of truth and `publishGit` updates them. Without
+    # this, every traditional publish recreated their repo and forced a human
+    # `--align` on the next push.
+    git_managed = git_managed_projects(remote, remote_base)
+    if f"mls-{client_id}" in git_managed:
+        raise RuntimeError(
+            f"mls-{client_id} is git-managed on the VM ({GIT_MANAGED_MARKER}): publish it with "
+            f"`node scripts/publishGit.mjs {client_id} <local|remote>`, not with the traditional publish."
+        )
+    skipped_git = [project for project in projects if project in git_managed]
+    if skipped_git:
+        projects = [project for project in projects if project not in git_managed]
+        ids = [pid for pid in ids if f"mls-{pid}" not in git_managed]
+        extra_projects = [project for project in extra_projects if project not in git_managed]
+        log(f"git-managed on the VM, left untouched (history preserved): {' '.join(skipped_git)}")
     log(f"projects to publish: {' '.join(projects)}"
         + (f" (all-projects: +{len(extra_projects)})" if extra_projects else ""))
     build_tool_projects = [

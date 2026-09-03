@@ -11,11 +11,10 @@
 //      URL (fallback, decision #26 of taskNewBuildCI.md)
 //   4. packagelib.json -> same format as package.json (fallback)
 //
-// No fixed/implicit project is ever downloaded. The target's
-// `/// <mls ... enhancement="_<id>_..."` headers are only VALIDATED at the
-// end: an enhancement pointing to a project outside the declared closure
-// fails the build with an error (the fix is to declare the dependency in
-// the manifest).
+// No fixed/implicit project is ever downloaded. After the closure is built,
+// the target's `/_<id>_/` imports and `/// <mls ... enhancement="_<id>_..."`
+// headers are VALIDATED: a reference outside the declared closure fails the
+// build (the fix is to declare the dependency in mlsDep.json).
 //
 // Clones whatever is missing at the mls-base root (git clone --depth 1,
 // default branch), skipping existing folders, and walks the clones'
@@ -59,18 +58,36 @@ function readGitDeps(depsObject, defaultRepo) {
   return deps;
 }
 
+// workspaceDependencies is either:
+//   - string[] of project ids (l5/config.json and mlsDep.json)
+//   - { [id]: { repo?, commit? } } (the original buildCI object form; `commit` is ignored)
+function depsFromWorkspaceDependencies(workspaceDependencies, defaultRepo) {
+  const deps = new Map();
+  if (Array.isArray(workspaceDependencies)) {
+    for (const item of workspaceDependencies) {
+      const id = String(item ?? '').trim();
+      if (/^\d+$/.test(id)) deps.set(id, defaultRepo(id));
+    }
+    return deps;
+  }
+  if (workspaceDependencies && typeof workspaceDependencies === 'object') {
+    for (const [id, dep] of Object.entries(workspaceDependencies)) {
+      if (!/^\d+$/.test(id)) continue;
+      const repo = dep && typeof dep === 'object' ? (dep.repo ?? defaultRepo(id)) : defaultRepo(id);
+      deps.set(id, repo);
+    }
+  }
+  return deps;
+}
+
 // deps declared in the project's manifest: Map<id, repoUrl>
 // Order: mlsDep.json (new/preferred) -> config.json -> package.json ->
 // packagelib.json (fallback, decision #26 of taskNewBuildCI.md)
-async function readManifestDeps(projectDir, defaultRepo) {
+export async function readManifestDeps(projectDir, defaultRepo) {
   for (const manifestName of ['mlsDep.json', 'config.json']) {
     const manifest = await readJsonIfExists(join(projectDir, manifestName));
     if (manifest?.workspaceDependencies) {
-      const deps = new Map();
-      for (const [id, dep] of Object.entries(manifest.workspaceDependencies)) {
-        deps.set(id, dep.repo ?? defaultRepo(id)); // `dep.commit` intentionally ignored
-      }
-      return { deps, source: manifestName };
+      return { deps: depsFromWorkspaceDependencies(manifest.workspaceDependencies, defaultRepo), source: manifestName };
     }
   }
 
@@ -92,6 +109,88 @@ async function readManifestDeps(projectDir, defaultRepo) {
   }
 
   return { deps: new Map(), source: undefined };
+}
+
+// `/_(\d+)_/` specifiers in the target's sources (imports, fileReference, …).
+// First hit per id is kept so the finding names one file instead of 300 tsc errors.
+// O guard varre exatamente o que o passe de compilação varre. Um `.test.ts` ou
+// um `nodejs*` NÃO é compilado (createTsconfig.COMPILE_EXCLUDES), então uma
+// dependência que só aparece lá não pode reprovar nada. Medido em 03/09 na
+// lima: o mls-102020 abortava com 9 achados, 8 deles vindos de `.test.ts` e
+// fixtures — inclusive um projeto de id "1".
+// Um import DENTRO de um template literal não é um import — é texto. As skills
+// dos agentes são template literals cheios de exemplos de código
+// (`import "/_100111_/l2/user/userProfileOrganism.js";` no overview do aura, de
+// um projeto que nem existe), e eles abortavam o build do mls-102020.
+//
+// Errar por FALTA aqui é seguro: quem manda é o tsc, e uma dependência de
+// verdade que escape ao scan reaparece como erro de compilação. Errar por SOBRA
+// não é: aborta antes de o tsc rodar.
+export function stripTemplateLiterals(source) {
+  let out = '';
+  let inTemplate = false;
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === '\\') {
+      if (!inTemplate) out += source.slice(i, i + 2);
+      i += 1;
+      continue;
+    }
+    if (char === '`') {
+      inTemplate = !inTemplate;
+      continue;
+    }
+    if (!inTemplate) out += char;
+  }
+  return out;
+}
+
+function isExcludedFromCompile(relPath) {
+  const name = relPath.split('/').pop() ?? '';
+  return name.endsWith('.test.ts')
+    || name.endsWith('.spec.ts')
+    || relPath.split('/').some((segment) => segment.startsWith('nodejs'));
+}
+
+// `/_<id>_/` só conta quando é ESPECIFICADOR DE MÓDULO — o que o tsc de facto
+// resolve. Antes bastava a sequência aparecer no texto, e um comentário
+// ("e.g. `/_102048_/l2/designSystem.js`") ou uma URL montada em runtime
+// (`/_100554_/l2/enhancementStyle.js` no libModel) viravam "dependência não
+// declarada". Efeito medido em 03/09: o mls-102029 não compilava sozinho por
+// dois achados que não existiam — e o publish tradicional engolia isso em
+// silêncio ("previous obj stays"), então ninguém via.
+//
+// Este scan só ALIMENTA a checagem de dep não declarada; o fecho que se clona e
+// se compila vem do manifesto. Estreitá-lo remove falso positivo sem encolher
+// nada.
+const IMPORT_SPECIFIER_RES = [
+  /\bfrom\s*['"`]\/_(\d+)_\//gu,          // import x from '/_102020_/…'
+  /\bimport\s*\(\s*['"`]\/_(\d+)_\//gu,   // import('/_102020_/…')
+  /\bimport\s+['"`]\/_(\d+)_\//gu,        // import '/_102020_/…'  (efeito colateral)
+  /\brequire\s*\(\s*['"`]\/_(\d+)_\//gu,
+];
+
+export async function scanImportRefs(projectDir, levels) {
+  const firstHit = new Map();
+  for (const level of levels) {
+    const dir = join(projectDir, level);
+    if (!existsSync(dir)) continue;
+    for (const entry of await readdir(dir, { withFileTypes: true, recursive: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.ts')) continue;
+      const abs = join(entry.parentPath ?? entry.path, entry.name);
+      const rel = abs.slice(projectDir.length + 1).split('\\').join('/');
+      if (isExcludedFromCompile(rel)) continue;
+      const content = stripTemplateLiterals(await readFile(abs, 'utf8'));
+      for (const re of IMPORT_SPECIFIER_RES) {
+        re.lastIndex = 0;
+        let match;
+        while ((match = re.exec(content))) {
+          if (!firstHit.has(match[1])) firstHit.set(match[1], rel);
+        }
+      }
+    }
+  }
+  return firstHit;
 }
 
 // enhancement refs in the .ts /// <mls headers: Set<id>
@@ -200,9 +299,23 @@ export async function resolveDeps({ root, targetId, orgName, levels, log }) {
     }
   }
 
+  const targetDir = resolve(root, `mls-${targetId}`);
+
+  // Imports `/_<id>_/` outside the declared closure fail here, with the file
+  // that referenced them — not 300 tsc errors later.
+  const importHits = await scanImportRefs(targetDir, levels);
+  const undeclared = [...importHits.entries()].filter(([depId]) => !projects.has(depId));
+  if (undeclared.length > 0) {
+    throw new Error(
+      undeclared
+        .map(([depId, rel]) => `dependência não declarada: ${depId} (importada por ${rel}) — declare em mlsDep.json`)
+        .join('\n'),
+    );
+  }
+
   // Validate the TARGET's enhancements: a project referenced outside the
   // declared closure is an error — nothing is downloaded implicitly.
-  const enhancementIds = await scanEnhancementRefs(resolve(root, `mls-${targetId}`), levels);
+  const enhancementIds = await scanEnhancementRefs(targetDir, levels);
   const missing = [...enhancementIds].filter((depId) => !projects.has(depId));
   if (missing.length > 0) {
     // Point at whichever manifest the target actually uses — not a generic

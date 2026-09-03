@@ -1,57 +1,60 @@
 #!/bin/bash
 # VM-side one-time setup (idempotent), invoked by `pnpm publish:initial` through ssh
-# BEFORE the build: creates the app role, the database and the TimescaleDB extension
-# (as the postgres superuser via sudo) and writes the stable .env at the mls-base root.
-# The publish build that follows runs the migration (schema + mechanical seeds).
-# Defaults match collab-runtime provisioning; override via env vars:
-#   DB_APP_USER=collab DB_APP_PASSWORD=collab DB_APP_DATABASE=mdm
+# BEFORE the build: creates the app role, the database, the TimescaleDB extension and the
+# stable .env at the mls-base root. The publish build that follows runs the migration
+# (schema + mechanical seeds).
+#
+# THIS FILE NO LONGER OWNS THE RULE. It used to write the .env and create the database
+# itself, with the same defaults as collab-runtime's step 10 — two copies of one rule, so a
+# fix landed in one and missed the other. The bodies now live in ONE place,
+# `collab-runtime/scripts/lib/mls-app-db.sh`, and both callers source it:
+#
+#   • the bootstrap of a VM       -> collab-runtime scripts/10-mls-runtime.sh
+#   • the ssh path (lima, here)   -> this script
+#
+# What stays here is only what is specific to this path: finding the collab-runtime
+# checkout, and creating the ROLE (on the bootstrap path 03-install-postgres.sh already did).
+#
+# Defaults (override via env): DB_APP_USER=collab DB_APP_PASSWORD=collab DB_APP_DATABASE=mdm
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DB_APP_USER="${DB_APP_USER:-collab}"
-DB_APP_PASSWORD="${DB_APP_PASSWORD:-collab}"
-DB_APP_DATABASE="${DB_APP_DATABASE:-mdm}"
+COLLAB_RUNTIME_REPO="${COLLAB_RUNTIME_REPO:-https://github.com/collab-codes/collab-runtime.git}"
+LIB_REL="scripts/lib/mls-app-db.sh"
 
-PSQL="sudo -u postgres psql -v ON_ERROR_STOP=1"
+# Candidates in order: an explicit override, the data root, the login user's home. A VM
+# provisioned by the installer has the repo already; lima has it in $HOME.
+find_collab_runtime() {
+  local candidate
+  for candidate in "${COLLAB_RUNTIME_DIR:-}" /data/collab-runtime "${HOME}/collab-runtime"; do
+    [ -n "$candidate" ] || continue
+    if [ -f "${candidate}/${LIB_REL}" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
 
-echo "--- role '${DB_APP_USER}'"
-if $PSQL -tAc "SELECT 1 FROM pg_roles WHERE rolname = '${DB_APP_USER}';" | grep -q 1; then
-  echo "    already exists"
-else
-  $PSQL -c "CREATE ROLE \"${DB_APP_USER}\" WITH LOGIN PASSWORD '${DB_APP_PASSWORD}' CREATEDB;"
-  echo "    created"
+if ! RUNTIME_DIR="$(find_collab_runtime)"; then
+  TARGET="${COLLAB_RUNTIME_DIR:-${HOME}/collab-runtime}"
+  echo "--- collab-runtime not found; cloning into ${TARGET}"
+  git clone --depth 1 "$COLLAB_RUNTIME_REPO" "$TARGET" || true
+  if ! RUNTIME_DIR="$(find_collab_runtime)"; then
+    # Failing here is deliberate: duplicating the .env/database rule locally is exactly
+    # what this change removed. Better to stop and say what to do.
+    echo "!!! could not find ${LIB_REL} in a collab-runtime checkout." >&2
+    echo "!!! clone it on the VM (git clone ${COLLAB_RUNTIME_REPO}) or set COLLAB_RUNTIME_DIR, then run again." >&2
+    exit 1
+  fi
 fi
 
-echo "--- database '${DB_APP_DATABASE}'"
-if $PSQL -tAc "SELECT 1 FROM pg_database WHERE datname = '${DB_APP_DATABASE}';" | grep -q 1; then
-  echo "    already exists"
-else
-  $PSQL -c "CREATE DATABASE \"${DB_APP_DATABASE}\" OWNER \"${DB_APP_USER}\";"
-  echo "    created"
-fi
+echo "--- collab-runtime: ${RUNTIME_DIR}"
+# shellcheck source=/dev/null
+source "${RUNTIME_DIR}/${LIB_REL}"
 
-# Per-database and superuser-only: the app itself cannot enable it at runtime.
-echo "--- timescaledb extension on '${DB_APP_DATABASE}'"
-$PSQL -d "${DB_APP_DATABASE}" -c 'CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;'
-
-ENV_FILE="${ROOT}/.env"
-echo "--- .env"
-if [ -f "$ENV_FILE" ]; then
-  echo "    already exists: ${ENV_FILE} (left untouched)"
-else
-  cat > "$ENV_FILE" <<EOF
-APP_ENV=production
-RUNTIME_MODE=postgres
-PORT=3000
-PGHOST=127.0.0.1
-PGPORT=5432
-PGDATABASE=${DB_APP_DATABASE}
-PGUSER=${DB_APP_USER}
-PGPASSWORD=${DB_APP_PASSWORD}
-# Local VM has no AWS/DynamoDB: keep the write-behind worker off.
-WRITE_BEHIND_ENABLED=false
-EOF
-  echo "    created: ${ENV_FILE}"
-fi
+ensure_app_role
+ensure_app_database
+ensure_mls_env "$ROOT"
 
 echo "--- vm initial setup done"

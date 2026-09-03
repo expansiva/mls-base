@@ -11,6 +11,12 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+// Os padrões que o passe de compilação IGNORA. Exportado porque o guard de
+// dependência não declarada (resolveDeps.scanImportRefs) tem de varrer
+// exatamente o mesmo conjunto: reprovar por um import que nunca é compilado é
+// um finding impossível — e ele ABORTA o build antes do tsc rodar.
+export const COMPILE_EXCLUDES = ['**/node_modules', '**/*.spec.ts', '**/*.test.ts', '**/nodejs*'];
+
 export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
   // /_<x>_/* -> ./project/_<x>_/* para todo projeto do fechamento (alvo incluso)
   const paths = Object.fromEntries(
@@ -24,7 +30,12 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
   ];
   // **/node_modules: os symlinks expõem as pastas mls-* inteiras — garante que
   // um node_modules dentro de um projeto nunca entre no programa
-  const exclude = ['**/node_modules', '**/*.spec.ts'];
+  // Alinhado com o tsconfig.frontend.json do Mac, que exclui os MESMOS padrões.
+  // Sem isto a VM compilava os `.test.ts` GERADOS (que nem embarcam — o pack leva
+  // só SHIP_LEVELS) e o gate do push reprovava por eles: medido em 02/09 na lima,
+  // 11 erros no passe de código viraram 2 ao alinhar a lista. `nodejs*` entra pelo
+  // mesmo motivo — é código de host, fora do passe de frontend.
+  const exclude = [...COMPILE_EXCLUDES];
 
   const common = {
     // NÃO usar preserveSymlinks: o staging (stage.mjs) copia os arquivos —
@@ -41,8 +52,18 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
     sourceMap: false,
     experimentalDecorators: true,
     emitDecoratorMetadata: false,
-    noImplicitAny: false,
-    strictNullChecks: false,
+    // gb15 item 3 — o gate compila com a MESMA severidade do tsconfig.json do
+    // workspace (`strict: true`). Antes vinha `noImplicitAny:false` +
+    // `strictNullChecks:false` por fidelidade ao mls-ci (decisão #8): mas com
+    // strictNullChecks off o TS alarga `ok: true` para `boolean` e o
+    // estreitamento de união discriminada MORRE — o passe de código inventava
+    // erros que o compilador do Wagner não vê (102020: 18 falsos → 1 real).
+    // Flag de tipo não muda emissão: o obj/compiled.zip sai byte a byte igual,
+    // então a fidelidade da decisão #8 (o artefato) fica intacta; o que muda é
+    // só quais erros o gate enxerga — e o trabalho do gate é concordar com o
+    // compilador que o dev roda. Medido em 03/09: 102043 0→0, 102045 0→0,
+    // 102047 2→5 (os 5 são reais, o tsc do workspace também os vê).
+    strict: true,
     paths,
     // DOM.Iterable: sem isso, HTMLCollection/NodeList/CSSStyleDeclaration não
     // têm [Symbol.iterator] e `for...of` sobre eles quebra (TS2488). O
@@ -65,6 +86,16 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
       // module: ES2020 usaria moduleResolution "classic" por default, que
       // nunca olha node_modules para pacotes de terceiros.
       moduleResolution: 'bundler',
+      // ...e 'bundler' SÓ vale com module 'esnext'/'preserve'. Com o
+      // module: 'ES2020' do `common` o TS rejeita o par e cai no 'classic'
+      // EM SILÊNCIO — era exatamente o que a decisão #25 queria evitar.
+      // Medido na lima em 02/09: 284 erros de compile (lit não resolvia,
+      // TS2792 + a cascata de TS2339 em CollabLitElement/StateLitElement)
+      // viraram 11 com esta linha. Fica AQUI, no passe de código, e não no
+      // `common`: o passe de declaração precisa continuar em 'ES2020' para
+      // manter o 'classic' que a mesma decisão #25 pede (com 'bundler' o
+      // outFile morre em TS2742).
+      module: 'esnext',
       outDir: './preBuild',
       rootDir: './project',
       strict: true,

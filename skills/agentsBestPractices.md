@@ -242,3 +242,37 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
 - Pattern to copy: `mls-base/mls-102020/l2/agentNewSolution/` (its `flow.json`, `steps/`,
   `skills/maintenance.md`, `helpers/`).
 - Engine mechanics and traps: `mls-base/skills/collab_messages.md`.
+
+## Capacidade só-do-host: chame como MÉTODO, nunca destaque
+
+`mls.stor.diskPath` não existe no `mls.d.ts` nem no cfe — é capacidade **só do host** (Deno,
+`collab-mls`), e lá é **método de classe sobre campo privado**. Isto quebra:
+
+```ts
+const fn = mls.stor.diskPath;      // destacado: perde o `this`
+try { return fn(info); } catch { return null; }   // TypeError: … reading '#mlsBase'
+```
+
+O `catch` engole e o chamador conclui "capacidade ausente". Em 02/09/2026 isto desligou **duas**
+coisas em silêncio (regra 8), as duas só no host do CLI — que é justamente o único onde elas
+existem:
+
+- `cbMaterializeIo.storDiskPath` → o gate de compilação do projeto do CB (`tscGate: unavailable`,
+  `compileTrace.reason: no-diskPath`): o CB gerou l1 inteiro **sem compilador**;
+- `mlsDepManifest.emitMlsDepJsonIfHostDisk` → o `mlsDep.json` **nunca escrito**, que é o caminho
+  para os 328 erros de build na VM (gb10).
+
+Forma certa — guardar o objeto e chamar o método nele:
+
+```ts
+const stor = mls.stor as { diskPath?: (i: Info) => string };
+if (typeof stor.diskPath !== 'function') return null;   // capacidade ausente = estado
+try { return stor.diskPath(info); } catch { return null; }
+```
+
+E o teste que impede a regressão usa um stub **com campo privado** (um objeto literal passa mesmo
+destacado, e não prova nada):
+
+```ts
+class HostStor { readonly #base = '/data/mls-base'; diskPath(i) { return `${this.#base}/…`; } }
+```

@@ -44,11 +44,16 @@ report and run summary; wipe of 0 on a populated module is a finding. A wipe tha
 archives and still left live files **aborts the run** with that finding — it is not a `/run`.
 `/rebuild defs` keeps defs and strips derived `.ts` at the end.
 
-**5b. Generate the `.ts` only if it is absent** (02/09). `isStale(tsExists)` is `!tsExists`
-(`cbMaterializeCore.ts`). A present `.ts` is skipped even if defs or a dependency is newer.
-Timestamps stay in the `[cb-stale]` log (`decision=generate|skip`). To regenerate (repair, defs
-change), `forceRegenerate(defRef)` deletes the output `.ts` and counts against
-`COMPONENT_REPAIR_BUDGET + 1`; the dispatcher's `CB_DISPATCH_HARD_CEILING = 10` is the backstop.
+**5b. Generate the `.ts` if it is absent, or if this `/rebuild all` archived it** (02/09;
+wipe-memory 02/09). `isStale(tsExists)` is `!tsExists` (`cbMaterializeCore.ts`). A present `.ts`
+is skipped even if defs or a dependency is newer — **except** stor keys this run archived
+(`wipedKeys` on `cb-repair-state.json`, scoped by `wipeRunId`). A host rescan can rewrite
+`status=nochange` on the trash; the wiped set is the CB's own memory and does not consult the
+index. `[cb-stale]` prints `exists`, `status`, and `wipedThisRun`. `rebuildWiped > 0` with 0
+materialize calls fails the run (`rebuild-all wiped N file(s) and materialize generated none`).
+To regenerate (repair, defs change), `forceRegenerate(defRef)` deletes the output `.ts` and
+counts against `COMPONENT_REPAIR_BUDGET + 1`; the dispatcher's `CB_DISPATCH_HARD_CEILING = 10`
+is the backstop.
 
 **6. Nothing country- or domain-specific in the generator.** A guard that mentions a national
 document, a currency or a local rule is a future bug: names change per country. Detect the *shape*
@@ -90,4 +95,5 @@ The trace lives under the layer (`trace/l1`) so a CF rebuild cannot delete it an
 Stale trace resurrects behaviour: three separate defects on 30/08 came from plans left in an old
 trace folder.
 
-*Written 31/08/2026; 5b (staleness = existence) added 02/09/2026; leftover-wipe abort added 02/09/2026.*
+*Written 31/08/2026; 5b (staleness = existence) added 02/09/2026; leftover-wipe abort added 02/09/2026;
+wipe-memory (`wipedThisRun`) added 02/09/2026.*

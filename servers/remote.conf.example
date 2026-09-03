@@ -1,0 +1,17 @@
+# Remote git-publish profile for `publishGit.mjs <id> remote` / `pnpm publish:remote`.
+# Copy to servers/remote.conf (gitignored) and fill the instance id. No tokens.
+# Everyday `pnpm publish` (traditional, --sites) does NOT use this file.
+# Real servers/*.conf files are gitignored (`mls-base/.gitignore`).
+#
+# SSH to the production VM goes through AWS SSM (no public SSH port). Point
+# SSH_CONFIG at a file that contains, for the host below:
+#
+#   Host i-0123456789abcdef0
+#     User ubuntu
+#     ProxyCommand sh -c "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters 'portNumber=%p'"
+#
+# Replace the instance id. Do not put AWS keys here — SSM uses the AWS CLI profile.
+
+SSH_HOST=i-0123456789abcdef0
+SSH_CONFIG=$HOME/.ssh/collab-remote.config
+REMOTE_BASE=/data/mls-base

@@ -1,0 +1,34 @@
+{
+  "orgName": "expansiva",
+  "designSystems": [
+    {
+      "dsIndex": "0",
+      "dsName": "localDesignSystem",
+      "widgetIOName": "_100554_configDsDefault"
+    }
+  ],
+  "languages": [
+    {
+      "language": "en",
+      "name": "English",
+      "path": "/"
+    }
+  ],
+  "masters": {
+    "backend": {
+      "masterProject": 102021,
+      "agentFolder": "agentChangeBackend",
+      "runtimeProject": 102034
+    },
+    "frontend": {
+      "masterProject": 102020,
+      "agentFolder": "agentChangeFrontend",
+      "runtimeProject": 102033
+    }
+  },
+  "plugins": {},
+  "reasons": {},
+  "services": [],
+  "links": [],
+  "servicesConfigEnabled": false
+}

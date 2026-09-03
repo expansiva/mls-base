@@ -1,0 +1,10 @@
+# --- collab-vm (gitReposSetup) ---
+/obj/
+/node_modules/
+/dist/
+/.env
+.collab-fs.json
+.collab-fs-trash/
+.DS_Store
+!*.js
+!*.mjs
