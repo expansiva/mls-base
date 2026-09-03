@@ -49,7 +49,7 @@ test('mayRecreate: --force falha FECHADO (ele guarda um rm -rf)', () => {
   assert.match(mayRecreate({ mainSha: '', baselineSha: '', hasGit: true }).reason, /neither main nor vm-baseline/u);
   assert.match(mayRecreate({ mainSha: 'aaa1111', baselineSha: '' }).reason, /vm-baseline is missing/u);
   assert.match(mayRecreate({ mainSha: '', baselineSha: 'aaa1111' }).reason, /main is missing/u);
-  assert.match(mayRecreate({ mainSha: '', baselineSha: '' }).reason, /não apago/iu);
+  assert.match(mayRecreate({ mainSha: '', baselineSha: '' }).reason, /do not delete what I cannot prove/iu);
 });
 
 test('missingWorkspaceDependencies: sem declarar, nenhum agente carrega', () => {
@@ -245,8 +245,8 @@ test('--force recusa quando há história além do baseline', () => {
 
     const forced = runInit(root, ['102044', '--force']);
     assert.equal(forced.code, 1);
-    assert.match(forced.out, /--force recusado/u);
-    assert.match(forced.out, /Não apago história/u);
+    assert.match(forced.out, /--force refused/u);
+    assert.match(forced.out, /do not delete somebody's history/u);
     assert.ok(existsSync(join(dir, 'README.md')), 'a pasta foi apagada mesmo assim');
   });
 });
@@ -267,7 +267,7 @@ test('template inexistente falha dizendo qual, sem criar pasta pela metade', () 
   withFakeRoot((root) => {
     const result = runInit(root, ['102044', '--template', 'naoexiste']);
     assert.equal(result.code, 1);
-    assert.match(result.out, /template não encontrado/u);
+    assert.match(result.out, /template not found/u);
     assert.equal(existsSync(join(root, 'mls-102044')), false);
   });
 });
@@ -277,7 +277,7 @@ test('um projeto sem l5/config.json é RECUSADO — senão o run morre no primei
     rmSync(join(root, 'scripts', 'templates', 'project', 'l5', 'config.json'));
     const result = runInit(root, ['102044']);
     assert.equal(result.code, 1);
-    assert.match(result.out, /não vai conseguir carregar agente/u);
+    assert.match(result.out, /will not be able to load an agent/u);
     assert.match(result.out, /workspaceDependencies/u);
   });
 });

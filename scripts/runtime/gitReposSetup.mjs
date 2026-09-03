@@ -355,7 +355,7 @@ function setupRepo(dir) {
   const dirty = worktreeDirty(dir);
   const branches = gitOrThrow(dir, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/']);
   const log = gitOrThrow(dir, ['log', '-1', '--oneline']);
-  const status = actions.length === 0 ? 'já configurado' : (actions.includes('init') ? 'initialized' : 'completed');
+  const status = actions.length === 0 ? 'already configured' : (actions.includes('init') ? 'initialized' : 'completed');
   return {
     status,
     actions,

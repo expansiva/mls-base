@@ -50,11 +50,11 @@ function log(message) {
 
 function usage() {
   return [
-    'usage: node scripts/runtime/projectInit.mjs <projetoId|mls-<id>> [--root <dir>]',
-    '       [--template <nome>] [--force]',
-    `  --root      raiz do mls-base na VM (default ${DEFAULT_ROOT})`,
-    `  --template  pasta em scripts/templates/ (default ${DEFAULT_TEMPLATE})`,
-    '  --force     recria o projeto — só se main == vm-baseline (nunca apaga história)',
+    'usage: node scripts/runtime/projectInit.mjs <projectId|mls-<id>> [--root <dir>]',
+    '       [--template <name>] [--force]',
+    `  --root      mls-base root on the VM (default ${DEFAULT_ROOT})`,
+    `  --template  folder under scripts/templates/ (default ${DEFAULT_TEMPLATE})`,
+    '  --force     recreate the project — only when main == vm-baseline (never deletes history)',
   ].join('\n');
 }
 
@@ -99,16 +99,16 @@ export function mayRecreate(state) {
     const detail = state.hasGit === false
       ? 'the folder has no .git at all (gitReposSetup never ran here)'
       : 'the repo has neither main nor vm-baseline';
-    return { ok: false, reason: `${detail}. Não apago o que não posso provar que é intocado — remova à mão se for o caso.` };
+    return { ok: false, reason: `${detail}. I do not delete what I cannot prove is untouched — remove it by hand if that is the case.` };
   }
   if (!state.mainSha || !state.baselineSha) {
     const missing = state.mainSha ? 'vm-baseline' : 'main';
-    return { ok: false, reason: `branch ${missing} is missing, so I cannot compare. Não apago o que não posso provar que é intocado — remova à mão se for o caso.` };
+    return { ok: false, reason: `branch ${missing} is missing, so I cannot compare. I do not delete what I cannot prove is untouched — remove it by hand if that is the case.` };
   }
   if (state.mainSha !== state.baselineSha) {
     return {
       ok: false,
-      reason: `main ${state.mainSha.slice(0, 7)} != vm-baseline ${state.baselineSha.slice(0, 7)}. Não apago história de alguém.`,
+      reason: `main ${state.mainSha.slice(0, 7)} != vm-baseline ${state.baselineSha.slice(0, 7)}. I do not delete somebody's history.`,
     };
   }
   return { ok: true, reason: '' };
@@ -220,7 +220,7 @@ function runGitReposSetup(root, id) {
     encoding: 'utf8',
   });
   const out = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-  if ((result.status ?? 1) !== 0) fail(`gitReposSetup falhou:\n${out.trim()}`);
+  if ((result.status ?? 1) !== 0) fail(`gitReposSetup failed:\n${out.trim()}`);
   const line = out.split(/\n/u).find((row) => row.includes(`mls-${id}`)) || '';
   log(`gitReposSetup: ${line.trim() || 'ok'}`);
 }
@@ -232,14 +232,14 @@ function main() {
 
   const templateDir = join(root, 'scripts', 'templates', template);
   if (!existsSync(templateDir)) {
-    fail(`template não encontrado: ${templateDir}\n${usage()}`);
+    fail(`template not found: ${templateDir}\n${usage()}`);
   }
   const setup = join(root, 'scripts', 'runtime', 'gitReposSetup.mjs');
-  if (!existsSync(setup)) fail(`plataforma incompleta: falta ${setup}`);
+  if (!existsSync(setup)) fail(`incomplete platform: ${setup} is missing`);
 
   const state = projectState(root, id);
   if (state.exists && !force) {
-    log(`mls-${id}: já existe — não toco nos arquivos (idempotente)`);
+    log(`mls-${id}: already exists — files untouched (idempotent)`);
     // Mas o REPO é conferido mesmo assim: uma pasta de projeto sem `.git` não tem para onde
     // receber push, e era o estado de toda VM criada antes da correção do `isRepo` (03/09). O
     // `gitReposSetup` é idempotente — quando já está pronto, ele não faz nada.
@@ -249,8 +249,8 @@ function main() {
   }
   if (state.exists && force) {
     const verdict = mayRecreate(state);
-    if (!verdict.ok) fail(`--force recusado: ${verdict.reason}`);
-    log(`mls-${id}: --force, main == vm-baseline → recriando`);
+    if (!verdict.ok) fail(`--force refused: ${verdict.reason}`);
+    log(`mls-${id}: --force, main == vm-baseline → recreating`);
     rmSync(state.dir, { recursive: true, force: true });
   }
 
@@ -258,24 +258,24 @@ function main() {
   writeFileSync(join(state.dir, GIT_MANAGED_MARKER), `${gitManagedMarkerBody(id)}\n`);
 
   const left = remainingPlaceholders(state.dir);
-  if (left.length) fail(`sobrou ${PLACEHOLDER} em:\n  ${left.join('\n  ')}`);
-  log(`mls-${id}: ${copied} arquivo(s) do template ${template}, id substituído, ${GIT_MANAGED_MARKER} escrito`);
+  if (left.length) fail(`${PLACEHOLDER} left over in:\n  ${left.join('\n  ')}`);
+  log(`mls-${id}: ${copied} file(s) from template ${template}, id replaced, ${GIT_MANAGED_MARKER} written`);
 
   runGitReposSetup(root, id);
 
   const after = projectState(root, id);
-  if (!after.mainSha) fail(`mls-${id} ficou sem branch main após o gitReposSetup.`);
+  if (!after.mainSha) fail(`mls-${id} has no main branch after gitReposSetup.`);
 
   const configPath = join(state.dir, 'l5', 'config.json');
   const problem = missingWorkspaceDependencies(existsSync(configPath) ? readFileSync(configPath, 'utf8').trim() : '');
   if (problem) {
     fail(
-      `mls-${id} não vai conseguir carregar agente: ${problem}.\n` +
-        'O host resolve o agente por l5/config.json.workspaceDependencies. Corrija o template ' +
-        `(scripts/templates/${template}/l5/config.json) e rode de novo.`,
+      `mls-${id} will not be able to load an agent: ${problem}.\n` +
+        'The host resolves the agent through l5/config.json.workspaceDependencies. Fix the template ' +
+        `(scripts/templates/${template}/l5/config.json) and run again.`,
     );
   }
-  log(`mls-${id}: declara dependências (l5/config.json) — agentes carregam`);
+  log(`mls-${id}: declares dependencies (l5/config.json) — agents will load`);
   process.stdout.write('created\n');
 }
 
