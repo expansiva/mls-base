@@ -116,8 +116,18 @@ function discoverProjects(root) {
     .sort();
 }
 
+/**
+ * A PASTA é um repo — não "está dentro de um repo".
+ *
+ * `git rev-parse --git-dir` sobe a árvore: dentro de um checkout do mls-base ele responde OK para
+ * qualquer subpasta, devolvendo o .git do PAI. Com isso todo projeto era classificado como repo
+ * alheio (`skipped-external-remote`, porque os remotes lidos eram os do mls-base) e nunca ganhava
+ * repositório próprio. Medido em 03/09: na VM o `/data/mls-base` é um clone do GitHub, então
+ * NENHUM projeto criado lá tinha `.git` — sem main, sem vm-baseline, e sem para onde empurrar.
+ * Na lima passava despercebido porque lá o mls-base chegou por cópia, não por clone.
+ */
 function isRepo(dir) {
-  return git(dir, ['rev-parse', '--git-dir']).ok;
+  return existsSync(join(dir, '.git'));
 }
 
 function hasHead(dir) {

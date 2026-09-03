@@ -43,6 +43,12 @@ test('mayRecreate: --force falha FECHADO (ele guarda um rm -rf)', () => {
   assert.equal(mayRecreate({ mainSha: '', baselineSha: '' }).ok, false);
   assert.equal(mayRecreate({ mainSha: 'aaa1111', baselineSha: '' }).ok, false);
   assert.equal(mayRecreate({ mainSha: '', baselineSha: 'aaa1111' }).ok, false);
+  // A recusa diz QUAL metade falta: sem .git, sem main ou sem vm-baseline (03/09 — a mensagem
+  // vaga escondeu que o caso real era "a pasta nunca teve .git").
+  assert.match(mayRecreate({ mainSha: '', baselineSha: '', hasGit: false }).reason, /no \.git at all/u);
+  assert.match(mayRecreate({ mainSha: '', baselineSha: '', hasGit: true }).reason, /neither main nor vm-baseline/u);
+  assert.match(mayRecreate({ mainSha: 'aaa1111', baselineSha: '' }).reason, /vm-baseline is missing/u);
+  assert.match(mayRecreate({ mainSha: '', baselineSha: 'aaa1111' }).reason, /main is missing/u);
   assert.match(mayRecreate({ mainSha: '', baselineSha: '' }).reason, /não apago/iu);
 });
 

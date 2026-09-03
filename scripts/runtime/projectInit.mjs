@@ -93,8 +93,17 @@ export function gitManagedMarkerBody(id) {
  * output) refuses — never deletes.
  */
 export function mayRecreate(state) {
+  // Dizer QUAL metade falta: a mensagem antiga juntava "sem .git", "sem main" e "sem vm-baseline"
+  // num "(sem .git?)" — e em 03/09 o caso real era o primeiro, escondido atrás do palpite.
+  if (!state.mainSha && !state.baselineSha) {
+    const detail = state.hasGit === false
+      ? 'the folder has no .git at all (gitReposSetup never ran here)'
+      : 'the repo has neither main nor vm-baseline';
+    return { ok: false, reason: `${detail}. Não apago o que não posso provar que é intocado — remova à mão se for o caso.` };
+  }
   if (!state.mainSha || !state.baselineSha) {
-    return { ok: false, reason: 'a pasta existe mas não consegui ler main/vm-baseline (sem .git?). Não apago o que não posso provar que é intocado — remova à mão se for o caso.' };
+    const missing = state.mainSha ? 'vm-baseline' : 'main';
+    return { ok: false, reason: `branch ${missing} is missing, so I cannot compare. Não apago o que não posso provar que é intocado — remova à mão se for o caso.` };
   }
   if (state.mainSha !== state.baselineSha) {
     return {
@@ -131,13 +140,13 @@ function git(dir, args) {
 
 export function projectState(root, id) {
   const dir = join(root, `mls-${id}`);
-  if (!existsSync(dir)) return { exists: false, dir, mainSha: '', baselineSha: '' };
-  if (!existsSync(join(dir, '.git'))) return { exists: true, dir, mainSha: '', baselineSha: '' };
+  if (!existsSync(dir)) return { exists: false, hasGit: false, dir, mainSha: '', baselineSha: '' };
+  if (!existsSync(join(dir, '.git'))) return { exists: true, hasGit: false, dir, mainSha: '', baselineSha: '' };
   const revOf = (ref) => {
     const result = git(dir, ['rev-parse', ref]);
     return result.code === 0 ? result.out : '';
   };
-  return { exists: true, dir, mainSha: revOf('main'), baselineSha: revOf('vm-baseline') };
+  return { exists: true, hasGit: true, dir, mainSha: revOf('main'), baselineSha: revOf('vm-baseline') };
 }
 
 /**
@@ -230,7 +239,11 @@ function main() {
 
   const state = projectState(root, id);
   if (state.exists && !force) {
-    log(`mls-${id}: já existe — não toco (idempotente)`);
+    log(`mls-${id}: já existe — não toco nos arquivos (idempotente)`);
+    // Mas o REPO é conferido mesmo assim: uma pasta de projeto sem `.git` não tem para onde
+    // receber push, e era o estado de toda VM criada antes da correção do `isRepo` (03/09). O
+    // `gitReposSetup` é idempotente — quando já está pronto, ele não faz nada.
+    runGitReposSetup(root, id);
     process.stdout.write('unchanged\n');
     return;
   }

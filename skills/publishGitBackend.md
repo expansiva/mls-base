@@ -284,6 +284,14 @@ What a fresh remote VM actually does today, in order. Read this before promising
    gb54 fixes the step, the admin's *Build release* installs the platform deps when
    `node_modules` is missing — a push that arrives before that button on a brand-new VM still
    fails with the esbuild message.
+   **`gitReposSetup` used to skip every project on a VM** (fixed 03/09): its `isRepo` asked
+   `git rev-parse --git-dir`, which walks UP the tree — inside the mls-base checkout that answers
+   for any subfolder, returning the parent's `.git`, so the project looked like a foreign repo
+   (`skipped-external-remote`) and never got one of its own. Consequence: no `main`, no
+   `vm-baseline`, and **nothing to push to**. Lima never showed it because there mls-base arrived
+   as a copy, not a clone. `projectInit` now also re-runs `gitReposSetup` on a project that already
+   exists, so a VM created before the fix heals with *Update platform*.
+
 7. Step 12 (`scripts/12-mls-project.sh`) runs
    `node /data/mls-base/scripts/runtime/projectInit.mjs <projectId> --root /data/mls-base`
    when the installer got `--project-id`. That is what makes the VM **clonable**: the client
