@@ -204,6 +204,14 @@ function composeGeneratedConfig(clientId) {
   if (!existsSync(l5Path)) return;
   let l5;
   try { l5 = JSON.parse(readFileSync(l5Path, 'utf8')); } catch { return; }
+  // Projeto sem modulos = scaffold recem-criado (projectInit) numa VM: nao ha backend nem frontend
+  // para compor, e os composers tratam "nada a compor" como erro (o do backend faz `throw`). Sem
+  // isto o primeiro release de uma VM nova e impossivel: o app nao sobe, a porta /git/ da 502 e o
+  // primeiro push nao tem para onde ir. Medido em 03/09 no 102043 (gb56).
+  if (!Array.isArray(l5.modules) || l5.modules.length === 0) {
+    log(`${clientId} declares no modules yet; skipping config composers`);
+    return;
+  }
   for (const side of ['backend', 'frontend']) {
     const master = l5.masters?.[side];
     if (!master) continue;

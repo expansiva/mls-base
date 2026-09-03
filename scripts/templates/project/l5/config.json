@@ -7,5 +7,50 @@
     "102027",
     "102029",
     "102036"
-  ]
+  ],
+  "defaultProjectId": "__PROJECT_ID__",
+  "projects": {
+    "102020": {
+      "root": "../mls-102020",
+      "type": "lib"
+    },
+    "102021": {
+      "root": "../mls-102021",
+      "type": "lib"
+    },
+    "102025": {
+      "root": "../mls-102025",
+      "type": "lib"
+    },
+    "102029": {
+      "root": "../mls-102029",
+      "type": "lib"
+    },
+    "102033": {
+      "root": "../mls-102033",
+      "type": "master frontend"
+    },
+    "102034": {
+      "root": "../mls-102034",
+      "type": "master backend"
+    },
+    "__PROJECT_ID__": {
+      "root": ".",
+      "type": "client",
+      "runtime": {
+        "projectId": "__PROJECT_ID__"
+      }
+    }
+  },
+  "publication": {
+    "defaultTarget": "web",
+    "targets": {
+      "web": {
+        "assetBaseUrl": "",
+        "serveStaticFromServer": true,
+        "minify": false,
+        "sourcemap": true
+      }
+    }
+  }
 }

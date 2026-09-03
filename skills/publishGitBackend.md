@@ -279,6 +279,11 @@ What a fresh remote VM actually does today, in order. Read this before promising
    clones `mls-base` from GitHub into `/data/mls-base`, then calls
    `scripts/lib/mls-app-db.sh` to write the production `.env` (`APP_ENV=production`,
    `RUNTIME_MODE=postgres`, `PORT=3000`) and create the `mdm` database.
+   **It does NOT run `pnpm install`** (measured 03/09 on the 102043 VM), so the checkout is
+   present but not buildable: the first build dies at `Cannot find package 'esbuild'`. Until
+   gb54 fixes the step, the admin's *Build release* installs the platform deps when
+   `node_modules` is missing — a push that arrives before that button on a brand-new VM still
+   fails with the esbuild message.
 7. Step 12 (`scripts/12-mls-project.sh`) runs
    `node /data/mls-base/scripts/runtime/projectInit.mjs <projectId> --root /data/mls-base`
    when the installer got `--project-id`. That is what makes the VM **clonable**: the client
