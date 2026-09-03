@@ -149,7 +149,16 @@ export function awaitLoopbackLogin({
     });
 
     const timer = setTimeout(() => {
-      finish(reject, new Error(`o login não voltou em ${Math.round(timeoutMs / 1000)}s — o browser abriu?`));
+      // A causa mais provável não é o browser: é um collab-auth que ainda não tem `loopback` na
+      // allowlist do `safeReturnTo`. Nesse caso ele ignora o returnTo e manda os tokens para o
+      // collab-admin — o browser abre, o login funciona, e o loopback nunca recebe nada. Sem dizer
+      // isto, o sintoma manda a pessoa procurar problema no navegador.
+      finish(reject, new Error(
+        `o login não voltou em ${Math.round(timeoutMs / 1000)}s.\n`
+        + '  Se o browser abriu e o login funcionou, o collab-auth publicado ainda não aceita o\n'
+        + '  loopback: precisa da entrada `loopback` em COLLAB_AUTH_ALLOWED_RETURN_HOSTS (gb53 P-W1).\n'
+        + '  Enquanto isso: publishGit login --paste',
+      ));
     }, timeoutMs);
     // Um timer aberto seguraria o processo mesmo depois de resolver.
     timer.unref?.();

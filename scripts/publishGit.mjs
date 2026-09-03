@@ -174,7 +174,9 @@ function loadRemoteConf(projectDir, flagConf) {
 
 // Same conf chain the publish uses, exported so vmInit.mjs does not duplicate it.
 export function resolveProfileConf(profile, projectDir = ROOT, flagConf = {}) {
-  const conf = profile === 'local' ? loadLocalConf() : loadRemoteConf(projectDir, flagConf);
+  // As flags valem nos DOIS perfis. Antes o `local` ignorava `flagConf`, então `--git-url` (gb53)
+  // simplesmente não existia para a lima — e a lima é onde se testa o caminho novo antes da VM.
+  const conf = profile === 'local' ? { ...loadLocalConf(), ...flagConf } : loadRemoteConf(projectDir, flagConf);
   if (conf.GIT_URL) return conf;
   if (conf.MULTIPASS_INSTANCE && !conf.SSH_HOST) {
     fail('git publish precisa de SSH_HOST; Multipass sozinho não serve de remote git.');

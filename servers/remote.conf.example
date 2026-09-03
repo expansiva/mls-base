@@ -15,3 +15,16 @@
 SSH_HOST=i-0123456789abcdef0
 SSH_CONFIG=$HOME/.ssh/collab-remote.config
 REMOTE_BASE=/data/mls-base
+
+# ── Publish por git smart HTTP com identidade JWT (gb50/gb53) ──────────────────
+#
+# Descomente GIT_URL para publicar pela porta git da VM, autenticado pelo token do
+# collab-auth (`publishGit login`), em vez de ssh. É o caminho da EQUIPE: numa VM
+# remota a porta 22 fica fechada, e o SSM identifica a máquina, não a pessoa.
+#
+# Com GIT_URL, SSH_HOST não é necessário (as duas linhas acima podem ficar como
+# estão, para o caminho de administração). A VM precisa do bloco `location /git/`
+# no vhost — sem ele o clone funciona e o primeiro push dá 413; a receita está em
+# `mls-base/skills/publishGitBackend.md`.
+#
+# GIT_URL=https://<id>.collabcodes.com

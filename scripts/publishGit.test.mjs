@@ -372,3 +372,12 @@ test('sshUrl sem SSH_HOST falha dizendo o que fazer, em vez de montar ssh://unde
   assert.notEqual(result.status, 0);
   assert.match(`${result.stdout}${result.stderr}`, /--ssh-host|--git-url|Server config not found/u);
 });
+
+test('as flags valem no perfil local também (senão --git-url não existe para a lima)', () => {
+  // A lima é onde o caminho novo se testa antes da VM remota. Com o `local` descartando flagConf,
+  // `--git-url` era silenciosamente ignorado e o publish voltava para o ssh sem dizer nada.
+  const source = readFileSync(join(MLS_BASE, 'scripts', 'publishGit.mjs'), 'utf8');
+  assert.match(source, /\{ \.\.\.loadLocalConf\(\), \.\.\.flagConf \}/u);
+  const parsed = parseArgs(['102043', 'local', '--git-url=http://127.0.0.1']);
+  assert.equal(parsed.flagConf.GIT_URL, 'http://127.0.0.1');
+});

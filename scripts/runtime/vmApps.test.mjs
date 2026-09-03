@@ -6,15 +6,24 @@ import { join } from 'node:path';
 import { appNameOf, ProjectPortError, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 import { ensureProjectApp, isAggregator, pm2AggregatorConfig, pm2AppConfig } from './vmApps.mjs';
 
-// ── porta: a MESMA regra do collab-sites (sites.ts:265) ─────────────────────
+// ── porta: a MESMA regra do collab-sites (sites.ts, `projectIdToPort`) ──────
+//
+// ESPELHO de `collab-sites/src/tests/sites.test.ts` (gb52 item 4). A regra vive nos dois repos
+// porque são dois runtimes (lá TypeScript com build, aqui Node puro na VM); o que não pode é
+// divergirem em silêncio — dois apps disputando a porta, ou o nginx apontando para o vazio. Os cinco
+// casos abaixo são os mesmos de lá: mexer em um lado sem o outro quebra um teste, não um app.
 test('projectIdToPort repete a regra do sites, caso a caso', () => {
+  assert.equal(projectIdToPort('102043'), 2043);
+  assert.equal(projectIdToPort('102047'), 2047);
+  assert.equal(projectIdToPort('1000'), 2000);
+  assert.equal(projectIdToPort('102999'), 2999);
+  // Casos que só existem deste lado (o sites recebe string|number; aqui vem de argv).
   assert.equal(projectIdToPort('102048'), 2048);
   assert.equal(projectIdToPort(5030), 2030);
-  assert.equal(projectIdToPort('102999'), 2999);
-  assert.equal(projectIdToPort('102043'), 2043);
 });
 
 test('projectIdToPort recusa o que não é só dígito — mls-102048 não é id', () => {
+  assert.throws(() => projectIdToPort('10a2'), ProjectPortError);
   assert.throws(() => projectIdToPort('mls-102048'), ProjectPortError);
   assert.throws(() => projectIdToPort(''), ProjectPortError);
 });

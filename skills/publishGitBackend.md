@@ -285,9 +285,40 @@ What a fresh remote VM actually does today, in order. Read this before promising
    project is born from the template, `.collab-git` is written before `gitReposSetup`, and the
    repo gets `main` + `vm-baseline` + the push hook. No `--project-id` ⇒ the step is skipped,
    not failed.
-8. The app goes live on the first `pnpm publish:remote` (platform + app, gb13) — or, on the
-   legacy path, when the sites **publish job** ships the tarball and runs
-   `pnpm build --client <id>`.
+8. **The slot** (gb52): the admin action — button *Add project* in the VM's hosted-projects panel,
+   or `POST /api/v1/servers/<serverId>/hosted-projects {"projectId":"<id>"}` — runs
+   `provisionProjectSlot` (collab-sites `layer_3_usecases/servers.ts`, builders in
+   `projectSlot.ts`). It refuses if the project already
+   lives on another VM, records it in `hostedProjects[]`, syncs Route 53, and over SSM runs the
+   **same** `projectInit.mjs` as step 7 plus the project's **nginx vhost**. It returns the clone
+   URL. This is what makes the domain answer at all — before gb52 the vhost only existed inside
+   the tarball publish job, so an app could be live on port 2xxx and unreachable.
+   Re-running it on a project that is **already** on this VM is the repair path (a vhost that got
+   lost): `projectInit` is idempotent, and the inventory entry is kept, so `lastPublishAt` survives.
+   `slotApplied: false` in the answer means the server has no instance yet — nothing was sent to
+   the VM, only the inventory was written.
+9. **The first release cannot arrive by push** — measured on the 102043 VM, 03/09. The `/git/`
+   door is served by the **project's own app** (the vhost proxies `/git/` to port 2xxx), so with no
+   app running, `/` and `/git/` both answer **502** and there is nothing to push to. The slot is
+   complete and correct at this point; what is missing is a release. Break the loop from the
+   admin: **Build release**, the button next to Delete on the project's row in the VM's
+   hosted-projects panel (`POST /servers/<id>/hosted-projects/<projectId>/release`). It sends, over
+   SSM, the same routine the hook would have run — no ssh:
+
+   ```
+   sudo -u <owner> -H bash -lc 'cd /data/mls-base && node scripts/runtime/gitPostReceive.mjs --root /data/mls-base --project <id>'
+   ```
+
+   It needs no push: it builds (`buildProjectsObj --only <id> --force`), cuts the release
+   (`addNewVersion.mjs`), writes `pm2.apps.d/app<porta>.config.js` and reloads pm2. Once the app
+   answers on its port, the door is up and every later release comes from `pnpm publish:remote`.
+   The legacy alternative is the sites **publish job** (tarball + `pnpm build --client <id>`) —
+   which is why gb51 item 4 gates turning it off.
+
+Steps 7 and 8 do the same two things from two directions, on purpose: step 7 is the VM creating its
+own project during bootstrap (it knows the id from `--project-id`), step 8 is someone deciding later
+to put a project on an existing VM. Both call one script and write one vhost — a second scaffold or a
+second vhost writer would drift on the first fix.
 
 ### The project template, and why it is not a scaffold project
 
