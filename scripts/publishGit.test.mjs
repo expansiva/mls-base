@@ -12,7 +12,11 @@ import {
   DIRTY_LOCAL_MSG,
   ensureBookkeepingGitignore,
   isDirty,
+  makeRebuildCommit,
+  MISSING_HOOK_MSG,
+  needsRebuildCommit,
   parseArgs,
+  rebuildCommitMessage,
   remoteConfMissingMessage,
   remoteUrlFor,
   resolveProfileConf,
@@ -380,4 +384,47 @@ test('as flags valem no perfil local também (senão --git-url não existe para 
   assert.match(source, /\{ \.\.\.loadLocalConf\(\), \.\.\.flagConf \}/u);
   const parsed = parseArgs(['102043', 'local', '--git-url=http://127.0.0.1']);
   assert.equal(parsed.flagConf.GIT_URL, 'http://127.0.0.1');
+});
+
+// ── gb69: app inalterado + dep alterada corta release no PROJETO, não na dep ─
+test('needsRebuildCommit só quando o app está igual e alguma dep mudou', () => {
+  assert.equal(needsRebuildCommit('same', ['102025', '102033']), true);
+  assert.equal(needsRebuildCommit('same', []), false);
+  assert.equal(needsRebuildCommit('ahead', ['102025']), false);
+  assert.equal(needsRebuildCommit('unrelated', ['102025']), false);
+});
+
+test('rebuildCommitMessage e makeRebuildCommit: commit vazio, main anda, árvore igual', () => {
+  assert.equal(rebuildCommitMessage(['102025', '102033']), 'publish: rebuild after deps 102025 102033');
+  withRepo((dir) => {
+    const treeBefore = git(dir, ['rev-parse', 'HEAD^{tree}']);
+    const shaBefore = git(dir, ['rev-parse', 'HEAD']);
+    const message = makeRebuildCommit(dir, ['102025', '102033']);
+    assert.equal(message, 'publish: rebuild after deps 102025 102033');
+    assert.equal(git(dir, ['log', '-1', '--pretty=%s']), message);
+    assert.notEqual(git(dir, ['rev-parse', 'HEAD']), shaBefore);
+    assert.equal(git(dir, ['rev-parse', 'HEAD^{tree}']), treeBefore);
+  });
+});
+
+test('retrato de dep nunca dispara a build — a release é do projeto publicado', () => {
+  const source = readFileSync(join(MLS_BASE, 'scripts', 'publishGit.mjs'), 'utf8');
+  assert.match(source, /pushOptions: \['skip-build'\]/);
+  assert.doesNotMatch(source, /triggers \? \[`deps=/);
+  assert.doesNotMatch(source, /a build foi disparada pelo último retrato/);
+  assert.match(source, /makeRebuildCommit\(repo, changedDeps\)/);
+});
+
+test('clientPushArgs com deps é o que o hook do projeto consome depois do commit-marca', () => {
+  assert.deepEqual(clientPushArgs({ remote: 'vm', changedDeps: ['102025', '102033'] }), [
+    'push', '-o', 'deps=102025,102033', 'vm', 'main',
+  ]);
+});
+
+test('MISSING_HOOK_MSG afirma o que ficou por fazer, não pergunta', () => {
+  assert.match(MISSING_HOOK_MSG, /não cortou release/);
+  assert.match(MISSING_HOOK_MSG, /gitReposSetup\.mjs/);
+  assert.match(MISSING_HOOK_MSG, /rode o publish de novo/);
+  assert.doesNotMatch(MISSING_HOOK_MSG, /\?/);
+  assert.doesNotMatch(MISSING_HOOK_MSG, /ausente neste repo/);
 });

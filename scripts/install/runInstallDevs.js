@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const fetch = require('node-fetch');
+const { readLibsPin, libFileUrls } = require('./libsPin.js');
 
 const mainProjects = {
     "100554": {
@@ -90,26 +91,17 @@ async function downloadFile(url, path) {
 
 }
 
-async function fetchJson(url) {
-    try {
-        const response = await fetch(url);
-        const data = await response.json();
-        return data;
-    } catch (error) {
-        console.error('Erro ao baixar o arquivo JSON:', error);
-    }
-}
-
 async function runDownload() {
     try {
 
         fs.mkdirSync('./types', { recursive: true });
 
-        const json = await fetchJson('https://s3.amazonaws.com/www.collab.codes/latest.json');
-        console.log('Get version files');
+        const pin = readLibsPin('.');
+        const urls = libFileUrls(pin);
+        console.log(`Get version files (pin libs=${pin.libs} monaco=${pin.monaco})`);
 
-        const urlMonaco = `https://collab.codes/monaco/${json.monaco}/monaco.d.ts`;
-        const urlMls = `https://collab.codes/libs/${json.libs}/mls.d.ts`;
+        const urlMonaco = urls.monacoDts;
+        const urlMls = urls.mlsDts;
 
         await downloadFile(urlMonaco, './types/monaco.d.ts');
         console.log('Get monaco definition');

@@ -1,42 +1,49 @@
 #!/usr/bin/env node
 // projectInit.mjs — makes a client project be BORN ON THE VM, ready to clone and push.
 //
-// Runs ON THE VM (local filesystem, no ssh). Two callers, one rule:
+// Runs ON THE VM (local filesystem, no ssh). Callers, one rule:
 //   • the Mac, through `pnpm vm:init <id>` (scripts/vmInit.mjs calls this over ssh);
-//   • the VM bootstrap, through collab-runtime's step 12, when the installer got --project-id.
+//   • the VM bootstrap, through collab-runtime's step 12, when the installer got --project-id;
+//   • collab-sites slot (gb52), the same command over SSM.
 //
 // Steps:
-//   1. the project folder is born from scripts/templates/<template>, with the
-//      __PROJECT_ID__ placeholder replaced by the real id;
-//   2. `.collab-git` is written BEFORE gitReposSetup, so the marker lands INSIDE the
+//   1. `git clone --depth 1` of mls-102039 (the public model) into mls-<id>;
+//   2. the model's `.git` is removed (the client does not inherit that history), plus
+//      `.github/` and `obj/` if they travelled with the clone;
+//   3. every `102039` / `_102039_` is rewritten to the new id (content and path);
+//      the model's modules stay — a client with empty l5.modules skips config composers
+//      (build.mjs:211) and never gets persistenceModules, so the app dies on an empty
+//      registry (`_schema_migrations does not exist`). Measured on 102043 (gb56). An
+//      empty client is not a client;
+//   4. `.collab-git` is written BEFORE gitReposSetup, so the marker lands INSIDE the
 //      vm-baseline commit — a project unprotected until its first push is a project the
 //      traditional publish may wipe;
-//   3. gitReposSetup gives it `main` + `vm-baseline` + the push hook;
-//   4. the result is checked, not assumed: no placeholder left, `main` exists, and the
-//      project DECLARES its dependencies (without that the host loads no agent at all).
+//   5. gitReposSetup gives it `main` + `vm-baseline` + the push hook;
+//   6. the result is checked, not assumed: no model id left, `main` exists, the project
+//      DECLARES its dependencies, and `shellTemplates.spa` is present (without that the
+//      app becomes a zombie: pm2 green, nothing listening — measured on 102043).
 //
 // Idempotent: a second run finds the folder and does nothing. `--force` recreates, and it
 // FAILS CLOSED — only a repo that positively proves it has nothing beyond the baseline may
 // be deleted (mayRecreate).
 //
-// WHY A TEMPLATE AND NOT A SCAFFOLD PROJECT
-// On a brand-new VM the platform arrives as `git clone` of mls-base, and that repository
-// tracks NO mls-* project (measured 03/09/2026). There is no scaffold to copy from. A
-// template versioned with the scripts exists on every VM, so lima and a remote VM take the
-// same path — which is the whole point of the "lima igual" decision.
+// The static tree under scripts/templates/project/ is gone on purpose (gb70 / Q1): it was
+// a second source of truth that nobody validated, and it shipped without shellTemplates.
+// No network to GitHub ⇒ fail with a clear message. There is no offline fallback.
 
 import { spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync,
+  existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = resolve(SCRIPT_DIR, '..', '..');
-const DEFAULT_TEMPLATE = 'project';
 
-export const PLACEHOLDER = '__PROJECT_ID__';
+export const MODEL_ID = '102039';
+export const MODEL_REPO_URL = 'https://github.com/expansiva/mls-102039.git';
 export const GIT_MANAGED_MARKER = '.collab-git';
 
 function fail(message, code = 1) {
@@ -50,41 +57,54 @@ function log(message) {
 
 function usage() {
   return [
-    'usage: node scripts/runtime/projectInit.mjs <projectId|mls-<id>> [--root <dir>]',
-    '       [--template <name>] [--force]',
-    `  --root      mls-base root on the VM (default ${DEFAULT_ROOT})`,
-    `  --template  folder under scripts/templates/ (default ${DEFAULT_TEMPLATE})`,
-    '  --force     recreate the project — only when main == vm-baseline (never deletes history)',
+    'usage: node scripts/runtime/projectInit.mjs <projectId|mls-<id>> --from-model [--root <dir>]',
+    '       [--force] [--model-url <url>]',
+    '  --from-model  clone mls-102039 from GitHub and renumber (the only source)',
+    `  --root        mls-base root on the VM (default ${DEFAULT_ROOT})`,
+    '  --force       recreate the project — only when main == vm-baseline (never deletes history)',
+    '  --model-url   override the model URL (tests only)',
   ].join('\n');
 }
 
 export function parseArgs(argv, defaultRoot = DEFAULT_ROOT) {
   const positional = [];
   let root = defaultRoot;
-  let template = DEFAULT_TEMPLATE;
   let force = false;
+  let fromModel = false;
+  let modelUrl = MODEL_REPO_URL;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--force') force = true;
+    else if (arg === '--from-model') fromModel = true;
     else if (arg === '--root' && argv[i + 1]) { root = argv[i + 1]; i += 1; }
     else if (arg.startsWith('--root=')) root = arg.slice('--root='.length);
-    else if (arg === '--template' && argv[i + 1]) { template = argv[i + 1]; i += 1; }
-    else if (arg.startsWith('--template=')) template = arg.slice('--template='.length);
+    else if (arg === '--model-url' && argv[i + 1]) { modelUrl = argv[i + 1]; i += 1; }
+    else if (arg.startsWith('--model-url=')) modelUrl = arg.slice('--model-url='.length);
+    else if (arg === '--template' || arg.startsWith('--template=')) {
+      return {
+        ok: false,
+        usage: 'the static template is gone; use --from-model (the model is mls-102039 on GitHub).\n' + usage(),
+      };
+    }
     else positional.push(arg);
   }
   const idMatch = /^(?:mls-)?(\d+)$/u.exec((positional[0] || '').trim());
   if (!idMatch) return { ok: false, usage: usage() };
-  if (!/^[A-Za-z0-9._-]+$/u.test(template)) return { ok: false, usage: usage() };
-  return { ok: true, id: idMatch[1], root: resolve(root), template, force };
+  const url = String(modelUrl || '').trim();
+  if (!url) return { ok: false, usage: usage() };
+  // --from-model is the only source: the flag documents the contract; omitting it still clones.
+  return { ok: true, id: idMatch[1], root: resolve(root), force, fromModel: true, modelUrl: url, askedFromModel: fromModel };
 }
 
 /** What the marker says, for whoever finds the folder without this context. */
-export function gitManagedMarkerBody(id) {
-  return (
-    `git-managed project (mls-${id}): the VM is the source of truth.\n` +
-    'The traditional publish must NOT wipe or overwrite this folder — it is updated by git push.\n' +
-    'See mls-base/skills/publishGitBackend.md.'
-  );
+export function gitManagedMarkerBody(id, modelCommit = '') {
+  const lines = [
+    `git-managed project (mls-${id}): the VM is the source of truth.`,
+    'The traditional publish must NOT wipe or overwrite this folder — it is updated by git push.',
+    'See mls-base/skills/publishGitBackend.md.',
+  ];
+  if (modelCommit) lines.push(`model-commit: ${modelCommit}`);
+  return lines.join('\n');
 }
 
 /**
@@ -133,9 +153,30 @@ export function missingWorkspaceDependencies(configText) {
   return '';
 }
 
+/**
+ * Without shellTemplates.spa the app never listens: pm2 stays green and the domain is 502
+ * (measured on 102043 — the static scaffold omitted the key). A model that does not carry
+ * it is not a client.
+ */
+export function missingShellTemplates(configText) {
+  if (configText === '') return 'l5/config.json ausente';
+  let parsed;
+  try {
+    parsed = JSON.parse(configText);
+  } catch {
+    return 'l5/config.json inválido (JSON)';
+  }
+  if (!parsed?.shellTemplates?.spa) return 'l5/config.json sem shellTemplates.spa';
+  return '';
+}
+
 function git(dir, args) {
-  const result = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+  const result = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', env: gitEnv() });
   return { code: result.status ?? 1, out: `${result.stdout ?? ''}`.trim() };
+}
+
+function gitEnv() {
+  return { ...process.env, GIT_TERMINAL_PROMPT: '0' };
 }
 
 export function projectState(root, id) {
@@ -150,52 +191,31 @@ export function projectState(root, id) {
 }
 
 /**
- * macOS metadata that must never reach a project. Measured while shipping the template to
- * lima: a `tar` from the Mac carried `._*` AppleDouble files, and the copy would have put
- * one beside every file of every new project.
+ * macOS metadata that must never reach a project. Measured while shipping files to
+ * lima: a `tar` from the Mac carried `._*` AppleDouble files.
  */
 export function isMacMetadata(name) {
   return name === '.DS_Store' || name.startsWith('._');
 }
 
-/** A file with a NUL byte is binary: copied as-is, never substituted. */
-function substituteInto(buffer, id) {
-  if (buffer.includes(0)) return buffer;
-  return Buffer.from(buffer.toString('utf8').replaceAll(PLACEHOLDER, id), 'utf8');
+function idPattern(id, flags = '') {
+  return new RegExp(`(?<![0-9])${id}(?![0-9])`, flags);
 }
 
-/**
- * Copies the template into `destDir`, replacing the placeholder in every text file — in the
- * CONTENT and in the PATH, so a template may name a file after the project one day.
- *
- * Done in Node, not `rsync | sed -i`: the same code then runs on the VM and in a unit test on
- * the Mac. The shell version could not be tested here at all — BSD `sed -i` takes a different
- * argument than the VM's GNU `sed` (noted while measuring gb16).
- */
-export function copyTemplate(templateDir, destDir, id) {
-  const files = [];
-  const walk = (dir) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+function walkEntries(dir, onEntry) {
+  const walk = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
       if (isMacMetadata(entry.name)) continue;
-      const full = join(dir, entry.name);
+      if (entry.name === '.git' || entry.name === 'node_modules') continue;
+      const full = join(current, entry.name);
+      onEntry(entry, full);
       if (entry.isDirectory()) walk(full);
-      else if (entry.isFile()) files.push(full);
     }
   };
-  walk(templateDir);
-
-  for (const file of files) {
-    const rel = relative(templateDir, file).replaceAll(PLACEHOLDER, id);
-    const target = join(destDir, rel);
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, substituteInto(readFileSync(file), id), { mode: statSync(file).mode & 0o777 });
-  }
-  return files.length;
+  walk(dir);
 }
 
-/** Files where the placeholder survived — a guard, because a leftover id is a silent bug. */
-export function remainingPlaceholders(dir) {
-  const left = [];
+function stripMacMetadata(dir) {
   const walk = (current) => {
     for (const entry of readdirSync(current, { withFileTypes: true })) {
       const full = join(current, entry.name);
@@ -204,14 +224,103 @@ export function remainingPlaceholders(dir) {
         walk(full);
         continue;
       }
+      if (entry.isFile() && isMacMetadata(entry.name)) unlinkSync(full);
+    }
+  };
+  walk(dir);
+}
+
+/** Rewrite every model id in CONTENT and PATH. Binary files (NUL) are left as-is. */
+export function renumberModel(dir, fromId, toId) {
+  if (fromId === toId) return 0;
+  const replace = idPattern(fromId, 'g');
+  const inName = idPattern(fromId);
+  let rewritten = 0;
+  const files = [];
+  const entries = [];
+  walkEntries(dir, (entry, full) => {
+    entries.push({ full, name: entry.name });
+    if (entry.isFile()) files.push(full);
+  });
+  for (const file of files) {
+    const body = readFileSync(file);
+    if (body.includes(0)) continue;
+    const text = body.toString('utf8');
+    replace.lastIndex = 0;
+    const next = text.replace(replace, toId);
+    if (next === text) continue;
+    writeFileSync(file, next, { mode: statSync(file).mode & 0o777 });
+    rewritten += 1;
+  }
+  entries.sort((a, b) => b.full.length - a.full.length);
+  for (const entry of entries) {
+    if (!inName.test(entry.name)) continue;
+    const nextName = entry.name.replace(idPattern(fromId, 'g'), toId);
+    if (nextName === entry.name) continue;
+    renameSync(entry.full, join(dirname(entry.full), nextName));
+  }
+  return rewritten;
+}
+
+/** Files where the model id survived — a leftover id is a silent bug (fileReference of 102046). */
+export function remainingModelIds(dir, modelId = MODEL_ID) {
+  const left = [];
+  const pattern = idPattern(modelId); // no /g — .test() lastIndex would skip files
+  const walk = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      if (isMacMetadata(entry.name)) continue;
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === '.git' || entry.name === 'node_modules') continue;
+        if (pattern.test(entry.name)) left.push(relative(dir, full));
+        walk(full);
+        continue;
+      }
       if (!entry.isFile()) continue;
-      if (entry.name.includes(PLACEHOLDER)) { left.push(relative(dir, full)); continue; }
+      if (pattern.test(entry.name)) { left.push(relative(dir, full)); continue; }
       const body = readFileSync(full);
-      if (!body.includes(0) && body.toString('utf8').includes(PLACEHOLDER)) left.push(relative(dir, full));
+      if (!body.includes(0) && pattern.test(body.toString('utf8'))) left.push(relative(dir, full));
     }
   };
   walk(dir);
   return left.sort();
+}
+
+function networkFailMessage(url, detail) {
+  return (
+    `cannot reach the model at ${url}:\n${detail}\n` +
+    'There is no offline fallback — the model lives on GitHub (the static template was deleted).'
+  );
+}
+
+function abortCreate(dir, message) {
+  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  fail(message);
+}
+
+function cloneModel(url, destDir) {
+  const probe = spawnSync('git', ['ls-remote', url, 'HEAD'], { encoding: 'utf8', env: gitEnv() });
+  if ((probe.status ?? 1) !== 0) {
+    fail(networkFailMessage(url, `${probe.stderr ?? ''}${probe.stdout ?? ''}`.trim() || `git ls-remote exit ${probe.status ?? 1}`));
+  }
+  const cloned = spawnSync('git', ['clone', '--depth', '1', url, destDir], { encoding: 'utf8', env: gitEnv() });
+  if ((cloned.status ?? 1) !== 0) {
+    abortCreate(
+      destDir,
+      networkFailMessage(url, `${cloned.stderr ?? ''}${cloned.stdout ?? ''}`.trim() || `git clone exit ${cloned.status ?? 1}`),
+    );
+  }
+  const sha = git(destDir, ['rev-parse', 'HEAD']);
+  const commit = sha.code === 0 ? sha.out : '';
+  if (!commit) abortCreate(destDir, `cloned ${url} but could not read HEAD`);
+  log(`model ${url} @ ${commit}`);
+  rmSync(join(destDir, '.git'), { recursive: true, force: true });
+  for (const extra of ['.github', 'obj']) {
+    const path = join(destDir, extra);
+    if (existsSync(path)) rmSync(path, { recursive: true, force: true });
+  }
+  stripMacMetadata(destDir);
+  return commit;
 }
 
 function runGitReposSetup(root, id) {
@@ -225,15 +334,16 @@ function runGitReposSetup(root, id) {
   log(`gitReposSetup: ${line.trim() || 'ok'}`);
 }
 
+function readConfig(dir) {
+  const configPath = join(dir, 'l5', 'config.json');
+  return existsSync(configPath) ? readFileSync(configPath, 'utf8').trim() : '';
+}
+
 function main() {
   const parsed = parseArgs(process.argv.slice(2));
   if (!parsed.ok) fail(parsed.usage);
-  const { id, root, template, force } = parsed;
+  const { id, root, force, modelUrl } = parsed;
 
-  const templateDir = join(root, 'scripts', 'templates', template);
-  if (!existsSync(templateDir)) {
-    fail(`template not found: ${templateDir}\n${usage()}`);
-  }
   const setup = join(root, 'scripts', 'runtime', 'gitReposSetup.mjs');
   if (!existsSync(setup)) fail(`incomplete platform: ${setup} is missing`);
 
@@ -254,28 +364,43 @@ function main() {
     rmSync(state.dir, { recursive: true, force: true });
   }
 
-  const copied = copyTemplate(templateDir, state.dir, id);
-  writeFileSync(join(state.dir, GIT_MANAGED_MARKER), `${gitManagedMarkerBody(id)}\n`);
+  const commit = cloneModel(modelUrl, state.dir);
+  const rewritten = renumberModel(state.dir, MODEL_ID, id);
+  // Keep the model's modules. Empty l5.modules skips composers (build.mjs:211) and
+  // the app dies on an empty persistence registry — gb56, measured on 102043.
+  writeFileSync(join(state.dir, GIT_MANAGED_MARKER), `${gitManagedMarkerBody(id, commit)}\n`);
 
-  const left = remainingPlaceholders(state.dir);
-  if (left.length) fail(`${PLACEHOLDER} left over in:\n  ${left.join('\n  ')}`);
-  log(`mls-${id}: ${copied} file(s) from template ${template}, id replaced, ${GIT_MANAGED_MARKER} written`);
+  const left = remainingModelIds(state.dir);
+  if (left.length) abortCreate(state.dir, `model id ${MODEL_ID} left over in:\n  ${left.join('\n  ')}`);
+
+  const configText = readConfig(state.dir);
+  const depsProblem = missingWorkspaceDependencies(configText);
+  if (depsProblem) {
+    abortCreate(
+      state.dir,
+      `mls-${id} will not be able to load an agent: ${depsProblem}.\n` +
+        'The host resolves the agent through l5/config.json.workspaceDependencies. Fix the model ' +
+        `(${MODEL_REPO_URL}) and run again.`,
+    );
+  }
+  const shellProblem = missingShellTemplates(configText);
+  if (shellProblem) {
+    abortCreate(
+      state.dir,
+      `mls-${id} will not boot: ${shellProblem}.\n` +
+        'The runtime reads config.shellTemplates[shellMode] at listen time; missing spa is a 502 with pm2 green. ' +
+        `Fix the model (${MODEL_REPO_URL}) and run again.`,
+    );
+  }
+
+  log(`mls-${id}: cloned model @ ${commit.slice(0, 7)}, ${rewritten} file(s) renumbered, ${GIT_MANAGED_MARKER} written`);
 
   runGitReposSetup(root, id);
 
   const after = projectState(root, id);
   if (!after.mainSha) fail(`mls-${id} has no main branch after gitReposSetup.`);
 
-  const configPath = join(state.dir, 'l5', 'config.json');
-  const problem = missingWorkspaceDependencies(existsSync(configPath) ? readFileSync(configPath, 'utf8').trim() : '');
-  if (problem) {
-    fail(
-      `mls-${id} will not be able to load an agent: ${problem}.\n` +
-        'The host resolves the agent through l5/config.json.workspaceDependencies. Fix the template ' +
-        `(scripts/templates/${template}/l5/config.json) and run again.`,
-    );
-  }
-  log(`mls-${id}: declares dependencies (l5/config.json) — agents will load`);
+  log(`mls-${id}: declares dependencies and shellTemplates — agents will load, app will listen`);
   process.stdout.write('created\n');
 }
 

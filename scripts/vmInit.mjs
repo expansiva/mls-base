@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // vmInit.mjs — `pnpm vm:init <id>`: one command for "start the VM, put the
-// project there (empty), clone it here, ready to change and push".
+// project there (clone of mls-102039, renumbered), clone it here, ready to change and push".
 //
 //   1. the lima instance is up and answering ssh
-//   2. the platform is on the VM (scripts/runtime/projectInit.mjs + the template)
-//   3. the project is BORN ON THE VM — `projectInit.mjs` over ssh does it
+//   2. the platform is on the VM (scripts/runtime/projectInit.mjs; the model is cloned from GitHub)
+//   3. the project is BORN ON THE VM — `projectInit.mjs --from-model` over ssh does it
 //   4. the Mac clones it (publishGit <id> clone <profile>)
 //
 // Everything that happens ON the VM lives in `scripts/runtime/projectInit.mjs`, so the
@@ -23,7 +23,6 @@ import { resolveProfileConf } from './publishGit.mjs';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_DIR, '..');
 const DEFAULT_REMOTE_BASE = '/data/mls-base';
-const DEFAULT_TEMPLATE = 'project';
 const SSH_WAIT_SECONDS = 120;
 
 function fail(message, code = 1) {
@@ -37,30 +36,27 @@ function log(message) {
 
 function usage() {
   return [
-    'usage: node scripts/vmInit.mjs <projetoId|mls-<id>> [--profile local|remote]',
-    '       [--template <nome>] [--force]',
+    'usage: node scripts/vmInit.mjs <projetoId|mls-<id>> [--profile local|remote] [--force]',
     '  --profile  destino (default local: PUBLISH_LOCAL_* do mls-base/.env)',
-    `  --template pasta em scripts/templates/ na VM (default ${DEFAULT_TEMPLATE})`,
     '  --force    recria o projeto na VM — só se main == vm-baseline (nunca apaga história)',
+    '  o projeto nasce de --from-model (mls-102039 no GitHub); não há template estático',
   ].join('\n');
 }
 
 export function parseArgs(argv) {
   const positional = [];
   let profile = 'local';
-  let template = DEFAULT_TEMPLATE;
   let force = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--force') force = true;
     else if (arg === '--profile' && argv[i + 1]) { profile = argv[i + 1]; i += 1; }
     else if (arg.startsWith('--profile=')) profile = arg.slice('--profile='.length);
-    else if (arg === '--template' && argv[i + 1]) { template = argv[i + 1]; i += 1; }
-    else if (arg.startsWith('--template=')) template = arg.slice('--template='.length);
-    // The scaffold PROJECT is gone: a brand-new VM clones mls-base, which tracks no
-    // mls-* at all, so there is nothing to copy from. Say it instead of guessing.
+    else if (arg === '--template' || arg.startsWith('--template=')) {
+      fail('the static template is gone; the project is cloned from mls-102039 (--from-model).');
+    }
     else if (arg === '--scaffold' || arg.startsWith('--scaffold=')) {
-      fail('--scaffold saiu: o projeto vazio virou template versionado com os scripts. Use --template <nome> (default project).');
+      fail('--scaffold saiu: o projeto nasce de --from-model (mls-102039 no GitHub).');
     }
     else positional.push(arg);
   }
@@ -68,7 +64,7 @@ export function parseArgs(argv) {
   if (!idMatch || (profile !== 'local' && profile !== 'remote')) {
     fail(usage());
   }
-  return { id: idMatch[1], template, profile, force };
+  return { id: idMatch[1], profile, force };
 }
 
 // `~/.lima/<instance>/ssh.config` is how the local profile names its VM; the
@@ -147,42 +143,34 @@ function waitForSsh(conf, seconds = SSH_WAIT_SECONDS) {
 
 // ── step 2 ──────────────────────────────────────────────────────────────────
 // What the VM must already have for the project to be born there: the script that
-// does it and the template it copies from. Both travel with `scripts/`, so this is
-// true on any VM that has the mls-base checkout — no scaffold PROJECT needed.
-function ensurePlatform(conf, base, template) {
+// clones the model. The model itself lives on GitHub, not in scripts/templates/.
+function ensurePlatform(conf, base) {
   const initScript = `${base}/scripts/runtime/projectInit.mjs`;
-  const templateDir = `${base}/scripts/templates/${template}`;
-  const probe = ssh(
-    conf,
-    `test -f ${shQuote(initScript)} && echo init-ok; test -d ${shQuote(templateDir)} && echo template-ok`,
-  );
-  const missing = [];
-  if (!probe.out.includes('init-ok')) missing.push(initScript);
-  if (!probe.out.includes('template-ok')) missing.push(templateDir);
-  if (missing.length) {
+  const probe = ssh(conf, `test -f ${shQuote(initScript)} && echo init-ok`);
+  if (!probe.out.includes('init-ok')) {
     fail(
-      `a plataforma não está montada na VM — falta:\n  ${missing.join('\n  ')}\n` +
+      `a plataforma não está montada na VM — falta:\n  ${initScript}\n` +
         'Monte com um publish tradicional (ex.: `pnpm publish:local` de dentro de um mls-* já publicado) e rode vm:init de novo.',
     );
   }
-  log(`plataforma na VM: ok (template ${template})`);
+  log('plataforma na VM: ok (projectInit --from-model)');
 }
 
 // ── step 3 ──────────────────────────────────────────────────────────────────
 // One ssh call, because the whole rule lives on the VM now. Same command the VM
 // bootstrap runs by itself (collab-runtime step 12) — that is what keeps lima and a
 // remote VM on the same path.
-export function projectInitCommand(base, id, template, force) {
+export function projectInitCommand(base, id, force) {
   const args = [
     'node', `${base}/scripts/runtime/projectInit.mjs`, id,
-    '--root', base, '--template', template,
+    '--root', base, '--from-model',
   ];
   if (force) args.push('--force');
   return args.map(shQuote).join(' ');
 }
 
-function initProjectOnVm(conf, base, id, template, force) {
-  const command = projectInitCommand(base, id, template, force);
+function initProjectOnVm(conf, base, id, force) {
+  const command = projectInitCommand(base, id, force);
   const result = ssh(conf, command);
   process.stderr.write(result.out.endsWith('\n') || !result.out ? result.out : `${result.out}\n`);
   if (result.code !== 0) fail(`projectInit falhou na VM (exit ${result.code}).`);
@@ -201,10 +189,10 @@ function cloneOnMac(id, profile) {
 }
 
 async function main() {
-  const { id, template, profile, force } = parseArgs(process.argv.slice(2));
+  const { id, profile, force } = parseArgs(process.argv.slice(2));
   const conf = resolveProfileConf(profile, join(ROOT, `mls-${id}`));
   const base = (conf.REMOTE_BASE || DEFAULT_REMOTE_BASE).replace(/\/+$/u, '');
-  log(`mls-${id} → ${conf.SSH_HOST}:${base} (${profile}), template ${template}`);
+  log(`mls-${id} → ${conf.SSH_HOST}:${base} (${profile}), --from-model`);
 
   if (profile === 'local') {
     const instance = limaInstanceOf(conf);
@@ -212,8 +200,8 @@ async function main() {
     else log('perfil local sem instância lima identificável — assumo a VM já de pé');
   }
   waitForSsh(conf);
-  ensurePlatform(conf, base, template);
-  initProjectOnVm(conf, base, id, template, force);
+  ensurePlatform(conf, base);
+  initProjectOnVm(conf, base, id, force);
   cloneOnMac(id, profile);
 
   process.stderr.write(

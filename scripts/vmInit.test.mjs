@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { limaInstanceOf, parseArgs, projectInitCommand } from './vmInit.mjs';
 
-test('parseArgs: defaults are the local profile and the `project` template', () => {
+test('parseArgs: defaults are the local profile; the model is the only source', () => {
   assert.deepEqual(parseArgs(['102043']), {
-    id: '102043', template: 'project', profile: 'local', force: false,
+    id: '102043', profile: 'local', force: false,
   });
-  assert.deepEqual(parseArgs(['mls-102043', '--profile', 'remote', '--template=project', '--force']), {
-    id: '102043', template: 'project', profile: 'remote', force: true,
+  assert.deepEqual(parseArgs(['mls-102043', '--profile', 'remote', '--force']), {
+    id: '102043', profile: 'remote', force: true,
   });
 });
 
@@ -23,17 +23,18 @@ test('limaInstanceOf: the instance is the folder of the ssh.config', () => {
 // The Mac side does not know HOW a project is born any more — it only names the VM-side
 // script. If this command drifts from what collab-runtime's step 12 runs, lima and a remote
 // VM stop taking the same path, which is the whole point of the split.
-test('projectInitCommand: names the VM script, the root and the template; --force only when asked', () => {
-  const plain = projectInitCommand('/data/mls-base', '102044', 'project', false);
+test('projectInitCommand: names the VM script, the root and --from-model; --force only when asked', () => {
+  const plain = projectInitCommand('/data/mls-base', '102044', false);
   assert.match(plain, /'node' '\/data\/mls-base\/scripts\/runtime\/projectInit\.mjs' '102044'/u);
   assert.match(plain, /'--root' '\/data\/mls-base'/u);
-  assert.match(plain, /'--template' 'project'/u);
+  assert.match(plain, /'--from-model'/u);
   assert.equal(plain.includes('--force'), false);
-  assert.match(projectInitCommand('/data/mls-base', '102044', 'project', true), /'--force'/u);
+  assert.match(projectInitCommand('/data/mls-base', '102044', true), /'--force'/u);
 });
 
 test('projectInitCommand: nothing from the Mac reaches the VM unquoted', () => {
   // A base path with a space (or worse) must not split into two arguments.
-  const command = projectInitCommand("/data/mls base", '102044', 'project', false);
+  const command = projectInitCommand("/data/mls base", '102044', false);
   assert.match(command, /'\/data\/mls base'/u);
+  assert.match(command, /'--from-model'/u);
 });

@@ -54,6 +54,13 @@ and applies seed rows — the server does NOT create schema at startup), then at
 via the `current` symlink (or `current-<projectId>` alias on multi-app servers), prune to the 10
 newest releases and reload pm2 with no downtime. Rollback = repoint the symlink + reload.
 
+The mls lib (`types/mls.d.ts`, `monaco.d.ts`, `static/libs/mls.js`) is **pinned** in
+`package.json` `collabLibs` (`libs` + `monaco`, 14-digit CDN timestamps). `runInstallLibs.js`
+(postinstall) downloads that pin and never reads `latest.json`; if `types/mls.d.ts` on disk does
+not match, it overwrites and logs `corrected … to pin libs=…`. Bumping the lib is a commit that
+changes `collabLibs`. Each release writes `releases/<id>/release.json` with the pin, the client
+git HEAD (`versionRef`) and the model commit from `.collab-git` (gb70).
+
 ## pm2 topology and ports
 
 pm2 can host **several apps, one per hosted project, each with its own port**:

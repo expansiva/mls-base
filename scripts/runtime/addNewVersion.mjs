@@ -8,9 +8,10 @@
 //   3. pnpm migrate for every project that declares a "migrate" script.
 //   4. Compile via `node scripts/build.mjs` (-> dist/local + dist/web).
 //   5. Assemble a release in releases/<yyyyMMddHHmmss> (runtime output only, no
-//      sources; node_modules shared via symlink), activate it atomically through
-//      the "current" symlink, keep the 10 newest, and reload pm2 (cluster, no
-//      downtime). Rollback = repoint "current" to an older release + reload.
+//      sources; node_modules shared via symlink), write release.json (lib pin +
+//      provenance), activate it atomically through the "current" symlink, keep
+//      the 10 newest, and reload pm2 (cluster, no downtime). Rollback = repoint
+//      "current" to an older release + reload.
 
 import { execSync } from 'node:child_process';
 import {
@@ -19,6 +20,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { collectReleaseStamp, writeReleaseStamp } from './releaseStamp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const run = (cmd, cwd = ROOT) => {
@@ -148,6 +150,9 @@ cpSync(join(ROOT, 'config.json'), join(releaseDir, 'config.json')); // server re
 // and migrate resolve .env from their cwd, and releases are recreated on every publish.
 if (existsSync(join(ROOT, '.env'))) cpSync(join(ROOT, '.env'), join(releaseDir, '.env'));
 symlinkSync(join(ROOT, 'node_modules'), join(releaseDir, 'node_modules'), 'dir');
+const stamp = collectReleaseStamp({ root: ROOT, releaseId, clientId: clientId || '' });
+writeReleaseStamp(releaseDir, stamp);
+console.log(`--- release stamp libs=${stamp.libs} monaco=${stamp.monaco}`);
 
 // DB migrations BEFORE activation: the client's TableDefinitions (persistenceModules ->
 // tableDefsDir) only become Postgres tables when the master backend's migrate runs

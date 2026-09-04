@@ -69,19 +69,30 @@ a dirty worktree is refused and the error cites the flag and this skill.
 Studio bookkeeping (`.collab-fs.json`, `.collab-fs-trash/`) is not source: `publishGit` adds both
 to the project's `.gitignore` before that `git add -A`, so they never enter the autocommit.
 
-## Client wrappers (02/09/2026)
+## Client wrappers (02/09/2026; new-project path 04/09/2026)
 
-From inside `mls-<id>` (102047 first; the rest in the client-app migration):
+From inside `mls-<id>`:
 
 | script | what it is |
 |---|---|
-| `pnpm publish` | traditional remote publish via collab-sites (`--sites`). Still what **creates / mounts** the VM. |
-| `pnpm publish:local` | traditional local publish (tarball → lima). |
+| `pnpm publish` / `pnpm publish:remote` | **new projects** (clone of mls-102039, id rewritten): `publishGit.mjs <id> remote --git-url=https://<id>.collabcodes.com`. Canonical path. Domain is the `<id>.collabcodes.com` convention, not an l5 field. |
 | `pnpm publish:git` | `node ../scripts/publishGit.mjs <id> local` — git push to lima. |
-| `pnpm publish:remote` | `node ../scripts/publishGit.mjs <id> remote` — git push to the production VM. |
+| `pnpm publish` (102047 and older) | traditional remote publish via collab-sites (`--sites`). Still what **creates / mounts** a VM that never had a slot. Not emitted for new projects. |
+| `pnpm publish:local` (102047 and older) | traditional local publish (tarball → lima). |
 
-`publish` / `publish:local` are not replaced. Gate, markers (`##gitBackend build=ok|error##`) and
-exit code are the same on both git wrappers.
+New projects are born with this `package.json` from `mls-102039` (literal `102039`, rewritten
+when `projectInit --from-model` clones and renumbers). The old python/rsync launcher
+(`runPublishMlsBase.mjs`) is not in that file. The static tree `scripts/templates/project/`
+was deleted (gb70, 04/09/2026) — it was a second source of truth and shipped without
+`shellTemplates`.
+
+Gate, markers (`##gitBackend build=ok|error##`) and exit code are the same on both git wrappers.
+
+When the app is already on the VM and only a dependency changed, `publishGit` writes an empty
+commit on the **project** (`publish: rebuild after deps <ids>`) and pushes `main` with
+`-o deps=<ids>`. The release is of the published project, one only. A dep snapshot never
+triggers the build (`skip-build`): dep repos have no hook. A publish that does not cut a
+release does not finish quietly — the missing-hook message names `gitReposSetup`.
 
 ## Remote profile
 
@@ -104,9 +115,9 @@ pnpm vm:init 102043 --force    # recria na VM, SÓ se main == vm-baseline
 
 What it does, in order: brings the lima instance up (derived from `PUBLISH_LOCAL_SSH_CONFIG`, or
 `PUBLISH_LOCAL_LIMA_INSTANCE`) and waits for ssh → checks the platform is on the VM (it refuses
-with the exact command instead of improvising a parallel install) → copies the scaffold **on the
-VM** without `obj/`, `.git` or `.github`, substituting the id → writes `.collab-git` → runs
-`gitReposSetup` → clones on the Mac with remote `vm`.
+with the exact command instead of improvising a parallel install) → `projectInit --from-model`
+clones `mls-102039` **on the VM**, drops the model's `.git` / `obj/` / `.github`, renumbers the
+id → writes `.collab-git` → runs `gitReposSetup` → clones on the Mac with remote `vm`.
 
 Order that matters: `.collab-git` is written **before** `gitReposSetup`, so the marker is inside
 the `vm-baseline` commit — that is what makes the project git-managed from its very first byte.
@@ -293,11 +304,11 @@ What a fresh remote VM actually does today, in order. Read this before promising
    exists, so a VM created before the fix heals with *Update platform*.
 
 7. Step 12 (`scripts/12-mls-project.sh`) runs
-   `node /data/mls-base/scripts/runtime/projectInit.mjs <projectId> --root /data/mls-base`
+   `node /data/mls-base/scripts/runtime/projectInit.mjs <projectId> --root /data/mls-base --from-model`
    when the installer got `--project-id`. That is what makes the VM **clonable**: the client
-   project is born from the template, `.collab-git` is written before `gitReposSetup`, and the
+   project is cloned from `mls-102039` and renumbered, `.collab-git` is written before `gitReposSetup`, and the
    repo gets `main` + `vm-baseline` + the push hook. No `--project-id` ⇒ the step is skipped,
-   not failed.
+   not failed. No network to GitHub ⇒ the step fails; there is no offline fallback.
 8. **The slot** (gb52): the admin action — button *Add project* in the VM's hosted-projects panel,
    or `POST /api/v1/servers/<serverId>/hosted-projects {"projectId":"<id>"}` — runs
    `provisionProjectSlot` (collab-sites `layer_3_usecases/servers.ts`, builders in
@@ -327,7 +338,7 @@ What a fresh remote VM actually does today, in order. Read this before promising
    answers on its port, the door is up and every later release comes from `pnpm publish:remote`.
    The legacy alternative is the sites **publish job** (tarball + `pnpm build --client <id>`) —
    which is why gb51 item 4 gates turning it off.
-   The scaffold's `l5/config.json` (from the template) must declare four things or the release dies
+   The scaffold's `l5/config.json` (from the cloned model) must declare four things or the release dies
    in a way that names the wrong culprit: `defaultProjectId`, itself as `projects.<id>.type =
    "client"`, a `publication` target, and — the one that costs a whole cycle — the **masters**
    (102033/102034) in `projects`, with 102034 carrying its `modules` and `persistenceModules`.
@@ -346,34 +357,33 @@ own project during bootstrap (it knows the id from `--project-id`), step 8 is so
 to put a project on an existing VM. Both call one script and write one vhost — a second scaffold or a
 second vhost writer would drift on the first fix.
 
-### The project template, and why it is not a scaffold project
+### The project model (`mls-102039`)
 
-`projectInit.mjs` copies `mls-base/scripts/templates/project/`, replacing `__PROJECT_ID__`.
-It is a template inside `scripts/` — not a project to copy — because **the `mls-base`
-repository tracks no `mls-*` at all**:
+`projectInit.mjs --from-model` clones `https://github.com/expansiva/mls-102039.git` (`--depth 1`),
+removes the model's `.git` (the client does not inherit that history), strips `.github/` and
+`obj/` if they travelled, and rewrites every `102039` / `_102039_` to the new id. The URL is a
+constant in `mls-base`; `--model-url` exists only for tests. No network ⇒ fail; there is no
+offline copy (Q1, 03/09/2026). The static tree `scripts/templates/project/` was deleted
+(gb70, 04/09/2026) because it was a second source of truth that nobody validated — it shipped
+without `shellTemplates` and left 102043 in 502 with pm2 green.
 
-```
-$ git ls-tree --name-only origin/main
-.codegraph  .gitignore  codegraph.json  index.md  package.json
-pnpm-workspace.yaml  scripts  servers  skills  test  tsconfig*.json
-```
+`mls-base` still tracks no `mls-*` (measured 03/09/2026), so a brand-new VM arrives with the
+scripts and **no platform projects** — 102020/102021/102033/102034 come with the first
+`publish:remote`. The model lives on GitHub, not inside `scripts/`, which is what lets lima and
+a remote VM take the same path.
 
-(measured 03/09/2026). So on a brand-new VM `/data/mls-base` arrives with the scripts and
-**no platform projects either** — 102020/102021/102033/102034 come with the first
-`publish:remote`. A template versioned with the scripts is the only thing guaranteed to be
-there, which is what lets lima and a remote VM take the same path.
-
-What the template must carry, each item paid for by a lost run:
+What the model must carry, each item paid for by a lost run:
 
 | file | why |
 |---|---|
-| `l5/config.json` | `workspaceDependencies` is the ONLY input the host uses to resolve an agent. Missing ⇒ `Invalid agent agentNewSolution` on the first `send`. |
+| `l5/config.json` | `workspaceDependencies` is the ONLY input the host uses to resolve an agent. Missing ⇒ `Invalid agent agentNewSolution` on the first `send`. `shellTemplates.spa` is required to listen (missing ⇒ 502, pm2 green). |
 | `l5/project.json` with `masters` | `composeGeneratedConfig` (`scripts/build.mjs`) reads `l5.masters?.[side]`. Missing ⇒ the composer never runs and `mlsDep.json` is derived without the runtime projects — the family of 328 compile errors on the VM. |
 | `mlsDep.json` | the manifest `resolveDeps` reads. Order does not matter (read as a set); the first agent run rewrites it from `l5/config.json.workspaceDependencies` ∪ `masters.*.runtimeProject`. |
-| `.gitignore` | already the complete VM block, so `gitReposSetup` finds nothing missing and the baseline stays a single commit. |
+| `package.json` | canonical publish (`publish` / `publish:remote` with `--git-url=https://<id>.collabcodes.com`). Missing ⇒ a new project has no command to publish (gb69, 04/09). |
+| `.gitignore` | `gitReposSetup` completes the VM block if the model is missing patterns (102039 today is only `.DS_Store`; the extra commit is the existing setup behaviour). |
 
-`.github/` is deliberately absent: its workflow commits `obj/compiled.zip` back into the very
-history `.collab-git` exists to protect.
+`.github/` is stripped on clone: its workflow commits `obj/compiled.zip` back into the very
+history `.collab-git` exists to protect. The model itself is never hosted on a VM (Q9).
 
 ### One rule, one place, two triggers
 
@@ -420,4 +430,6 @@ whichever project pushed last — always point an app at `current-<id>`.
 
 *Written 31/08/2026; supervisor cycle and `--autocommit` added 02/09/2026; remote wrappers, clone
 and `remote.conf.example` added 02/09/2026; "brand-new VM" sequence and the multi-project alias
-model added 03/09/2026; step 12, the project template and the single-owner table added 03/09/2026.*
+model added 03/09/2026; step 12, the project template and the single-owner table added 03/09/2026;
+new-project `package.json` and dep-only rebuild-on-the-project (gb69) added 04/09/2026;
+static template deleted, `projectInit --from-model` clones mls-102039 (gb70) added 04/09/2026.*

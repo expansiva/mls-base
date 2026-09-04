@@ -57,6 +57,12 @@ const CLI_FLAG_TO_CONF = {
 
 const MARKER_OK = /##gitBackend build=ok release=(\d{14}) project=mls-\d+##/;
 const MARKER_ERR = /##gitBackend build=error\b/;
+export const MISSING_HOOK_MSG = [
+  '[publishGit] push aceito, mas a VM não cortou release: o hook gitPostReceive não rodou.',
+  'Os arquivos chegaram e a release ativa ficou a mesma. Sem o hook, um publish não publica.',
+  'Na VM, rode: node scripts/runtime/gitReposSetup.mjs --root /data/mls-base',
+  'Isso instala o hook nos repos git-managed. Depois rode o publish de novo.',
+].join('\n');
 const DIRTY_VM_RE =
   /working directory has unstaged changes|uncommitted changes|denyCurrentBranch|refusing to update/i;
 const OBJ_IGNORE = '/obj/';
@@ -722,17 +728,18 @@ function explainDirtyVm(out) {
  * gb13 — a plataforma vai junto, como RETRATO do disco.
  *
  * Primeiro PLANEJA todos os deps (compara árvores, sem escrever nada), depois
- * envia. Planejar antes é o que permite saber qual é o ÚLTIMO dep alterado: se
- * o cliente não tem nada a empurrar (o caso do Wagner — mudei o agente, o app
- * está igual), é esse último push que tem de disparar a compilação, senão a
- * alteração chega à VM e ninguém constrói.
+ * envia. Retrato sempre entra com `skip-build`: a release é do PROJETO
+ * publicado (gb69), uma só, mesmo quando só a dep mudou. Quem dispara o hook
+ * é o push do cliente — real quando o app mudou, commit-marca quando o app
+ * está igual. Disparar no último retrato morria em silêncio: repo de dep não
+ * tem hook (gb64).
  *
- * Devolve `{ changed, buildTriggered }`.
+ * Devolve `{ changed }`.
  */
-async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, clientWillPush }) {
+async function publishPlatformDeps({ root, clientRepo, clientId, conf, env }) {
   const declared = readDepIds(clientRepo, clientId);
   const onDesktop = declared.filter((depId) => existsSync(join(root, `mls-${depId}`, '.git')));
-  if (!onDesktop.length) return { changed: [], buildTriggered: false };
+  if (!onDesktop.length) return { changed: [] };
 
   const ordered = dependencyOrder(onDesktop, (depId) => declaredDepsOf(root, depId));
   const plans = [];
@@ -756,31 +763,37 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, clie
   const changed = plans.filter((entry) => entry.plan.status === 'changed');
   const unchanged = plans.length - changed.length;
   process.stderr.write(`[publishGit] ${depsSummary(changed.map((e) => e.depId), unchanged)}\n`);
-  if (!changed.length) return { changed: [], buildTriggered: false };
+  if (!changed.length) return { changed: [] };
 
-  const changedIds = changed.map((entry) => entry.depId);
-  let triggerOutput = '';
-  for (const [index, entry] of changed.entries()) {
-    // Regra: todo retrato entra com `skip-build` — quem compila é UM push só.
-    // Esse push é o do cliente quando ele existe; senão, o último retrato.
-    const triggers = !clientWillPush && index === changed.length - 1;
+  for (const entry of changed) {
     const sent = sendSnapshot({
       plan: entry.plan,
       remote: VM_REMOTE,
       env,
-      pushOptions: triggers ? [`deps=${changedIds.join(',')}`] : ['skip-build'],
-      // O push que dispara a build vai AO VIVO: é dele que sai o marcador que o
-      // dev precisa ver. Os outros são retratos silenciosos. O gitSync vai
-      // sempre — o update-ref do retrato usa-o mesmo no caminho ao vivo.
+      pushOptions: ['skip-build'],
       gitSync,
-      runPush: triggers ? (repo, args) => runGitLive(repo, args, env) : undefined,
     });
-    const settled = triggers ? await sent : sent;
-    if (settled.status === 'error') fail(`[publishGit] retrato de ${entry.depName} falhou: ${settled.reason}`);
-    process.stderr.write(`[publishGit] retrato ${entry.depName} → VM${triggers ? ' (dispara a build)' : ''}\n`);
-    if (triggers) triggerOutput = settled.out ?? '';
+    if (sent.status === 'error') fail(`[publishGit] retrato de ${entry.depName} falhou: ${sent.reason}`);
+    process.stderr.write(`[publishGit] retrato ${entry.depName} → VM\n`);
   }
-  return { changed: changedIds, buildTriggered: Boolean(triggerOutput), triggerOutput };
+  return { changed: changed.map((entry) => entry.depId) };
+}
+
+/** `publish: rebuild after deps 102025 102033` — o hook só dispara em refs/heads/main nova. */
+export function rebuildCommitMessage(changedDeps) {
+  return `publish: rebuild after deps ${changedDeps.map(String).filter(Boolean).join(' ')}`;
+}
+
+/** App igual à VM e alguma dep mudou: sem commit novo o push é "Everything up-to-date" e o hook não roda. */
+export function needsRebuildCommit(relation, changedDeps) {
+  return relation === 'same' && Array.isArray(changedDeps) && changedDeps.length > 0;
+}
+
+export function makeRebuildCommit(repo, changedDeps) {
+  const message = rebuildCommitMessage(changedDeps);
+  gitOut(repo, ['commit', '--allow-empty', '-m', message]);
+  process.stderr.write(`[publishGit] ${message}\n`);
+  return message;
 }
 
 async function main() {
@@ -845,19 +858,23 @@ async function main() {
 
   // gb13: a plataforma é avaliada ANTES da saída antecipada do cliente — o caso
   // de uso é justamente "mudei um agente no 102020 e o app não mudou".
-  const { changed: changedDeps, buildTriggered, triggerOutput } = noDeps
-    ? { changed: [], buildTriggered: false, triggerOutput: '' }
+  const { changed: changedDeps } = noDeps
+    ? { changed: [] }
     : await publishPlatformDeps({
-      root: ROOT, clientRepo: repo, clientId: id, conf, env, clientWillPush: rel !== 'same',
+      root: ROOT, clientRepo: repo, clientId: id, conf, env,
     });
 
   if (rel === 'same') {
-    if (!buildTriggered) {
+    if (!needsRebuildCommit(rel, changedDeps)) {
       process.stderr.write('[publishGit] já está na VM (HEAD = main remota) e nenhum dep mudou. Nada a publicar.\n');
       process.exit(0);
     }
-    process.stderr.write('[publishGit] app inalterado; a build foi disparada pelo último retrato de plataforma.\n');
-    reportBuildMarker(triggerOutput);
+    // gb69: a release é do projeto publicado. Commit-marca em main para o hook
+    // rodar (push da mesma SHA é Everything up-to-date e o hook não dispara).
+    process.stderr.write(
+      `[publishGit] app inalterado; deps alterados: ${changedDeps.join(' ')} — commit-marca no projeto para cortar a release.\n`,
+    );
+    makeRebuildCommit(repo, changedDeps);
   }
   if (rel === 'behind' || rel === 'diverged') {
     fail('a VM tem commits que você não tem — faça pull/rebase.');
@@ -926,9 +943,7 @@ function reportBuildMarker(text) {
     process.exit(1);
   }
 
-  process.stderr.write(
-    '[publishGit] push aceito, mas a VM não reportou build (hook gb2 ausente neste repo?).\n',
-  );
+  process.stderr.write(`${MISSING_HOOK_MSG}\n`);
   process.exit(1);
 }
 

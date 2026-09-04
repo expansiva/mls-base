@@ -2,6 +2,10 @@
     "name": "repos",
     "version": "1.0.0",
     "private": true,
+    "collabLibs": {
+        "libs": "20260904142119",
+        "monaco": "20240313204233"
+    },
     "scripts": {
         "install:dev": "node scripts/install/runInstallDevs.js",
         "updateTypes": "node scripts/install/runInstallLibs.js",
