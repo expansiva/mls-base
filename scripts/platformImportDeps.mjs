@@ -29,8 +29,6 @@ export const PLATFORM_PROJECT_IDS = [
 // Same levels resolveDeps walks when buildCI compiles a project.
 const COMPILE_LEVELS = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
 
-const SKIP_DIR_NAMES = ['fixtures', 'trace', 'node_modules'];
-
 function defaultRepo(id) {
   return `https://github.com/expansiva/mls-${id}.git`;
 }
@@ -51,7 +49,10 @@ export async function findUndeclaredPlatformImports(
     if (!existsSync(dir)) continue;
     const { deps } = await readManifestDeps(dir, defaultRepo);
     const declared = new Set(deps.keys());
-    const hits = await scanImportRefs(dir, COMPILE_LEVELS, { skipDirNames: SKIP_DIR_NAMES });
+    // Same call buildCI makes (resolveDeps.mjs:330) — no extra exclusions. A guard that
+    // skips what the detector scans is a guard that lies: the import would pass here and
+    // abort the release on the VM, which is the whole thing this test exists to prevent.
+    const hits = await scanImportRefs(dir, COMPILE_LEVELS);
     for (const [depId, file] of hits) {
       if (depId === id) continue;
       if (!existsSync(join(root, `mls-${depId}`))) continue;

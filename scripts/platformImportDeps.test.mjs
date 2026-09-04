@@ -44,7 +44,7 @@ test('mensagem é projeto | id faltante | arquivo que importa', async () => {
   });
 });
 
-test('ignora teste, fixtures, trace, id inexistente, o próprio id e o que já está declarado', async () => {
+test('ignora só o que o buildCI ignora: teste, id inexistente, o próprio id e o declarado', async () => {
   await withRoot(async (root) => {
     stubProject(root, '100554', {
       'package.json': JSON.stringify({
@@ -56,6 +56,9 @@ test('ignora teste, fixtures, trace, id inexistente, o próprio id e o que já e
       'l2/self.ts': "import { s } from '/_100554_/l2/z.js';\n",
       'l2/ghost.ts': "import { g } from '/_999999_/l2/g.js';\n",
       'l2/x.test.ts': "import { t } from '/_102025_/l2/t.js';\n",
+      // fixtures/ e trace/ NÃO são exceção: o buildCI compila esses arquivos
+      // (resolveDeps.mjs:330 varre sem exclusão), então um import não declarado
+      // aqui derruba o release na VM e tem de aparecer no Mac também.
       'l2/fixtures/f.ts': "import { f } from '/_102034_/l2/f.js';\n",
       'l2/trace/t.ts': "import { r } from '/_102027_/l2/r.js';\n",
     });
@@ -63,8 +66,10 @@ test('ignora teste, fixtures, trace, id inexistente, o próprio id e o que já e
       stubProject(root, id);
     }
     const findings = await findUndeclaredPlatformImports(root, ['100554']);
-    assert.deepEqual(findings, [
+    assert.deepEqual(findings.sort((a, b) => a.missingId.localeCompare(b.missingId)), [
+      { projectId: '100554', missingId: '102027', file: 'l2/trace/t.ts' },
       { projectId: '100554', missingId: '102033', file: 'l2/real.ts' },
+      { projectId: '100554', missingId: '102034', file: 'l2/fixtures/f.ts' },
     ]);
   });
 });

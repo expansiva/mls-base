@@ -151,13 +151,11 @@ export function stripTemplateLiterals(source) {
   return out;
 }
 
-function isExcludedFromCompile(relPath, skipDirNames = []) {
+function isExcludedFromCompile(relPath) {
   const name = relPath.split('/').pop() ?? '';
-  const segments = relPath.split('/');
   return name.endsWith('.test.ts')
     || name.endsWith('.spec.ts')
-    || segments.some((segment) => segment.startsWith('nodejs'))
-    || (skipDirNames.length > 0 && segments.some((segment) => skipDirNames.includes(segment)));
+    || relPath.split('/').some((segment) => segment.startsWith('nodejs'));
 }
 
 // `/_<id>_/` só conta quando é ESPECIFICADOR DE MÓDULO — o que o tsc de facto
@@ -178,7 +176,7 @@ const IMPORT_SPECIFIER_RES = [
   /\brequire\s*\(\s*['"`]\/_(\d+)_\//gu,
 ];
 
-export async function scanImportRefs(projectDir, levels, { skipDirNames = [] } = {}) {
+export async function scanImportRefs(projectDir, levels) {
   const firstHit = new Map();
   for (const level of levels) {
     const dir = join(projectDir, level);
@@ -187,7 +185,7 @@ export async function scanImportRefs(projectDir, levels, { skipDirNames = [] } =
       if (!entry.isFile() || !entry.name.endsWith('.ts')) continue;
       const abs = join(entry.parentPath ?? entry.path, entry.name);
       const rel = abs.slice(projectDir.length + 1).split('\\').join('/');
-      if (isExcludedFromCompile(rel, skipDirNames)) continue;
+      if (isExcludedFromCompile(rel)) continue;
       const content = stripTemplateLiterals(await readFile(abs, 'utf8'));
       for (const re of IMPORT_SPECIFIER_RES) {
         re.lastIndex = 0;
