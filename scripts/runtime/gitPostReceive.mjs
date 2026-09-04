@@ -4,11 +4,12 @@
 // /data/mls-base/.gitbuild.lock. The shell wrapper always exits 0 (A1).
 //
 // Gate = the same offline buildCI path as buildProjectsObj.mjs
-// (BUILDCI_OFFLINE=1, cwd = mls-base). Code-pass tsc errors
-// (##buildCI pass=code##) are treated as build=error even though buildCI
-// itself is tolerant. Declaration-pass errors become declWarn=N on the
-// success marker. If the pass=code marker is missing (old buildCI,
-// truncated output), fall back to scanning the whole output — never the
+// (BUILDCI_OFFLINE=1, cwd = mls-base). Type-error verdict comes from
+// ##typeCheck## markers (l5/project.json status, gb74) — not from whether
+// buildCI recompiled the project. Compile itself stays tolerant (decision
+// #19). Syntax / broken import / emit still block. Declaration-pass errors
+// become declWarn=N on the success marker. If the typeCheck marker is
+// missing (old buildCI), fall back to the pass=code count — never the
 // other way around. Marker lines are the gb3 contract — one line, exact
 // format.
 
@@ -16,6 +17,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseTypeCheckMarkers } from '../typeCheckPolicy.mjs';
 import { ensureProjectApp } from './vmApps.mjs';
 import { releaseAliasOf } from './projectPorts.mjs';
 
@@ -102,10 +104,58 @@ export function regionBeforePassMarker(text, pass) {
   return prev >= 0 ? before.slice(prev) : before;
 }
 
+function typeCheckFromMarkers(text) {
+  const markers = parseTypeCheckMarkers(text);
+  if (markers.length === 0) return null;
+  let type = 0;
+  let blocking = 0;
+  let status = 'permissive';
+  const blocked = [];
+  for (const marker of markers) {
+    type += marker.verdict.type;
+    blocking += marker.verdict.blocking;
+    if (marker.status === 'strict') status = 'strict';
+    if (marker.verdict.block) blocked.push(marker.projectId);
+  }
+  return {
+    ok: blocked.length === 0,
+    gate: 'typeCheck',
+    typeWarn: type,
+    typeCheckStatus: status,
+    excerptText: blocked.length > 0 ? text : '',
+    blocked,
+  };
+}
+
 export function evaluateBuild(code, out) {
   const text = String(out ?? '');
   const codeErrors = parsePassErrors(text, 'code');
   const declErrors = parsePassErrors(text, 'declarations') ?? 0;
+  const typeCheck = typeCheckFromMarkers(text);
+
+  if (typeCheck) {
+    if (!typeCheck.ok) {
+      return { ...typeCheck, declWarn: declErrors };
+    }
+    if (code !== 0) {
+      return {
+        ok: false,
+        gate: 'exit',
+        declWarn: declErrors,
+        typeWarn: typeCheck.typeWarn,
+        typeCheckStatus: typeCheck.typeCheckStatus,
+        excerptText: codeErrors != null ? regionBeforePassMarker(text, 'code') : text,
+      };
+    }
+    return {
+      ok: true,
+      gate: 'typeCheck',
+      declWarn: declErrors,
+      typeWarn: typeCheck.typeWarn,
+      typeCheckStatus: typeCheck.typeCheckStatus,
+      excerptText: '',
+    };
+  }
 
   if (code !== 0) {
     return {
@@ -148,6 +198,9 @@ export function gateMessage(verdict) {
   }
   if (verdict.gate === 'exit') {
     return 'gitPostReceive: gate=exit (build.code!=0)';
+  }
+  if (verdict.gate === 'typeCheck') {
+    return `gitPostReceive: gate=typeCheck status=${verdict.typeCheckStatus ?? 'permissive'}`;
   }
   return 'gitPostReceive: gate=pass=code';
 }
@@ -446,6 +499,11 @@ async function main() {
   process.stderr.write(`${formatOkMarker(projectName, ts, verdict.declWarn)}\n`);
   if (verdict.declWarn > 0) {
     process.stderr.write(`declarations: ${verdict.declWarn} type errors (best-effort, does not block)\n`);
+  }
+  if ((verdict.typeWarn ?? 0) > 0) {
+    process.stderr.write(
+      `typeCheck: ${verdict.typeWarn} type errors (status=${verdict.typeCheckStatus ?? 'permissive'}, does not block)\n`,
+    );
   }
   process.stderr.write(`release ${ts} ativa\n`);
 }

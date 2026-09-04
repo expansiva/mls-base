@@ -22,6 +22,7 @@ servers/*.conf
 .publish-obj/
 .publish.sources.tgz
 tsconfig.build.json
+.tsconfig.typecheck.*.json
 tsconfig.vm.json
 releases
 current

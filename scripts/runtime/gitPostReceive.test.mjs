@@ -101,6 +101,47 @@ test('fallback with no tsc errors at all is build=ok', () => {
   assert.match(gateMessage(verdict), /gate=fallback/);
 });
 
+test('typeCheck marker + type errors + permissive is build=ok even if pass=code counted them', () => {
+  const marker = '##typeCheck project=102025 status=permissive l1.type=0 l1.blocking=0 l2.type=1 l2.blocking=0##';
+  const out = [
+    twoPassOutput({
+      codeErrors: 1,
+      declErrors: 0,
+      codeLines: ['mls-102025/l2/x.ts(1,1): error TS2345: \'"LoadMonaco"\' is not assignable to \'TypeEvent\'.'],
+    }),
+    marker,
+  ].join('\n');
+  const verdict = evaluateBuild(0, out);
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.gate, 'typeCheck');
+  assert.equal(verdict.typeWarn, 1);
+  assert.match(gateMessage(verdict), /gate=typeCheck status=permissive/);
+});
+
+test('typeCheck marker + strict + type errors is build=error', () => {
+  const marker = '##typeCheck project=102025 status=strict l1.type=0 l1.blocking=0 l2.type=1 l2.blocking=0##';
+  const verdict = evaluateBuild(0, marker);
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.gate, 'typeCheck');
+  const printed = formatErrorOutput('mls-102025', verdict);
+  assert.match(printed, /##gitBackend build=error project=mls-102025##/);
+});
+
+test('typeCheck marker + blocking import is build=error even when permissive', () => {
+  const marker = '##typeCheck project=102025 status=permissive l1.type=0 l1.blocking=0 l2.type=0 l2.blocking=1##';
+  const verdict = evaluateBuild(0, marker);
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.gate, 'typeCheck');
+});
+
+test('up-to-date obj (no pass=code dump) still gates from the typeCheck marker', () => {
+  const marker = '##typeCheck project=102025 status=permissive l1.type=0 l1.blocking=0 l2.type=1 l2.blocking=0##';
+  const out = `[buildProjectsObj] summary: built [-] | up-to-date [102025] | failed [-]\n${marker}`;
+  const verdict = evaluateBuild(0, out);
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.typeWarn, 1);
+});
+
 test('declWarn=0 keeps the exact gb3 ok marker', () => {
   assert.equal(
     formatOkMarker('mls-102047', '20260902120000', 0),

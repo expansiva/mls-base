@@ -57,4 +57,25 @@ fewer than 3 genomes"*, *"no agent may read or write the status of an owner in a
 A test asserting a function that must never come back (`assert.doesNotMatch(source, /function
 currentCreateRunModule/)`) is a legitimate rule test.
 
-*Written 31/08/2026.*
+## 5. typeCheck status (`l5/project.json`)
+
+The same release used to get two type verdicts: `build.mjs` emitted with `--noCheck` while the git hook gated on `buildCI`'s type errors, and a cache-hot `obj/` skipped the check entirely (measured 04/09 on mls-102025, `TS2345` `"LoadMonaco"`).
+
+`l5/project.json` now declares the verdict. Both paths (`build.mjs` dist and `buildProjectsObj` / gitPostReceive gate) read it through `scripts/typeCheckPolicy.mjs`:
+
+```json
+"typeCheck": { "status": "permissive", "reason": "<why, one line>" }
+```
+
+| status | effect |
+|---|---|
+| `permissive` (default if the field is **absent**) | type errors are reported per layer (`l1` = `tsconfig.backend.json`, `l2` = `tsconfig.frontend.json`) and do **not** block the gate or the release |
+| `strict` | type errors block **both** paths |
+
+Syntax errors (TS1xxx), broken imports (`TS2307`) and emit/tsc crashes **always** block. The status governs type errors only. Compile stays tolerant (decision #19, `compile.mjs`).
+
+`COLLAB_FAIL_ON_TSC_ERRORS` is a local override and must log `typeCheck: overridden by COLLAB_FAIL_ON_TSC_ERRORS (declared: …)`. It is not the source of the decision.
+
+Do not add a follow-up task to tighten this. Tightening is a decision, not a schedule.
+
+*Written 31/08/2026; typeCheck status (gb74) added 04/09/2026.*
