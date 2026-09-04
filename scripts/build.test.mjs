@@ -1,14 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build as esbuild } from 'esbuild';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
+  BUNDLED_MODULES_MANIFEST,
+} from './bundleManifest.mjs';
+import {
+  RUNTIME_URL_ENTRYPOINTS,
   checkRegionEntrypointsEmitted,
+  checkSurvivingModuleUrls,
   collectEntrypoints,
+  findSurvivingModuleUrls,
   normalizeVirtualSpec,
   reportRegionEntrypoints,
+  reportSurvivingModuleUrls,
   setProjectRoot,
 } from './build.mjs';
 
@@ -32,8 +39,10 @@ function withFixture(files, fn) {
     writeFileSync(abs, body);
   }
   setProjectRoot(ID, proj);
+  const restoreRuntime = isolateRuntimeUrlProjects(root, ID);
   const cleanup = () => {
     setProjectRoot(ID, undefined);
+    restoreRuntime();
     rmSync(root, { recursive: true, force: true });
   };
   try {
@@ -211,5 +220,208 @@ test('prova — bundle da forma plana emite o arquivo na chave virtual', async (
     );
     assert.deepEqual(check.missing, []);
     assert.deepEqual(check.unresolved, []);
+  });
+});
+
+function isolateRuntimeUrlProjects(root, keepId) {
+  const ids = [];
+  for (const spec of RUNTIME_URL_ENTRYPOINTS) {
+    const m = /^\/_(\d+)_\/.+$/u.exec(spec);
+    if (!m || m[1] === keepId) continue;
+    setProjectRoot(m[1], join(root, `missing-${m[1]}`));
+    ids.push(m[1]);
+  }
+  return () => {
+    for (const id of ids) setProjectRoot(id, undefined);
+  };
+}
+
+const STUDIO_ID = '102033';
+const STUDIO_REL = 'l2/cbe/studioStructure.ts';
+const STUDIO_SPEC = '/_102033_/l2/cbe/studioStructure.js';
+const STUDIO_KEY = '_102033_/l2/cbe/studioStructure';
+const STYLE_SPEC = '/_100554_/l2/enhancementStyle.js';
+const COLLAB_REL = 'l2/collabMessages.ts';
+const COLLAB_SPEC = '/_900001_/l2/collabMessages.js';
+const IMPORTER_REL = 'l2/shared/shell.ts';
+const IMPORTER_KEY = '_900001_/l2/shared/shell';
+
+function withProjectFixture(id, files, fn) {
+  const root = mkdtempSync(join(tmpdir(), 'gb71-'));
+  const proj = join(root, `mls-${id}`);
+  for (const [rel, body] of Object.entries(files)) {
+    const abs = join(proj, rel);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, body);
+  }
+  setProjectRoot(id, proj);
+  const restoreRuntime = isolateRuntimeUrlProjects(root, id);
+  const cleanup = () => {
+    setProjectRoot(id, undefined);
+    restoreRuntime();
+    rmSync(root, { recursive: true, force: true });
+  };
+  try {
+    const result = fn({ root, proj });
+    if (result && typeof result.then === 'function') {
+      return Promise.resolve(result).finally(cleanup);
+    }
+    cleanup();
+    return result;
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+
+test('E1 — lista explícita pede os módulos buscados por URL em runtime', () => {
+  assert.deepEqual(RUNTIME_URL_ENTRYPOINTS, [STUDIO_SPEC, STYLE_SPEC]);
+});
+
+test('E1 — studioStructure é coletado quando a fonte existe', () => {
+  withProjectFixture(STUDIO_ID, {
+    [STUDIO_REL]: 'export function upgradeToStudioStructure() {}\n',
+  }, ({ proj }) => {
+    const entries = collectEntrypoints({}, proj);
+    assert.equal(entries[STUDIO_KEY], join(proj, STUDIO_REL));
+  });
+});
+
+test('E1 — studioStructure ausente não quebra a coleta', () => {
+  withProjectFixture(STUDIO_ID, {}, ({ proj }) => {
+    const entries = collectEntrypoints({}, proj);
+    assert.equal(entries[STUDIO_KEY], undefined);
+  });
+});
+
+test('E2 — findSurvivingModuleUrls pega aspas e template', () => {
+  assert.deepEqual(
+    findSurvivingModuleUrls(`const modulePath = '${STUDIO_SPEC}'; import(\`\${modulePath}\`);`),
+    [STUDIO_SPEC],
+  );
+  assert.deepEqual(
+    findSurvivingModuleUrls(`void import("${STUDIO_SPEC}")`),
+    [STUDIO_SPEC],
+  );
+  assert.deepEqual(
+    findSurvivingModuleUrls('const x = `/_${id}_/l2/designSystem.js`;'),
+    [],
+  );
+});
+
+test('E2 — literal sobrevivente sem arquivo falha o build', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb71-guard-'));
+  try {
+    const outdir = join(root, 'dist', 'web');
+    const emitted = join(outdir, '_102033_', 'l2', 'shared', 'bootstrap.js');
+    mkdirSync(dirname(emitted), { recursive: true });
+    writeFileSync(emitted, `const modulePath = '${STUDIO_SPEC}';\nawait import(modulePath);\n`);
+    const missing = checkSurvivingModuleUrls(outdir);
+    assert.equal(missing.length, 1);
+    assert.equal(missing[0].file, '_102033_/l2/shared/bootstrap.js');
+    assert.equal(missing[0].url, STUDIO_SPEC);
+    assert.throws(
+      () => reportSurvivingModuleUrls(missing),
+      (err) => {
+        assert.match(err.message, /404 em produção/);
+        assert.match(err.message, /_102033_\/l2\/shared\/bootstrap\.js \| \/_102033_\/l2\/cbe\/studioStructure\.js/);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('E2 — o mesmo literal com o arquivo emitido passa', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb71-ok-'));
+  try {
+    const outdir = join(root, 'dist', 'web');
+    const emitted = join(outdir, '_102033_', 'l2', 'shared', 'bootstrap.js');
+    const target = join(outdir, '_102033_', 'l2', 'cbe', 'studioStructure.js');
+    mkdirSync(dirname(emitted), { recursive: true });
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(emitted, `const modulePath = '${STUDIO_SPEC}';\n`);
+    writeFileSync(target, 'export {}\n');
+    assert.deepEqual(checkSurvivingModuleUrls(outdir), []);
+    unlinkSync(target);
+    const missing = checkSurvivingModuleUrls(outdir);
+    assert.equal(missing.length, 1);
+    assert.equal(missing[0].url, STUDIO_SPEC);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('E2 — ignora .map e _bundled-modules.json', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb71-skip-'));
+  try {
+    const outdir = join(root, 'dist', 'web');
+    mkdirSync(outdir, { recursive: true });
+    writeFileSync(join(outdir, 'bootstrap.js.map'), `"${STUDIO_SPEC}"`);
+    writeFileSync(join(outdir, BUNDLED_MODULES_MANIFEST), JSON.stringify([STUDIO_SPEC.slice(1)]));
+    assert.deepEqual(checkSurvivingModuleUrls(outdir), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('prova — bundle emite o shim do studioStructure na chave virtual', async () => {
+  await withProjectFixture(STUDIO_ID, {
+    [STUDIO_REL]: 'export function upgradeToStudioStructure() { return 1; }\n',
+  }, async ({ root, proj }) => {
+    const entries = collectEntrypoints({}, proj);
+    const outdir = join(root, 'dist', 'web');
+    await esbuild({
+      absWorkingDir: root,
+      entryPoints: entries,
+      outdir,
+      platform: 'browser',
+      format: 'esm',
+      bundle: true,
+      splitting: true,
+      write: true,
+      logLevel: 'silent',
+    });
+    const emitted = join(outdir, `${STUDIO_KEY}.js`);
+    assert.equal(existsSync(emitted), true, `esperava ${emitted}`);
+    assert.deepEqual(checkSurvivingModuleUrls(outdir), []);
+  });
+});
+
+test('prova — import literal de collabMessages não sobrevive no JS emitido', async () => {
+  await withFixture({
+    [IMPORTER_REL]: `export async function load() { await import('${COLLAB_SPEC}'); }\n`,
+    [COLLAB_REL]: 'export const messages = 1;\n',
+  }, async ({ root, proj }) => {
+    const outdir = join(root, 'dist', 'web');
+    await esbuild({
+      absWorkingDir: root,
+      entryPoints: { [IMPORTER_KEY]: join(proj, IMPORTER_REL) },
+      outdir,
+      platform: 'browser',
+      format: 'esm',
+      bundle: true,
+      splitting: true,
+      sourcemap: true,
+      write: true,
+      logLevel: 'silent',
+      plugins: [{
+        name: 'virtual-alias',
+        setup(api) {
+          api.onResolve({ filter: /^\/_\d+_\/(core|l1|l2)\// }, (args) => {
+            const m = /^\/_(\d+)_\/(.+)$/u.exec(args.path);
+            if (!m) return null;
+            return { path: join(root, `mls-${m[1]}`, m[2].replace(/\.js$/u, '.ts')) };
+          });
+        },
+      }],
+    });
+    const importerJs = join(outdir, `${IMPORTER_KEY}.js`);
+    assert.equal(existsSync(importerJs), true);
+    const js = readFileSync(importerJs, 'utf8');
+    assert.equal(js.includes(COLLAB_SPEC), false, 'literal não deve sobreviver no JS emitido');
+    assert.equal(existsSync(join(outdir, '_900001_', 'l2', 'collabMessages.js')), false);
+    assert.deepEqual(checkSurvivingModuleUrls(outdir), []);
   });
 });

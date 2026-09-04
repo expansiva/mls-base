@@ -305,6 +305,19 @@ export function normalizeVirtualSpec(spec) {
   return /^\/_\d+_\//u.test(virtual) ? virtual : spec;
 }
 
+// Modules the browser fetches by URL at runtime via `import(variable)`.
+// esbuild cannot rewrite those, so the URL survives in the emitted JS
+// and 404s unless the file is an entrypoint (a small re-export shim).
+// Keep the import dynamic: studio mode is lazy and must not land in
+// the initial chunk. Explicit list — not a source scan: the surviving-URL
+// guard fails the build when a new literal has no file; add it here.
+export const RUNTIME_URL_ENTRYPOINTS = [
+  '/_102033_/l2/cbe/studioStructure.js',
+  '/_100554_/l2/enhancementStyle.js',
+];
+
+const SURVIVING_MODULE_URL_RE = /["'`](\/_\d+_\/[^"'`\s]+\.js)["'`]/gu;
+
 function regionRendererSpecs(region) {
   if (!region || typeof region !== 'object') return [];
   const specs = [];
@@ -618,6 +631,10 @@ export function collectEntrypoints(clientConfig, clientRoot) {
     while ((m = scriptRe.exec(html)) !== null) addSource(`${m[1]}.ts`, clientRoot);
   }
 
+  for (const spec of RUNTIME_URL_ENTRYPOINTS) {
+    addSource(spec, clientRoot);
+  }
+
   return entries;
 }
 
@@ -651,6 +668,46 @@ export function reportRegionEntrypoints({ missing, unresolved }) {
     .join('\n');
   throw new Error(
     `clientShell.regions declara entrypoint(s) com fonte no workspace que o bundle não emitiu:\n${lines}`,
+  );
+}
+
+export function findSurvivingModuleUrls(source) {
+  const urls = [];
+  const re = new RegExp(SURVIVING_MODULE_URL_RE.source, SURVIVING_MODULE_URL_RE.flags);
+  let match;
+  while ((match = re.exec(source)) !== null) urls.push(match[1]);
+  return urls;
+}
+
+function walkFilesSync(root) {
+  if (!existsSync(root)) return [];
+  const out = [];
+  for (const entry of readdirSync(root, { withFileTypes: true, recursive: true })) {
+    if (entry.isFile()) out.push(join(entry.parentPath ?? entry.path, entry.name));
+  }
+  return out;
+}
+
+export function checkSurvivingModuleUrls(outdir) {
+  const missing = [];
+  for (const file of walkFilesSync(outdir)) {
+    if (extname(file) !== '.js') continue;
+    const rel = toPosix(relative(outdir, file));
+    if (rel === BUNDLED_MODULES_MANIFEST) continue;
+    const source = readFileSync(file, 'utf8');
+    for (const url of findSurvivingModuleUrls(source)) {
+      const emitted = resolve(outdir, url.replace(/^\//u, ''));
+      if (!existsSync(emitted)) missing.push({ file: rel, url });
+    }
+  }
+  return missing;
+}
+
+export function reportSurvivingModuleUrls(missing) {
+  if (missing.length === 0) return;
+  const lines = missing.map((item) => `${item.file} | ${item.url}`).join('\n');
+  throw new Error(
+    `bundle emite literal(is) /_<id>_/…js sem arquivo correspondente em dist — 404 em produção:\n${lines}`,
   );
 }
 
@@ -715,6 +772,7 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
     outdir,
     clientRoot,
   ));
+  reportSurvivingModuleUrls(checkSurvivingModuleUrls(outdir));
 
   // copy l2 static resources (html/css/svg/json/md/assets) into dist/<target>
   let copied = 0;
