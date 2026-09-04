@@ -46,8 +46,9 @@ project SOURCES into a tarball and ships them — the **build always happens on 
 
 ## On-VM build and release (`pnpm build`)
 
-`mls-base/scripts/runtime/addNewVersion.mjs` IS the build pipeline: update tsconfig paths from the
-mls-* projects on disk, pnpm install, per-project migrate, compile, assemble a release under
+`mls-base/scripts/runtime/addNewVersion.mjs` IS the build pipeline: write unversioned
+`tsconfig.vm.json` with `paths` pruned to the mls-* projects on disk (the versioned
+`tsconfig.json` is never touched — gb63), pnpm install, per-project migrate, compile, assemble a release under
 `releases/<yyyyMMddHHmmss>` (runtime output only; node_modules symlinked), run the **master
 backend migrate** (schemaBootstrap creates the Postgres tables from the client TableDefinitions
 and applies seed rows — the server does NOT create schema at startup), then atomically activate

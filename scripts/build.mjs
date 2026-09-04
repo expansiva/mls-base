@@ -37,6 +37,11 @@ import { BUNDLED_MODULES_MANIFEST, bundledModuleUrls } from './bundleManifest.mj
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(ROOT, 'dist');
+// VM compile uses the unversioned pruned copy written by addNewVersion
+// (gb63). Mac `pnpm compile` without a prior release keeps extending tsconfig.json.
+function baseTsconfigRel() {
+  return existsSync(resolve(ROOT, 'tsconfig.vm.json')) ? './tsconfig.vm.json' : './tsconfig.json';
+}
 const LOCAL_DIST = resolve(DIST, 'local');
 const TSC_BIN = resolve(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
 const TS_SEGMENTS = ['core', 'l1', 'l2'];
@@ -130,7 +135,7 @@ async function runTsc(tsconfigPath, ids, compilerOptions) {
 async function runTscEmitConfig(label, configName, files, compilerOptions) {
   const configPath = resolve(ROOT, configName);
   await writeFile(configPath, `${JSON.stringify({
-    extends: './tsconfig.json',
+    extends: baseTsconfigRel(),
     compilerOptions: {
       ...compilerOptions,
       noResolve: true,
@@ -465,7 +470,7 @@ async function buildServer(ids) {
     noEmitOnError: FAIL_ON_TSC_ERRORS,
   };
   const tsconfig = {
-    extends: './tsconfig.json',
+    extends: baseTsconfigRel(),
     compilerOptions,
     include,
   };
