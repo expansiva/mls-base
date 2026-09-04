@@ -34,6 +34,8 @@ import {
   readLitRuntimeConfig,
 } from './litRuntime.mjs';
 import { BUNDLED_MODULES_MANIFEST, bundledModuleUrls } from './bundleManifest.mjs';
+import { readTypeCheckPolicy } from './typeCheckPolicy.mjs';
+import { typeCheckProject } from './typeCheckRun.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(ROOT, 'dist');
@@ -47,8 +49,6 @@ const TSC_BIN = resolve(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
 const TS_SEGMENTS = ['core', 'l1', 'l2'];
 const RES_SEGMENTS = ['core', 'l1', 'l2', 'l5'];
 const RES_EXT = new Set(['.html', '.css', '.less', '.json', '.svg', '.md', '.sql']);
-const FAIL_ON_TSC_ERRORS = process.env.COLLAB_FAIL_ON_TSC_ERRORS === '1';
-const RUN_TSC_TYPECHECK = process.env.COLLAB_RUN_TSC_TYPECHECK === '1' || FAIL_ON_TSC_ERRORS;
 const TSC_EMIT_BATCH_SIZE = Number.parseInt(process.env.COLLAB_TSC_EMIT_BATCH_SIZE ?? '40', 10);
 // Matches absolute project specifiers in emitted JS: from '/_102034_/l1/...'
 // Matches every form of project specifier in emitted JS:
@@ -90,25 +90,26 @@ function runTscCommand(args, label) {
   return { ok: false, label, status, fatal, output };
 }
 
-async function runTsc(tsconfigPath, ids, compilerOptions) {
-  if (RUN_TSC_TYPECHECK) {
-    const check = runTscCommand(['-p', tsconfigPath, '--noEmit', '--pretty', 'false'], 'typecheck');
-    if (!check.ok) {
-      const summary = summarizeTypeScriptOutput(check.output) || tailOutput(check.output);
-      if (FAIL_ON_TSC_ERRORS) {
-        throw new Error([
-          `TypeScript ${check.label} failed during publish (${check.status}).`,
-          summary,
-        ].filter(Boolean).join('\n'));
-      }
-      if (check.fatal) {
-        log(`tsc typecheck could not complete (${check.status}); continuing with noCheck emit for low-memory publish:\n${summary}`);
-      } else {
-        log(`tsc reported type errors (continuing because COLLAB_FAIL_ON_TSC_ERRORS is not 1):\n${summary}`);
-      }
-    }
-  } else {
-    log('tsc typecheck skipped (set COLLAB_RUN_TSC_TYPECHECK=1 to run it before emit)');
+async function runTsc(_tsconfigPath, ids, compilerOptions) {
+  if (process.env.COLLAB_RUN_TSC_TYPECHECK === '0') {
+    log('COLLAB_RUN_TSC_TYPECHECK=0 is ignored: typecheck always runs; the verdict is l5/project.json typeCheck.status');
+  }
+  const blocked = [];
+  for (const id of ids) {
+    const report = typeCheckProject({ root: ROOT, projectId: id });
+    if (report.overrideLog) log(report.overrideLog);
+    log(`typeCheck ${report.reportLine}`);
+    for (const line of report.excerpt) log(`typeCheck ${line}`);
+    log(report.marker);
+    if (report.verdict.block) blocked.push(report);
+  }
+  if (blocked.length > 0) {
+    const first = blocked[0];
+    throw new Error([
+      `TypeScript typeCheck blocked mls-${first.projectId} (status=${first.policy.status}).`,
+      'Status governs type errors; syntax, broken imports and emit failures always block.',
+      first.excerpt.join('\n') || first.reportLine,
+    ].filter(Boolean).join('\n'));
   }
 
   // Emit one project per tsc process. The monolithic emit can be killed by Lima's
@@ -220,7 +221,8 @@ function composeGeneratedConfig(clientId) {
   for (const side of ['backend', 'frontend']) {
     const master = l5.masters?.[side];
     if (!master) continue;
-    if (side === 'frontend' && FAIL_ON_TSC_ERRORS && hasMaterializedFrontendConfig(clientId)) {
+    const typeCheck = readTypeCheckPolicy(clientRoot);
+    if (side === 'frontend' && typeCheck.status === 'strict' && hasMaterializedFrontendConfig(clientId)) {
       log(`frontend config already materialized for ${clientId}; skipping frontend composer during publish`);
       continue;
     }
@@ -480,7 +482,7 @@ async function buildServer(ids) {
     sourceMap: true,
     declaration: false,
     noEmit: false,
-    noEmitOnError: FAIL_ON_TSC_ERRORS,
+    noEmitOnError: false,
   };
   const tsconfig = {
     extends: baseTsconfigRel(),
@@ -688,8 +690,9 @@ function walkFilesSync(root) {
   return out;
 }
 
-export function checkSurvivingModuleUrls(outdir) {
+export function checkSurvivingModuleUrls(outdir, fromDir = ROOT) {
   const missing = [];
+  const unresolved = [];
   for (const file of walkFilesSync(outdir)) {
     if (extname(file) !== '.js') continue;
     const rel = toPosix(relative(outdir, file));
@@ -697,13 +700,23 @@ export function checkSurvivingModuleUrls(outdir) {
     const source = readFileSync(file, 'utf8');
     for (const url of findSurvivingModuleUrls(source)) {
       const emitted = resolve(outdir, url.replace(/^\//u, ''));
-      if (!existsSync(emitted)) missing.push({ file: rel, url });
+      if (existsSync(emitted)) continue;
+      // Same split as checkRegionEntrypointsEmitted: a URL whose source is not
+      // on this machine cannot be emitted (Studio-only modules on a client VM).
+      if (!resolveSource(normalizeVirtualSpec(url), fromDir)) {
+        unresolved.push({ file: rel, url });
+        continue;
+      }
+      missing.push({ file: rel, url });
     }
   }
-  return missing;
+  return { missing, unresolved };
 }
 
-export function reportSurvivingModuleUrls(missing) {
+export function reportSurvivingModuleUrls({ missing, unresolved }) {
+  for (const item of unresolved) {
+    log(`${item.file} | ${item.url} | projeto ausente nesta máquina`);
+  }
   if (missing.length === 0) return;
   const lines = missing.map((item) => `${item.file} | ${item.url}`).join('\n');
   throw new Error(
@@ -772,7 +785,7 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
     outdir,
     clientRoot,
   ));
-  reportSurvivingModuleUrls(checkSurvivingModuleUrls(outdir));
+  reportSurvivingModuleUrls(checkSurvivingModuleUrls(outdir, clientRoot));
 
   // copy l2 static resources (html/css/svg/json/md/assets) into dist/<target>
   let copied = 0;

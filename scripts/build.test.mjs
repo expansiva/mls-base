@@ -245,6 +245,8 @@ const COLLAB_REL = 'l2/collabMessages.ts';
 const COLLAB_SPEC = '/_900001_/l2/collabMessages.js';
 const IMPORTER_REL = 'l2/shared/shell.ts';
 const IMPORTER_KEY = '_900001_/l2/shared/shell';
+const ABSENT_ID = '888888';
+const ABSENT_SPEC = `/_${ABSENT_ID}_/l2/ghost.js`;
 
 function withProjectFixture(id, files, fn) {
   const root = mkdtempSync(join(tmpdir(), 'gb71-'));
@@ -309,48 +311,76 @@ test('E2 — findSurvivingModuleUrls pega aspas e template', () => {
   );
 });
 
-test('E2 — literal sobrevivente sem arquivo falha o build', () => {
-  const root = mkdtempSync(join(tmpdir(), 'gb71-guard-'));
-  try {
+test('E2 — fonte presente + arquivo apagado do dist falha o build', () => {
+  const url = `/_${ID}_/l2/cbe/studioStructure.js`;
+  withProjectFixture(ID, {
+    'l2/cbe/studioStructure.ts': 'export function upgrade() {}\n',
+  }, ({ root, proj }) => {
     const outdir = join(root, 'dist', 'web');
-    const emitted = join(outdir, '_102033_', 'l2', 'shared', 'bootstrap.js');
+    const emitted = join(outdir, `_${ID}_`, 'l2', 'shared', 'bootstrap.js');
     mkdirSync(dirname(emitted), { recursive: true });
-    writeFileSync(emitted, `const modulePath = '${STUDIO_SPEC}';\nawait import(modulePath);\n`);
-    const missing = checkSurvivingModuleUrls(outdir);
-    assert.equal(missing.length, 1);
-    assert.equal(missing[0].file, '_102033_/l2/shared/bootstrap.js');
-    assert.equal(missing[0].url, STUDIO_SPEC);
+    writeFileSync(emitted, `const modulePath = '${url}';\nawait import(modulePath);\n`);
+    const check = checkSurvivingModuleUrls(outdir, proj);
+    assert.equal(check.unresolved.length, 0);
+    assert.equal(check.missing.length, 1);
+    assert.equal(check.missing[0].file, `_${ID}_/l2/shared/bootstrap.js`);
+    assert.equal(check.missing[0].url, url);
     assert.throws(
-      () => reportSurvivingModuleUrls(missing),
+      () => reportSurvivingModuleUrls(check),
       (err) => {
         assert.match(err.message, /404 em produção/);
-        assert.match(err.message, /_102033_\/l2\/shared\/bootstrap\.js \| \/_102033_\/l2\/cbe\/studioStructure\.js/);
+        assert.match(err.message, /_900001_\/l2\/shared\/bootstrap\.js \| \/_900001_\/l2\/cbe\/studioStructure\.js/);
         return true;
       },
     );
+  });
+});
+
+test('E2 — URL de projeto ausente só registra, não falha o build', (t) => {
+  const lines = [];
+  t.mock.method(console, 'log', (msg) => { lines.push(String(msg)); });
+  const root = mkdtempSync(join(tmpdir(), 'gb71-absent-'));
+  setProjectRoot(ABSENT_ID, join(root, `missing-${ABSENT_ID}`));
+  try {
+    const outdir = join(root, 'dist', 'web');
+    const emitted = join(outdir, `_${ID}_`, 'l2', 'shared', 'bootstrap.js');
+    mkdirSync(dirname(emitted), { recursive: true });
+    writeFileSync(emitted, `const modulePath = '${ABSENT_SPEC}';\nawait import(modulePath);\n`);
+    const check = checkSurvivingModuleUrls(outdir);
+    assert.equal(check.missing.length, 0);
+    assert.equal(check.unresolved.length, 1);
+    assert.equal(check.unresolved[0].file, `_${ID}_/l2/shared/bootstrap.js`);
+    assert.equal(check.unresolved[0].url, ABSENT_SPEC);
+    reportSurvivingModuleUrls(check);
+    assert.equal(
+      lines.some((l) => l.includes(ABSENT_SPEC) && l.includes('projeto ausente nesta máquina')),
+      true,
+    );
   } finally {
+    setProjectRoot(ABSENT_ID, undefined);
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 test('E2 — o mesmo literal com o arquivo emitido passa', () => {
-  const root = mkdtempSync(join(tmpdir(), 'gb71-ok-'));
-  try {
+  const url = `/_${ID}_/l2/cbe/studioStructure.js`;
+  withProjectFixture(ID, {
+    'l2/cbe/studioStructure.ts': 'export function upgrade() {}\n',
+  }, ({ root, proj }) => {
     const outdir = join(root, 'dist', 'web');
-    const emitted = join(outdir, '_102033_', 'l2', 'shared', 'bootstrap.js');
-    const target = join(outdir, '_102033_', 'l2', 'cbe', 'studioStructure.js');
+    const emitted = join(outdir, `_${ID}_`, 'l2', 'shared', 'bootstrap.js');
+    const target = join(outdir, `_${ID}_`, 'l2', 'cbe', 'studioStructure.js');
     mkdirSync(dirname(emitted), { recursive: true });
     mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(emitted, `const modulePath = '${STUDIO_SPEC}';\n`);
+    writeFileSync(emitted, `const modulePath = '${url}';\n`);
     writeFileSync(target, 'export {}\n');
-    assert.deepEqual(checkSurvivingModuleUrls(outdir), []);
+    assert.deepEqual(checkSurvivingModuleUrls(outdir, proj), { missing: [], unresolved: [] });
     unlinkSync(target);
-    const missing = checkSurvivingModuleUrls(outdir);
-    assert.equal(missing.length, 1);
-    assert.equal(missing[0].url, STUDIO_SPEC);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+    const check = checkSurvivingModuleUrls(outdir, proj);
+    assert.equal(check.missing.length, 1);
+    assert.equal(check.missing[0].url, url);
+    assert.equal(check.unresolved.length, 0);
+  });
 });
 
 test('E2 — ignora .map e _bundled-modules.json', () => {
@@ -360,7 +390,7 @@ test('E2 — ignora .map e _bundled-modules.json', () => {
     mkdirSync(outdir, { recursive: true });
     writeFileSync(join(outdir, 'bootstrap.js.map'), `"${STUDIO_SPEC}"`);
     writeFileSync(join(outdir, BUNDLED_MODULES_MANIFEST), JSON.stringify([STUDIO_SPEC.slice(1)]));
-    assert.deepEqual(checkSurvivingModuleUrls(outdir), []);
+    assert.deepEqual(checkSurvivingModuleUrls(outdir), { missing: [], unresolved: [] });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -385,7 +415,7 @@ test('prova — bundle emite o shim do studioStructure na chave virtual', async 
     });
     const emitted = join(outdir, `${STUDIO_KEY}.js`);
     assert.equal(existsSync(emitted), true, `esperava ${emitted}`);
-    assert.deepEqual(checkSurvivingModuleUrls(outdir), []);
+    assert.deepEqual(checkSurvivingModuleUrls(outdir), { missing: [], unresolved: [] });
   });
 });
 
@@ -422,6 +452,6 @@ test('prova — import literal de collabMessages não sobrevive no JS emitido', 
     const js = readFileSync(importerJs, 'utf8');
     assert.equal(js.includes(COLLAB_SPEC), false, 'literal não deve sobreviver no JS emitido');
     assert.equal(existsSync(join(outdir, '_900001_', 'l2', 'collabMessages.js')), false);
-    assert.deepEqual(checkSurvivingModuleUrls(outdir), []);
+    assert.deepEqual(checkSurvivingModuleUrls(outdir), { missing: [], unresolved: [] });
   });
 });
