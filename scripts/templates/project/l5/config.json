@@ -76,6 +76,10 @@
       }
     }
   },
+  "shellTemplates": {
+    "spa": "./_102033_/l2/shared/spa/index.html",
+    "pwa": "./_102033_/l2/shared/pwa/index.html"
+  },
   "publication": {
     "defaultTarget": "web",
     "targets": {
@@ -84,6 +88,16 @@
         "serveStaticFromServer": true,
         "minify": false,
         "sourcemap": true
+      }
+    }
+  },
+  "clientShell": {
+    "mode": "spa",
+    "activeProfile": "defaultAura",
+    "regions": {
+      "header": {
+        "entrypoint": "./_102033_/l2/shared/layout/aura-header.js",
+        "tag": "collab-aura-header"
       }
     }
   }

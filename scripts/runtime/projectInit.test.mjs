@@ -70,6 +70,33 @@ test('gitManagedMarkerBody diz quem é dono da história e o que o publish NÃO 
 
 // ── o template versionado ───────────────────────────────────────────────────
 
+test('o template gera um config que o app SOBE — projeto vazio não é cliente completo', () => {
+  // Alvo: o app SUBIR (shellTemplates presente). Um scaffold sem módulos continua
+  // reprovando em "no modules" e persistenceModules — isso é a verdade sobre um
+  // projeto vazio, não um buraco. O que NÃO pode sobrar é shellTemplates.spa is required:
+  // foi isso que deixou o 102043 zumbi (pm2 verde, nada na porta, /git/ morto).
+  const configPath = join(TEMPLATE, 'l5', 'config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  assert.deepEqual(config.shellTemplates, {
+    spa: './_102033_/l2/shared/spa/index.html',
+    pwa: './_102033_/l2/shared/pwa/index.html',
+  });
+  assert.equal(config.clientShell?.mode, 'spa');
+  assert.equal(
+    config.clientShell?.regions?.header?.entrypoint,
+    './_102033_/l2/shared/layout/aura-header.js',
+  );
+
+  const result = spawnSync('node', [join(MLS_BASE, 'scripts', 'validateClientConfig.mjs'), configPath], {
+    encoding: 'utf8',
+  });
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  assert.equal(result.status, 1, 'scaffold vazio ainda não é cliente completo');
+  assert.match(output, /client project declares no modules/);
+  assert.match(output, /persistenceModules/);
+  assert.doesNotMatch(output, /shellTemplates\.spa is required/);
+});
+
 test('o template carrega o que faz um projeto nascer utilizável', () => {
   // Cada um destes já custou um run: sem l5/config.json nenhum agente carrega; sem
   // `masters` o compositor não roda e o mlsDep nasce sem os runtime (família dos 328).
