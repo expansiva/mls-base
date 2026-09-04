@@ -112,7 +112,7 @@ So a dep that just joined the client's `mlsDep.json` (the measured case: 100554/
    `origin`**, creates `vm-baseline` from HEAD, then arms with the same `setupRepo`
    `gitReposSetup` already uses (`receive.advertisePushOptions`, `updateInstead`). Creating
    `vm-baseline` first is what lets a repo **with** `origin` through the guard
-   (`skipped-external-remote` is `remotes && !vm-baseline`). The guard is not loosened.
+   (`skipped-external-remote` is `remotes && !vm-baseline` **fora** de `/data/mls-base`).
 3. **2nd publish** — the repo exists, the snapshot lands, the hook compiles the Mac disk.
 
 Why not one publish (resend the snapshot after the hook returns, in the same Mac process)?
@@ -121,8 +121,11 @@ afterwards still needs a second client push to compile it. Two builds pretending
 is worse than two honest publishes. No third transport.
 
 A clone made **by hand** with `origin` and **no** `vm-baseline` is still refused
-(`skipped-external-remote`) — that is a developer's checkout. The sequence that arms a
-platform dep is: clone → `vm-baseline` → `setupRepo`, origin stays.
+(`skipped-external-remote`) **outside** `/data/mls-base` — that is a developer's checkout,
+and that is why the guard exists. Inside `VM_ROOT`, the same shape is a leftover of
+`resolveDeps` from before gb77: `setupRepo` sends it through `armClonedDep` (creates
+`vm-baseline`, keeps `origin`). The sequence that arms a **new** platform dep is still
+clone → `vm-baseline` → `setupRepo`, origin stays.
 
 ### Two ways a lib on the VM is updated (gb77 rodada 2, 04/09/2026)
 
@@ -150,8 +153,9 @@ node scripts/runtime/gitReposSetup.mjs --root /data/mls-base --reset-from-origin
 ```
 
 It only touches an `mls-*` that has **both** `origin` and `vm-baseline`. A developer
-checkout (origin, no baseline) is skipped — same door as the guard. A snapshot-only
-folder (no origin) is skipped.
+checkout (origin, no baseline) is skipped — same door as the guard **off** the VM.
+On the VM, `gitReposSetup` arms that leftover first, and then this command can see it.
+A snapshot-only folder (no origin) is skipped.
 
 **Who fires it is gb62** (collab-sites button / schedule, N VMs). This file only names
 the command. Do not wire it into the git hook or `resolveDeps`.
@@ -534,4 +538,6 @@ static template deleted, `projectInit --from-model` clones mls-102039 (gb70) add
 lima platform checkout + `platformCommit` on the release stamp (gb73) added 04/09/2026;
 new dep in the closure: two-publish cycle, VM clone keeps origin and is armed via vm-baseline
 (gb77) added 04/09/2026; fetch+reset of armed deps, trigger is gb62 (gb77 rodada 2) added 04/09/2026;
-platform install unpinned via `.npmrc` `frozen-lockfile=false` (Wagner 04/09) added 04/09/2026.*
+platform install unpinned via `.npmrc` `frozen-lockfile=false` (Wagner 04/09) added 04/09/2026;
+pre-gb77 clone on the VM (origin, no vm-baseline) is armed by setupRepo at VM_ROOT (gb64 rodada 2)
+added 04/09/2026.*

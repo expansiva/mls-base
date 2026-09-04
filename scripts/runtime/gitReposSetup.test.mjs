@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { planSnapshot, sendSnapshot } from '../publishGitDeps.mjs';
-import { armClonedDep, resetArmedDepsFromOrigin, resetFromOrigin, setupRepo } from './gitReposSetup.mjs';
+import { armClonedDep, resetArmedDepsFromOrigin, resetFromOrigin, setupRepo, VM_ROOT } from './gitReposSetup.mjs';
 
 const GIT_ENV = {
   ...process.env,
@@ -37,7 +37,7 @@ function localConfig(dir, key) {
   }
 }
 
-test('setupRepo recusa clone com remote e sem vm-baseline (skipped-external-remote)', () => {
+test('fora do VM_ROOT, clone com origin e sem vm-baseline continua skipped-external-remote', () => {
   const root = mkdtempSync(join(tmpdir(), 'setup-skip-'));
   try {
     const dest = makeCloneWithOrigin(root);
@@ -50,10 +50,51 @@ test('setupRepo recusa clone com remote e sem vm-baseline (skipped-external-remo
     }
     assert.equal(hasBaseline, false);
 
-    const result = setupRepo(dest);
+    const result = setupRepo(dest, { root });
     assert.equal(result.status, 'skipped-external-remote');
     assert.equal(localConfig(dest, 'receive.advertisePushOptions'), '');
     assert.ok(git(dest, 'remote').split('\n').includes('origin'), 'guard não mexe no remote');
+    let stillNoBaseline = false;
+    try {
+      git(dest, 'show-ref', '--verify', '--quiet', 'refs/heads/vm-baseline');
+    } catch {
+      stillNoBaseline = true;
+    }
+    assert.equal(stillNoBaseline, true, 'fora do VM_ROOT não cria branch');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('em VM_ROOT, clone com origin e sem vm-baseline é armado e mantém origin', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-vmroot-arm-'));
+  try {
+    const dest = makeCloneWithOrigin(root);
+    const originUrl = git(dest, 'remote', 'get-url', 'origin');
+    const result = setupRepo(dest, { root: VM_ROOT });
+    assert.notEqual(result.status, 'skipped-external-remote', result.status);
+    assert.equal(git(dest, 'remote', 'get-url', 'origin'), originUrl);
+    assert.equal(localConfig(dest, 'receive.advertisePushOptions'), 'true');
+    assert.equal(localConfig(dest, 'receive.denyCurrentBranch'), 'updateInstead');
+    git(dest, 'show-ref', '--verify', '--quiet', 'refs/heads/vm-baseline');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('repo já armado não é tocado duas vezes (idempotente)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-idem-'));
+  try {
+    const dest = makeCloneWithOrigin(root);
+    const first = setupRepo(dest, { root: VM_ROOT });
+    assert.notEqual(first.status, 'skipped-external-remote', first.status);
+    const originUrl = git(dest, 'remote', 'get-url', 'origin');
+    const second = setupRepo(dest, { root: VM_ROOT });
+    assert.equal(second.status, 'already configured', second.status);
+    assert.deepEqual(second.actions, []);
+    assert.equal(git(dest, 'remote', 'get-url', 'origin'), originUrl);
+    assert.equal(localConfig(dest, 'receive.advertisePushOptions'), 'true');
+    git(dest, 'show-ref', '--verify', '--quiet', 'refs/heads/vm-baseline');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

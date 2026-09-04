@@ -304,13 +304,18 @@ function completionCommit(dir, message) {
   return true;
 }
 
-export function setupRepo(dir) {
+export function setupRepo(dir, { root } = {}) {
   const actions = [];
 
   if (!isRepo(dir)) {
     gitOrThrow(dir, ['init', '-b', 'main']);
     actions.push('init');
   } else if (remotes(dir).length > 0 && !branchExists(dir, 'vm-baseline')) {
+    // Fora do VM_ROOT isto é checkout de desenvolvedor e o guard protege a história.
+    // Em /data/mls-base não há clone de desenvolvedor; um repo com origin ali só
+    // pode ter vindo do resolveDeps (clone antigo, pré-gb77) — arma e conserva origin.
+    const inVmRoot = resolve(root ?? dirname(dir)) === resolve(VM_ROOT);
+    if (inVmRoot) return armClonedDep(dir);
     return { status: 'skipped-external-remote', actions };
   }
 
@@ -527,7 +532,7 @@ function main() {
   for (const name of projects) {
     const dir = join(ROOT, name);
     try {
-      const result = setupRepo(dir);
+      const result = setupRepo(dir, { root: ROOT });
       const extra = result.actions.length ? ` [${result.actions.join(', ')}]` : '';
       const dirty = result.dirty ? ' dirty' : '';
       console.log(`${name} | ${result.status}${extra}${dirty} | ${dir}`);
