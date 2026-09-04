@@ -68,7 +68,7 @@ function correctionMessage(dest, pin) {
   return `corrected ${dest} to pin libs=${pin.libs} (did not match the pinned version)`;
 }
 
-function buildReleaseStamp({ releaseId, pin, clientId, versionRef, modelCommit }) {
+function buildReleaseStamp({ releaseId, pin, clientId, versionRef, modelCommit, platformCommit }) {
   return {
     id: String(releaseId || ''),
     libs: pin.libs,
@@ -76,6 +76,7 @@ function buildReleaseStamp({ releaseId, pin, clientId, versionRef, modelCommit }
     client: clientId || null,
     versionRef: versionRef || null,
     modelCommit: modelCommit || null,
+    platformCommit: platformCommit || 'unknown',
   };
 }
 

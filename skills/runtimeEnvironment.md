@@ -60,7 +60,9 @@ The mls lib (`types/mls.d.ts`, `monaco.d.ts`, `static/libs/mls.js`) is **pinned*
 (postinstall) downloads that pin and never reads `latest.json`; if `types/mls.d.ts` on disk does
 not match, it overwrites and logs `corrected … to pin libs=…`. Bumping the lib is a commit that
 changes `collabLibs`. Each release writes `releases/<id>/release.json` with the pin, the client
-git HEAD (`versionRef`) and the model commit from `.collab-git` (gb70).
+git HEAD (`versionRef`), the model commit from `.collab-git` (gb70) and `platformCommit` — HEAD
+of the `mls-base` checkout on the VM, or `unknown` when the folder is still a copy
+(`scripts/runtime/releaseStamp.mjs`).
 
 ## pm2 topology and ports
 
@@ -70,7 +72,9 @@ pm2 can host **several apps, one per hosted project, each with its own port**:
   `collab-sites/src/layer_3_usecases/sites.ts`). Example: 102051 → 2051.
 - Sites publishes write `pm2.apps.d/app<port>.config.js` (name `app<port>`, cwd
   `current-<projectId>`, cluster with 2 instances, `PORT` and `COLLAB_PROJECT_ID` in env) and a
-  root `pm2.config.js` that aggregates everything in `pm2.apps.d/`.
+  root `pm2.config.js` that aggregates everything in `pm2.apps.d/`. Both `pm2.apps.d/` and
+  `current-*` are gitignored at the mls-base root (gb73), so a release cannot dirty the
+  platform checkout.
 - nginx gets one site per project (`<projectId>.collabcodes.com`) proxying to the app port.
 - The local dev VM uses the simpler `mls-base/servers/pm2.config.js`: a single app named `app`
   on port 3000, cwd `/data/mls-base/current`.
@@ -150,6 +154,7 @@ syncs ALL `mls-*` projects to ssh/multipass targets by default (`PUBLISH_ALL_PRO
 ## Pointers
 
 - Publish scripts: `mls-base/scripts/runPublishMlsBase.mjs`, `mls-base/scripts/publish/publishMlsBase.py`
+- Platform checkout (lima copy → same recipe as collab-runtime step 10): `mls-base/scripts/runtime/ensureMlsBaseCheckout.mjs`
 - Build/release on VM: `mls-base/scripts/runtime/addNewVersion.mjs`
 - Server env & runtime mode: `mls-base/mls-102034/l1/server/layer_1_external/config/env.ts`
 - Schema + seeds: `mls-base/mls-102034/l1/server/layer_1_external/persistence/` (registry,

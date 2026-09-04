@@ -54,6 +54,7 @@ test('collectReleaseStamp grava libs do pin, versionRef do cliente e o commit do
     assert.equal(stamp.client, '102043');
     assert.equal(stamp.versionRef, head);
     assert.equal(stamp.modelCommit, 'abcdef1234567890');
+    assert.equal(stamp.platformCommit, 'unknown');
 
     const releaseDir = join(root, 'releases', stamp.id);
     mkdirSync(releaseDir, { recursive: true });
@@ -62,6 +63,7 @@ test('collectReleaseStamp grava libs do pin, versionRef do cliente e o commit do
     assert.equal(sealed.libs, PIN.libs);
     assert.equal(sealed.versionRef, head);
     assert.equal(sealed.modelCommit, 'abcdef1234567890');
+    assert.equal(sealed.platformCommit, 'unknown');
   });
 });
 
@@ -73,7 +75,24 @@ test('readModelCommit e gitHead são vazios quando não há repo nem marcador', 
     assert.equal(stamp.client, null);
     assert.equal(stamp.versionRef, null);
     assert.equal(stamp.modelCommit, null);
+    assert.equal(stamp.platformCommit, 'unknown');
     assert.equal(stamp.libs, PIN.libs);
     assert.equal(existsSync(join(root, 'release.json')), false);
+  });
+});
+
+test('collectReleaseStamp grava o HEAD do mls-base em platformCommit', () => {
+  withRoot((root) => {
+    git(root, ['init', '-q', '-b', 'main']);
+    git(root, ['add', 'package.json']);
+    const committed = spawnSync(
+      'git',
+      ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(committed.status, 0, `${committed.stdout ?? ''}${committed.stderr ?? ''}`);
+    const head = git(root, ['rev-parse', 'HEAD']).out;
+    const stamp = collectReleaseStamp({ root, releaseId: '20260904153000', clientId: '' });
+    assert.equal(stamp.platformCommit, head);
   });
 });

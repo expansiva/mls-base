@@ -12,6 +12,7 @@ compiles and cuts a release. No tarball, no full publish.
 | piece | file |
 |---|---|
 | setup on the VM (idempotent) | `mls-base/scripts/runtime/gitReposSetup.mjs --root /data/mls-base` |
+| platform checkout (lima copy → git) | `mls-base/scripts/runtime/ensureMlsBaseCheckout.mjs` |
 | hook | `mls-base/scripts/runtime/gitPostReceive.sh` → `gitPostReceive.mjs` |
 | client side | `mls-base/scripts/publishGit.mjs <projectId> local\|remote [--align] [--autocommit]` |
 | clone from VM | `mls-base/scripts/publishGit.mjs <projectId> clone local\|remote` |
@@ -302,6 +303,11 @@ What a fresh remote VM actually does today, in order. Read this before promising
    `vm-baseline`, and **nothing to push to**. Lima never showed it because there mls-base arrived
    as a copy, not a clone. `projectInit` now also re-runs `gitReposSetup` on a project that already
    exists, so a VM created before the fix heals with *Update platform*.
+   **Lima is still a copy until converted.** `ensureMlsBaseCheckout.mjs` (gb73) is the
+   versioned, idempotent conversion: `git init` → `remote add origin $MLS_BASE_REPO` →
+   `fetch` → `checkout -f -B main origin/main`. Same variables as this step
+   (`MLS_BASE_DIR`, `MLS_BASE_REPO`). Ignored VM state stays; a folder that is already a
+   checkout is left alone. Wagner runs it on lima — the script does not ssh.
 
 7. Step 12 (`scripts/12-mls-project.sh`) runs
    `node /data/mls-base/scripts/runtime/projectInit.mjs <projectId> --root /data/mls-base --from-model`
@@ -392,6 +398,7 @@ history `.collab-git` exists to protect. The model itself is never hosted on a V
 | create the project on the VM | `mls-base/scripts/runtime/projectInit.mjs` | `pnpm vm:init` over ssh (Mac) **and** collab-runtime step 12 (bootstrap) |
 | app role, `mdm` database, runtime `.env` | `collab-runtime/scripts/lib/mls-app-db.sh` | collab-runtime step 10 **and** `mls-base/scripts/vmInitialSetup.sh` (the `--initial` ssh path) |
 | project port | `mls-base/scripts/runtime/projectPorts.mjs` | the git hook (collab-sites still keeps its own copy — see gb15) |
+| lima copy → platform checkout | `mls-base/scripts/runtime/ensureMlsBaseCheckout.mjs` | Wagner on the VM (once; idempotent). Same `MLS_BASE_DIR` / `MLS_BASE_REPO` as step 10 |
 
 `vmInitialSetup.sh` no longer writes the `.env` or creates the database itself; it finds a
 collab-runtime checkout (`$COLLAB_RUNTIME_DIR`, `/data/collab-runtime`, `$HOME/collab-runtime`,
@@ -410,6 +417,12 @@ current-<id> -> releases/<ts>     per project (COLLAB_RELEASE_ALIAS)
 pm2.apps.d/app<port>.config.js    one file per project
 pm2.config.js                     aggregator: reads pm2.apps.d/
 ```
+
+`current-*` and `pm2.apps.d` are in the mls-base `.gitignore` (gb73), so they never
+show up as `??` on a platform checkout. Each release stamps `platformCommit` in
+`releases/<id>/release.json` (`releaseStamp.mjs`) — HEAD of that checkout, or
+`unknown` while lima is still a copy. Same pin + same platform commit ⇒ same
+release on both VMs.
 
 The port is `2000 + the id's last three digits` (`scripts/runtime/projectPorts.mjs`; the
 same rule lives in `collab-sites`). An app whose `cwd` is the global `current` serves
@@ -432,4 +445,5 @@ whichever project pushed last — always point an app at `current-<id>`.
 and `remote.conf.example` added 02/09/2026; "brand-new VM" sequence and the multi-project alias
 model added 03/09/2026; step 12, the project template and the single-owner table added 03/09/2026;
 new-project `package.json` and dep-only rebuild-on-the-project (gb69) added 04/09/2026;
-static template deleted, `projectInit --from-model` clones mls-102039 (gb70) added 04/09/2026.*
+static template deleted, `projectInit --from-model` clones mls-102039 (gb70) added 04/09/2026;
+lima platform checkout + `platformCommit` on the release stamp (gb73) added 04/09/2026.*

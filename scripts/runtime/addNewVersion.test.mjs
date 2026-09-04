@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { trackedDirtyPaths } from './gitPostReceive.mjs';
+import { collectReleaseStamp, writeReleaseStamp } from './releaseStamp.mjs';
+import { APPS_DIR, PM2_CONFIG, ensureProjectApp } from './vmApps.mjs';
 import {
   VM_TSCONFIG,
   discoverProjects,
@@ -80,15 +82,67 @@ test('writeVmTsconfig poda paths para os mls-* do disco e não toca o tsconfig.j
 
 test('release worktree: nenhum arquivo rastreado do mls-base fica sujo (gb73 E2)', () => {
   withGitRoot((root) => {
+    writeFileSync(join(root, '.gitignore'), readFileSync(join(MLS_BASE, '.gitignore'), 'utf8'));
+    writeFileSync(
+      join(root, 'package.json'),
+      `${JSON.stringify({ name: 'mls-base-fixture', collabLibs: { libs: '20260904142119', monaco: '20240313204233' } }, null, 2)}\n`,
+    );
+    git(root, ['add', '.gitignore', 'package.json']);
+    const committed = spawnSync(
+      'git',
+      ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'ignore'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(committed.status, 0, `${committed.stdout ?? ''}${committed.stderr ?? ''}`);
     const packageBefore = readFileSync(join(root, 'package.json'), 'utf8');
+    const tsconfigBefore = readFileSync(join(root, 'tsconfig.json'), 'utf8');
+
     writeVmTsconfig(root);
+    writeFileSync(join(root, 'config.json'), '{ "defaultProjectId": "102043" }\n');
+    mkdirSync(join(root, 'dist', 'local'), { recursive: true });
+    writeFileSync(join(root, 'dist', 'local', 'keep.txt'), 'compiled\n');
+    const stamp = collectReleaseStamp({ root, releaseId: '20260904153000', clientId: '102043' });
+    const releaseDir = join(root, 'releases', stamp.id);
+    mkdirSync(releaseDir, { recursive: true });
+    writeReleaseStamp(releaseDir, stamp);
+    symlinkSync(releaseDir, join(root, 'current'));
+    symlinkSync(releaseDir, join(root, 'current-102043'));
+    mkdirSync(join(root, 'logs'), { recursive: true });
+    writeFileSync(join(root, 'logs', 'git-push.jsonl'), '{}\n');
+    mkdirSync(join(root, 'mls-102043', 'obj'), { recursive: true });
+    writeFileSync(join(root, 'mls-102043', 'obj', 'compiled.zip'), 'zip');
+    ensureProjectApp({ root, projectId: '102043' });
+
     const porcelain = git(root, ['status', '--porcelain']).out;
     assert.deepEqual(trackedDirtyPaths(porcelain), [], `tracked dirty: ${porcelain}`);
     assert.equal(git(root, ['diff', '--name-only']).out, '');
     assert.equal(readFileSync(join(root, 'package.json'), 'utf8'), packageBefore);
+    assert.equal(readFileSync(join(root, 'tsconfig.json'), 'utf8'), tsconfigBefore);
     assert.equal(existsSync(join(root, VM_TSCONFIG)), true);
+    assert.equal(existsSync(join(root, 'releases', stamp.id, 'release.json')), true);
+    assert.equal(existsSync(join(root, 'current')), true);
+    assert.equal(existsSync(join(root, 'current-102043')), true);
+    assert.equal(existsSync(join(root, APPS_DIR, 'app2043.config.js')), true);
+    assert.equal(existsSync(join(root, PM2_CONFIG)), true);
     assert.equal(vmTsconfigRel(root), `./${VM_TSCONFIG}`);
+
+    const addSrc = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
+    assert.match(addSrc, /join\(ROOT, 'releases'\)/);
+    assert.match(addSrc, /join\(ROOT, 'current'\)/);
+    assert.match(addSrc, /join\(ROOT, releaseAlias\)/);
+    assert.match(addSrc, /join\(ROOT, 'logs'\)/);
+    assert.match(addSrc, /join\(ROOT, 'config\.json'\)/);
+    const objSrc = readFileSync(join(HERE, 'buildProjectsObj.mjs'), 'utf8');
+    assert.match(objSrc, /join\(ROOT, `mls-\$\{id\}`, 'obj'\)/);
+    const hookSrc = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
+    assert.match(hookSrc, /join\(root, 'logs'\)/);
   });
+});
+
+test('.gitignore da raiz ignora current-* e pm2.apps.d (gb73 E5)', () => {
+  const ignore = readFileSync(join(MLS_BASE, '.gitignore'), 'utf8');
+  assert.match(ignore, /^current-\*$/m);
+  assert.match(ignore, /^pm2\.apps\.d$/m);
 });
 
 test('discoverProjects ignora mls-*-temp e arquivos', () => {

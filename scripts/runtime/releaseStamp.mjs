@@ -33,6 +33,7 @@ export function collectReleaseStamp({ root, releaseId, clientId }) {
     clientId: clientId || null,
     versionRef: clientDir ? gitHead(clientDir) : '',
     modelCommit: clientDir ? readModelCommit(clientDir) : '',
+    platformCommit: gitHead(root) || 'unknown',
   });
 }
 

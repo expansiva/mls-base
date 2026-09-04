@@ -165,7 +165,7 @@ function main() {
   symlinkSync(join(ROOT, 'node_modules'), join(releaseDir, 'node_modules'), 'dir');
   const stamp = collectReleaseStamp({ root: ROOT, releaseId, clientId: clientId || '' });
   writeReleaseStamp(releaseDir, stamp);
-  console.log(`--- release stamp libs=${stamp.libs} monaco=${stamp.monaco}`);
+  console.log(`--- release stamp libs=${stamp.libs} monaco=${stamp.monaco} platform=${stamp.platformCommit}`);
 
   // DB migrations BEFORE activation: the client's TableDefinitions (persistenceModules ->
   // tableDefsDir) only become Postgres tables when the master backend's migrate runs

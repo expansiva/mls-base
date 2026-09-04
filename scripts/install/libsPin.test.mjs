@@ -84,13 +84,14 @@ test('correctionMessage nomeia o arquivo e o pin', () => {
   assert.match(msg, /libs=20260904142119/u);
 });
 
-test('buildReleaseStamp sela libs, monaco, versionRef e o commit do modelo', () => {
+test('buildReleaseStamp sela libs, monaco, versionRef, o commit do modelo e o da plataforma', () => {
   const stamp = buildReleaseStamp({
     releaseId: '20260904153000',
     pin: { libs: '20260904142119', monaco: '20240313204233' },
     clientId: '102043',
     versionRef: 'abc123',
     modelCommit: 'def456',
+    platformCommit: 'cafed00d',
   });
   assert.equal(stamp.id, '20260904153000');
   assert.equal(stamp.libs, '20260904142119');
@@ -98,6 +99,18 @@ test('buildReleaseStamp sela libs, monaco, versionRef e o commit do modelo', () 
   assert.equal(stamp.client, '102043');
   assert.equal(stamp.versionRef, 'abc123');
   assert.equal(stamp.modelCommit, 'def456');
+  assert.equal(stamp.platformCommit, 'cafed00d');
+});
+
+test('buildReleaseStamp grava platformCommit unknown quando a raiz não é checkout', () => {
+  const stamp = buildReleaseStamp({
+    releaseId: '20260904153000',
+    pin: { libs: '20260904142119', monaco: '20240313204233' },
+    clientId: '102043',
+    versionRef: 'abc123',
+    modelCommit: 'def456',
+  });
+  assert.equal(stamp.platformCommit, 'unknown');
 });
 
 test('package.json do mls-base declara o pin no formato 14 dígitos', () => {

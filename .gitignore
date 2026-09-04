@@ -25,6 +25,8 @@ tsconfig.build.json
 tsconfig.vm.json
 releases
 current
+current-*
+pm2.apps.d
 .cssStage
 .cssStage-old-sandbox
 mls.d.ts
