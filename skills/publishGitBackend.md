@@ -377,14 +377,16 @@ In order:
 5. `install.sh` runs the numbered steps: data disk, apt update, nginx, postgres, timescaledb,
    redis, node, 7zip, pm2, certbot, mls-base, collab-messages.
 6. Step 10 (`scripts/10-mls-runtime.sh`) installs rsync+git, enables pnpm through corepack,
-   clones `mls-base` from GitHub into `/data/mls-base`, then calls
-   `scripts/lib/mls-app-db.sh` to write the production `.env` (`APP_ENV=production`,
+   clones `mls-base` from GitHub into `/data/mls-base`, runs `pnpm install` there (no
+   lockfile flag — `.npmrc` has `frozen-lockfile=false`, gb55) as the deploy user, then
+   calls `scripts/lib/mls-app-db.sh` to write the production `.env` (`APP_ENV=production`,
    `RUNTIME_MODE=postgres`, `PORT=3000`) and create the `mdm` database.
-   **It does NOT run `pnpm install`** (measured 03/09 on the 102043 VM), so the checkout is
-   present but not buildable: the first build dies at `Cannot find package 'esbuild'`. Until
-   gb54 fixes the step, the admin's *Build release* installs the platform deps when
-   `node_modules` is missing — a push that arrives before that button on a brand-new VM still
-   fails with the esbuild message.
+   **Ready means cloned AND installed** (gb54, 04/09). A failed install is a warning, not a
+   stop: the message says no build will work on this VM until it passes. The admin's *Build
+   release* still installs when `node_modules` is missing (collab-sites
+   `buildProjectReleaseCommand`) — second line of defence, not a substitute for this step.
+   Measured hole 03/09 on the 102043 VM: clone without install died at
+   `Cannot find package 'esbuild'`.
    **`gitReposSetup` used to skip every project on a VM** (fixed 03/09): its `isRepo` asked
    `git rev-parse --git-dir`, which walks UP the tree — inside the mls-base checkout that answers
    for any subfolder, returning the parent's `.git`, so the project looked like a foreign repo
@@ -540,4 +542,5 @@ new dep in the closure: two-publish cycle, VM clone keeps origin and is armed vi
 (gb77) added 04/09/2026; fetch+reset of armed deps, trigger is gb62 (gb77 rodada 2) added 04/09/2026;
 platform install unpinned via `.npmrc` `frozen-lockfile=false` (Wagner 04/09) added 04/09/2026;
 pre-gb77 clone on the VM (origin, no vm-baseline) is armed by setupRepo at VM_ROOT (gb64 rodada 2)
-added 04/09/2026.*
+added 04/09/2026;
+step 10 runs `pnpm install` after clone/pull so a fresh VM is buildable (gb54) added 04/09/2026.*
