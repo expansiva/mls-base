@@ -340,6 +340,30 @@ the push would trade auditing for a blockade.
 What a fresh remote VM actually does today, in order. Read this before promising a VM is
 "git ready" — steps 1-6 are automatic, step 7 is the hole.
 
+### Platform install is not pinned (Wagner, 04/09/2026)
+
+The `pnpm-lock.yaml` of mls-base stays gitignored. Wagner (04/09) refused committing it: a lockfile
+that freezes installs would get in the way of the Mac → local test → remote path. The one place that
+turns frozen off everywhere (Mac, lima, AWS, CI) is `.npmrc` at the mls-base root, and it contains
+only this:
+
+```
+frozen-lockfile=false
+```
+
+pnpm turns `--frozen-lockfile` on by itself when `CI=true`. The `.npmrc` is what stops that, so
+commands stay `pnpm install` with no flag. `addNewVersion.mjs` and the collab-sites first-release
+install both rely on it. Do not put `--no-frozen-lockfile` (or `--frozen-lockfile`) on those
+commands.
+
+**Consequence, accepted on purpose:** the platform on a VM is **not byte-for-byte reproducible**.
+Two VMs created weeks apart can receive different transitive versions (`esbuild: ^0.27.2`,
+`typescript: ^5.5.3`). A build that passes today can fail tomorrow with no code change. **This is a
+conscious decision by Wagner (04/09), not an oversight** — do not "fix" it by committing the
+lockfile or adding `--frozen-lockfile`.
+
+In order:
+
 1. The admin creates the server; `collab-sites` builds the cloud-init (`buildCloudInit`,
    `src/helpers/awsProvisioner.ts`).
 2. Cloud-init installs `git`, mounts/formats the data volume, writes
@@ -509,4 +533,5 @@ new-project `package.json` and dep-only rebuild-on-the-project (gb69) added 04/0
 static template deleted, `projectInit --from-model` clones mls-102039 (gb70) added 04/09/2026;
 lima platform checkout + `platformCommit` on the release stamp (gb73) added 04/09/2026;
 new dep in the closure: two-publish cycle, VM clone keeps origin and is armed via vm-baseline
-(gb77) added 04/09/2026; fetch+reset of armed deps, trigger is gb62 (gb77 rodada 2) added 04/09/2026.*
+(gb77) added 04/09/2026; fetch+reset of armed deps, trigger is gb62 (gb77 rodada 2) added 04/09/2026;
+platform install unpinned via `.npmrc` `frozen-lockfile=false` (Wagner 04/09) added 04/09/2026.*
