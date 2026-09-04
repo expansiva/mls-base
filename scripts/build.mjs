@@ -20,7 +20,7 @@
 
 import { build as esbuild } from 'esbuild';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -252,6 +252,11 @@ function projectDir(id) {
   return projectRoots.get(id) ?? resolve(ROOT, `mls-${id}`);
 }
 
+export function setProjectRoot(id, absPath) {
+  if (absPath == null) projectRoots.delete(id);
+  else projectRoots.set(id, absPath);
+}
+
 function clientConfigPath(id) {
   // Single source of truth: mls-<id>/l5/config.json (composed by the publish generators).
   return join(projectDir(id), 'l5', 'config.json');
@@ -285,6 +290,33 @@ function outputKey(absFile) {
   const m = /\/mls-(\d+)\/(.+)$/u.exec(posix);
   if (!m) return undefined;
   return `_${m[1]}_/${m[2].replace(/\.(ts|tsx|js|jsx)$/u, '')}`;
+}
+
+// `./_102033_/l2/cbe/x.js` → `/_102033_/l2/cbe/x.js`. Non-virtual specs stay as-is
+// so resolveSource still resolves them from fromDir.
+export function normalizeVirtualSpec(spec) {
+  const withoutDot = spec.replace(/^\.\//u, '');
+  const virtual = withoutDot.startsWith('/') ? withoutDot : `/${withoutDot}`;
+  return /^\/_\d+_\//u.test(virtual) ? virtual : spec;
+}
+
+function regionRendererSpecs(region) {
+  if (!region || typeof region !== 'object') return [];
+  const specs = [];
+  if (typeof region.entrypoint === 'string' && region.entrypoint) {
+    specs.push(region.entrypoint);
+  }
+  for (const profile of Object.values(region.profiles ?? {})) {
+    const renderer = profile?.renderer;
+    if (!renderer || typeof renderer !== 'object') continue;
+    if (typeof renderer.source === 'string' && renderer.source) {
+      specs.push(renderer.source);
+    }
+    if (typeof renderer.entrypoint === 'string' && renderer.entrypoint) {
+      specs.push(renderer.entrypoint);
+    }
+  }
+  return specs;
 }
 
 async function pathExists(p) {
@@ -521,7 +553,7 @@ function resolveVirtual(p) {
   return { abs, rel };
 }
 
-function collectEntrypoints(clientConfig, clientRoot) {
+export function collectEntrypoints(clientConfig, clientRoot) {
   const entries = {};
   const addSource = (src, fromDir) => {
     const file = resolveSource(src, fromDir);
@@ -560,11 +592,12 @@ function collectEntrypoints(clientConfig, clientRoot) {
     }
   }
 
+  // Flat `regions[name].entrypoint` (the form clientShell ships) and
+  // `regions[name].profiles[].renderer.{source,entrypoint}`.
   const regions = clientConfig.clientShell?.regions ?? {};
   for (const region of Object.values(regions)) {
-    for (const profile of Object.values(region.profiles ?? {})) {
-      const src = profile.renderer?.source;
-      if (src) addSource(src, clientRoot);
+    for (const spec of regionRendererSpecs(region)) {
+      addSource(normalizeVirtualSpec(spec), clientRoot);
     }
   }
 
@@ -581,6 +614,39 @@ function collectEntrypoints(clientConfig, clientRoot) {
   }
 
   return entries;
+}
+
+export function checkRegionEntrypointsEmitted(regions, outdir, fromDir) {
+  const missing = [];
+  const unresolved = [];
+  for (const [name, region] of Object.entries(regions ?? {})) {
+    for (const spec of regionRendererSpecs(region)) {
+      const file = resolveSource(normalizeVirtualSpec(spec), fromDir);
+      if (!file) {
+        unresolved.push({ region: name, entrypoint: spec });
+        continue;
+      }
+      const key = outputKey(file);
+      const emitted = key ? resolve(outdir, `${key}.js`) : undefined;
+      if (!emitted || !existsSync(emitted)) {
+        missing.push({ region: name, entrypoint: spec, source: file });
+      }
+    }
+  }
+  return { missing, unresolved };
+}
+
+export function reportRegionEntrypoints({ missing, unresolved }) {
+  for (const item of unresolved) {
+    log(`região ${item.region}: entrypoint ${item.entrypoint} não resolve para fonte no workspace — não emitido`);
+  }
+  if (missing.length === 0) return;
+  const lines = missing
+    .map((item) => `${item.region} | ${item.entrypoint} | ${item.source}`)
+    .join('\n');
+  throw new Error(
+    `clientShell.regions declara entrypoint(s) com fonte no workspace que o bundle não emitiu:\n${lines}`,
+  );
 }
 
 async function buildWeb(clientConfig, clientRoot, targetName, ids) {
@@ -638,6 +704,12 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
     'utf8',
   );
   log(`manifesto de módulos empacotados -> ${BUNDLED_MODULES_MANIFEST} (${bundledModules.length})`);
+
+  reportRegionEntrypoints(checkRegionEntrypointsEmitted(
+    clientConfig.clientShell?.regions ?? {},
+    outdir,
+    clientRoot,
+  ));
 
   // copy l2 static resources (html/css/svg/json/md/assets) into dist/<target>
   let copied = 0;
@@ -813,7 +885,22 @@ async function main() {
   log('build finished');
 }
 
-main().catch((error) => {
-  console.error(`[build] aborted: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
-});
+// realpath on BOTH sides: import.meta.url is already resolved, process.argv[1]
+// is whatever the caller typed (symlink, relative path).
+function invokedAsMain() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+  try {
+    return real(fileURLToPath(import.meta.url)) === real(entry);
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsMain()) {
+  main().catch((error) => {
+    console.error(`[build] aborted: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}
