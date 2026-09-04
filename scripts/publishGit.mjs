@@ -27,7 +27,10 @@ import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:
 import { createInterface } from 'node:readline';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { depsSummary, dependencyOrder, declaredDepsOf, planSnapshot, readDepIds, sendSnapshot } from './publishGitDeps.mjs';
+import {
+  depsSummary, dependencyOrder, declaredDepsOf, missingVmRepoMessage,
+  planSnapshot, readDepIds, sendSnapshot,
+} from './publishGitDeps.mjs';
 import { homedir } from 'node:os';
 import {
   AUTH_EXIT, httpsUrl, isAuthFailure, readSession, tokenState, withCredentialHelper, writeToken,
@@ -734,15 +737,18 @@ function explainDirtyVm(out) {
  * está igual. Disparar no último retrato morria em silêncio: repo de dep não
  * tem hook (gb64).
  *
- * Devolve `{ changed }`.
+ * Devolve `{ changed, missing }`. `missing` = dep cujo alvo ainda não existe
+ * na VM: aviso, não erro — o push do cliente dispara o hook, o build clona, e
+ * o próximo publish envia o retrato.
  */
 async function publishPlatformDeps({ root, clientRepo, clientId, conf, env }) {
   const declared = readDepIds(clientRepo, clientId);
   const onDesktop = declared.filter((depId) => existsSync(join(root, `mls-${depId}`, '.git')));
-  if (!onDesktop.length) return { changed: [] };
+  if (!onDesktop.length) return { changed: [], missing: [] };
 
   const ordered = dependencyOrder(onDesktop, (depId) => declaredDepsOf(root, depId));
   const plans = [];
+  const missing = [];
   for (const depId of ordered) {
     const depName = `mls-${depId}`;
     const plan = planSnapshot({
@@ -756,6 +762,11 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env }) {
       gitSync,
       ensureRemote: ensureVmRemote,
     });
+    if (plan.status === 'missing') {
+      process.stderr.write(`${missingVmRepoMessage(depName)}\n`);
+      missing.push(depId);
+      continue;
+    }
     if (plan.status === 'error') fail(`[publishGit] retrato de ${depName} falhou: ${plan.reason}`);
     plans.push({ depId, depName, plan });
   }
@@ -763,7 +774,7 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env }) {
   const changed = plans.filter((entry) => entry.plan.status === 'changed');
   const unchanged = plans.length - changed.length;
   process.stderr.write(`[publishGit] ${depsSummary(changed.map((e) => e.depId), unchanged)}\n`);
-  if (!changed.length) return { changed: [] };
+  if (!changed.length) return { changed: [], missing };
 
   for (const entry of changed) {
     const sent = sendSnapshot({
@@ -776,7 +787,7 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env }) {
     if (sent.status === 'error') fail(`[publishGit] retrato de ${entry.depName} falhou: ${sent.reason}`);
     process.stderr.write(`[publishGit] retrato ${entry.depName} → VM\n`);
   }
-  return { changed: changed.map((entry) => entry.depId) };
+  return { changed: changed.map((entry) => entry.depId), missing };
 }
 
 /** `publish: rebuild after deps 102025 102033` — o hook só dispara em refs/heads/main nova. */
@@ -784,9 +795,12 @@ export function rebuildCommitMessage(changedDeps) {
   return `publish: rebuild after deps ${changedDeps.map(String).filter(Boolean).join(' ')}`;
 }
 
-/** App igual à VM e alguma dep mudou: sem commit novo o push é "Everything up-to-date" e o hook não roda. */
-export function needsRebuildCommit(relation, changedDeps) {
-  return relation === 'same' && Array.isArray(changedDeps) && changedDeps.length > 0;
+/** App igual à VM e alguma dep mudou (ou ainda não existe lá): sem commit novo o push é "Everything up-to-date" e o hook não roda. */
+export function needsRebuildCommit(relation, changedDeps, missingDeps = []) {
+  if (relation !== 'same') return false;
+  const changed = Array.isArray(changedDeps) && changedDeps.length > 0;
+  const missing = Array.isArray(missingDeps) && missingDeps.length > 0;
+  return changed || missing;
 }
 
 export function makeRebuildCommit(repo, changedDeps) {
@@ -858,23 +872,26 @@ async function main() {
 
   // gb13: a plataforma é avaliada ANTES da saída antecipada do cliente — o caso
   // de uso é justamente "mudei um agente no 102020 e o app não mudou".
-  const { changed: changedDeps } = noDeps
-    ? { changed: [] }
+  const { changed: changedDeps, missing: missingDeps = [] } = noDeps
+    ? { changed: [], missing: [] }
     : await publishPlatformDeps({
       root: ROOT, clientRepo: repo, clientId: id, conf, env,
     });
 
   if (rel === 'same') {
-    if (!needsRebuildCommit(rel, changedDeps)) {
+    if (!needsRebuildCommit(rel, changedDeps, missingDeps)) {
       process.stderr.write('[publishGit] já está na VM (HEAD = main remota) e nenhum dep mudou. Nada a publicar.\n');
       process.exit(0);
     }
     // gb69: a release é do projeto publicado. Commit-marca em main para o hook
     // rodar (push da mesma SHA é Everything up-to-date e o hook não dispara).
+    // gb77: dep ainda sem repo na VM também precisa deste push — é o que dispara
+    // o hook cujo resolveDeps clona e arma o alvo.
+    const rebuildIds = [...new Set([...changedDeps, ...missingDeps])];
     process.stderr.write(
-      `[publishGit] app inalterado; deps alterados: ${changedDeps.join(' ')} — commit-marca no projeto para cortar a release.\n`,
+      `[publishGit] app inalterado; deps alterados: ${rebuildIds.join(' ')} — commit-marca no projeto para cortar a release.\n`,
     );
-    makeRebuildCommit(repo, changedDeps);
+    makeRebuildCommit(repo, rebuildIds);
   }
   if (rel === 'behind' || rel === 'diverged') {
     fail('a VM tem commits que você não tem — faça pull/rebase.');

@@ -1,9 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { readManifestDeps, resolveDeps, scanImportRefs, stripTemplateLiterals } from './resolveDeps.mjs';
+
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
+  GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+};
+
+function git(cwd, ...args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV }).trim();
+}
 
 const defaultRepo = (id) => `https://example.test/mls-${id}.git`;
 
@@ -180,4 +191,62 @@ test('import dentro de template literal é TEXTO (skill de agente), não depend�
 test('stripTemplateLiterals preserva o código fora das crases', () => {
   assert.equal(stripTemplateLiterals("const a = `x`; import 'y';"), "const a = ; import 'y';");
   assert.match(stripTemplateLiterals("const t = `a ${b} c`;\nimport '/_1_/z.js';"), /import '\/_1_\/z\.js';/u);
+});
+
+function makeUpstream(root, name) {
+  const dir = join(root, name);
+  mkdirSync(dir, { recursive: true });
+  git(dir, 'init', '-q', '-b', 'main');
+  writeFileSync(join(dir, 'readme.md'), `${name}\n`);
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-q', '-m', 'init');
+  return dir;
+}
+
+test('clone de dep faltante, armado, sai com origin e com receive do retrato', async () => {
+  await withRoot(async (root) => {
+    const upstream = makeUpstream(root, 'upstream-109002');
+    stubProject(root, '109001', {
+      'mlsDep.json': JSON.stringify({
+        workspaceDependencies: { 109002: { repo: upstream } },
+      }),
+    });
+    const projects = await resolveDeps({
+      root,
+      targetId: '109001',
+      orgName: 'expansiva',
+      levels: ['l1', 'l2'],
+      log: () => {},
+      armCloned: true,
+    });
+    assert.equal(projects.get('109002').cloned, true);
+    const dest = join(root, 'mls-109002');
+    assert.ok(git(dest, 'remote').split('\n').includes('origin'), 'origin fica — a VM puxa do GitHub');
+    assert.equal(git(dest, 'config', '--local', '--get', 'receive.advertisePushOptions'), 'true');
+    assert.equal(git(dest, 'config', '--local', '--get', 'receive.denyCurrentBranch'), 'updateInstead');
+    git(dest, 'show-ref', '--verify', '--quiet', 'refs/heads/vm-baseline');
+  });
+});
+
+test('clone fora da VM conserva origin (não arma)', async () => {
+  await withRoot(async (root) => {
+    const upstream = makeUpstream(root, 'upstream-109002');
+    stubProject(root, '109001', {
+      'mlsDep.json': JSON.stringify({
+        workspaceDependencies: { 109002: { repo: upstream } },
+      }),
+    });
+    await resolveDeps({
+      root,
+      targetId: '109001',
+      orgName: 'expansiva',
+      levels: ['l1', 'l2'],
+      log: () => {},
+    });
+    const dest = join(root, 'mls-109002');
+    assert.ok(git(dest, 'remote').split('\n').includes('origin'));
+    let hasBaseline = true;
+    try { git(dest, 'show-ref', '--verify', '--quiet', 'refs/heads/vm-baseline'); } catch { hasBaseline = false; }
+    assert.equal(hasBaseline, false);
+  });
 });

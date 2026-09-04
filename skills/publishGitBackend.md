@@ -95,6 +95,67 @@ commit on the **project** (`publish: rebuild after deps <ids>`) and pushes `main
 triggers the build (`skip-build`): dep repos have no hook. A publish that does not cut a
 release does not finish quietly — the missing-hook message names `gitReposSetup`.
 
+### When the closure grows — a new dep is not yet on the VM (gb77, 04/09/2026)
+
+`publishGit` pushes a snapshot onto a repo **that already exists**. It cannot create one: the
+remote profile talks to the VM only through `/git/` HTTPS (`git-http-backend`), which cannot
+run a command, and creating a repo on first push would let any push invent a project.
+
+So a dep that just joined the client's `mlsDep.json` (the measured case: 100554/100555) takes
+**two publishes**. That is the design, not a workaround:
+
+1. **1st publish** — the snapshot fetch fails with "does not appear to be a git repository"
+   (ssh) or HTTP 404 (`/git/`). That is a **warning**, not an error: it names the dep, says
+   the VM will create it during the build, and asks for a second publish. The other deps still
+   snapshot; the **client push still happens** — that is what fires the hook.
+2. **On the VM**, `resolveDeps` clones whatever is missing (`git clone --depth 1`), **keeps
+   `origin`**, creates `vm-baseline` from HEAD, then arms with the same `setupRepo`
+   `gitReposSetup` already uses (`receive.advertisePushOptions`, `updateInstead`). Creating
+   `vm-baseline` first is what lets a repo **with** `origin` through the guard
+   (`skipped-external-remote` is `remotes && !vm-baseline`). The guard is not loosened.
+3. **2nd publish** — the repo exists, the snapshot lands, the hook compiles the Mac disk.
+
+Why not one publish (resend the snapshot after the hook returns, in the same Mac process)?
+The first build compiles the **GitHub clone**, not the Mac worktree. Sending the snapshot
+afterwards still needs a second client push to compile it. Two builds pretending to be one
+is worse than two honest publishes. No third transport.
+
+A clone made **by hand** with `origin` and **no** `vm-baseline` is still refused
+(`skipped-external-remote`) — that is a developer's checkout. The sequence that arms a
+platform dep is: clone → `vm-baseline` → `setupRepo`, origin stays.
+
+### Two ways a lib on the VM is updated (gb77 rodada 2, 04/09/2026)
+
+The copy on the VM is **materialized**, not a history to preserve. Both sources **replace**;
+neither merges (`pull` is forbidden here):
+
+| path | when | mechanism |
+|---|---|---|
+| **normal (every customer VM)** | the lib moved on GitHub | `git fetch origin && git reset --hard origin/<default>` |
+| **override (the VM under test)** | the developer changed it on the Mac and wants to try before pushing GitHub | `publishGit` snapshot, `updateInstead`, as today |
+
+`origin` stays so the normal path exists. `receive.*` stays so the snapshot still lands.
+A customer VM that never sees a snapshot just tracks GitHub.
+
+The automatic path is **not every build**. A build that fetched GitHub would wipe the
+snapshot the developer just pushed to test — the case that exists. Automatic means no
+per-VM hand work, not "always".
+
+The mechanism is `resetFromOrigin` / `resetArmedDepsFromOrigin` in
+`scripts/runtime/gitReposSetup.mjs`. On the VM:
+
+```
+node scripts/runtime/gitReposSetup.mjs --root /data/mls-base --reset-from-origin
+node scripts/runtime/gitReposSetup.mjs --root /data/mls-base --reset-from-origin 100554 100555
+```
+
+It only touches an `mls-*` that has **both** `origin` and `vm-baseline`. A developer
+checkout (origin, no baseline) is skipped — same door as the guard. A snapshot-only
+folder (no origin) is skipped.
+
+**Who fires it is gb62** (collab-sites button / schedule, N VMs). This file only names
+the command. Do not wire it into the git hook or `resolveDeps`.
+
 ## Remote profile
 
 `local` reads `mls-base/.env` (`PUBLISH_LOCAL_SSH_HOST`, `PUBLISH_LOCAL_SSH_CONFIG`,
@@ -446,4 +507,6 @@ and `remote.conf.example` added 02/09/2026; "brand-new VM" sequence and the mult
 model added 03/09/2026; step 12, the project template and the single-owner table added 03/09/2026;
 new-project `package.json` and dep-only rebuild-on-the-project (gb69) added 04/09/2026;
 static template deleted, `projectInit --from-model` clones mls-102039 (gb70) added 04/09/2026;
-lima platform checkout + `platformCommit` on the release stamp (gb73) added 04/09/2026.*
+lima platform checkout + `platformCommit` on the release stamp (gb73) added 04/09/2026;
+new dep in the closure: two-publish cycle, VM clone keeps origin and is armed via vm-baseline
+(gb77) added 04/09/2026; fetch+reset of armed deps, trigger is gb62 (gb77 rodada 2) added 04/09/2026.*

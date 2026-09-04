@@ -392,6 +392,10 @@ test('needsRebuildCommit só quando o app está igual e alguma dep mudou', () =>
   assert.equal(needsRebuildCommit('same', []), false);
   assert.equal(needsRebuildCommit('ahead', ['102025']), false);
   assert.equal(needsRebuildCommit('unrelated', ['102025']), false);
+  // gb77: dep ainda sem repo na VM também precisa do push do cliente (o hook clona)
+  assert.equal(needsRebuildCommit('same', [], ['100554']), true);
+  assert.equal(needsRebuildCommit('same', [], []), false);
+  assert.equal(needsRebuildCommit('ahead', [], ['100554']), false);
 });
 
 test('rebuildCommitMessage e makeRebuildCommit: commit vazio, main anda, árvore igual', () => {
@@ -412,7 +416,15 @@ test('retrato de dep nunca dispara a build — a release é do projeto publicado
   assert.match(source, /pushOptions: \['skip-build'\]/);
   assert.doesNotMatch(source, /triggers \? \[`deps=/);
   assert.doesNotMatch(source, /a build foi disparada pelo último retrato/);
-  assert.match(source, /makeRebuildCommit\(repo, changedDeps\)/);
+  assert.match(source, /makeRebuildCommit\(repo, rebuildIds\)/);
+});
+
+test('dep ausente na VM não derruba o publish: aviso, não fail', () => {
+  const source = readFileSync(join(MLS_BASE, 'scripts', 'publishGit.mjs'), 'utf8');
+  assert.match(source, /plan\.status === 'missing'/);
+  assert.match(source, /missingVmRepoMessage\(depName\)/);
+  assert.match(source, /missing\.push\(depId\)/);
+  assert.doesNotMatch(source, /plan\.status === 'missing'[\s\S]{0,40}fail\(/);
 });
 
 test('clientPushArgs com deps é o que o hook do projeto consome depois do commit-marca', () => {

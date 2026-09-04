@@ -8,6 +8,8 @@ import {
   declaredDepsOf,
   dependencyOrder,
   depsSummary,
+  isVmRepoMissing,
+  missingVmRepoMessage,
   planSnapshot,
   readDepIds,
   sendSnapshot,
@@ -201,6 +203,65 @@ test('rodar duas vezes seguidas é no-op de verdade', () => {
 test('depsSummary é a linha que o dev lê', () => {
   assert.equal(depsSummary(['102020', '102029'], 5), 'deps alterados: 102020 102029 | inalterados: 5');
   assert.equal(depsSummary([], 7), 'deps alterados: nenhum | inalterados: 7');
+});
+
+test('isVmRepoMissing reconhece ssh e http 404, não auth', () => {
+  assert.equal(isVmRepoMissing("fatal: '/data/mls-base/mls-100555' does not appear to be a git repository"), true);
+  assert.equal(isVmRepoMissing("fatal: repository 'https://x/git/mls-100555.git/' not found"), true);
+  assert.equal(isVmRepoMissing('The requested URL returned error: 404'), true);
+  assert.equal(isVmRepoMissing('RPC failed; HTTP 404'), true);
+  assert.equal(isVmRepoMissing('Permission denied (publickey)'), false);
+  assert.equal(isVmRepoMissing('Authentication failed'), false);
+});
+
+test('missingVmRepoMessage nomeia a dep e pede o 2º publish', () => {
+  const msg = missingVmRepoMessage('mls-100555');
+  assert.match(msg, /mls-100555/);
+  assert.match(msg, /build vai criá-la/);
+  assert.match(msg, /publique de novo/);
+});
+
+test('alvo ausente na VM: planSnapshot diz missing, não error', () => {
+  const root = mkdtempSync(join(tmpdir(), 'missing-vm-'));
+  try {
+    const repo = makeRepo(root, 'mls-100555', { '.gitignore': '/obj/\n', 'l2/a.ts': 'const a = 1;\n' });
+    const missingUrl = join(root, 'nao-existe.git');
+    const gitSync = (cwd, args, env) => {
+      try {
+        return { code: 0, stdout: execFileSync('git', args, { cwd, encoding: 'utf8', env: env ?? GIT_ENV }), out: '' };
+      } catch (error) {
+        return { code: error.status ?? 1, stdout: '', out: String(error.stderr ?? error.message) };
+      }
+    };
+    const ensureRemote = (cwd, url) => {
+      try { git(cwd, 'remote', 'add', 'vm', url); } catch { git(cwd, 'remote', 'set-url', 'vm', url); }
+    };
+    const plan = planSnapshot({ repo, remote: 'vm', url: missingUrl, env: GIT_ENV, gitSync, ensureRemote });
+    assert.equal(plan.status, 'missing', plan.reason);
+    assert.match(plan.reason, /does not appear to be a git repository/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('fetch com erro que não é repo ausente continua error', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fetch-err-'));
+  try {
+    const repo = makeRepo(root, 'mls-100555', { 'l2/a.ts': 'const a = 1;\n' });
+    const plan = planSnapshot({
+      repo,
+      remote: 'vm',
+      url: join(root, 'vm.git'),
+      env: GIT_ENV,
+      gitSync: () => ({ code: 1, out: 'Permission denied (publickey)' }),
+      ensureRemote: () => {},
+    });
+    assert.equal(plan.status, 'error');
+    assert.match(plan.reason, /fetch falhou/);
+    assert.match(plan.reason, /Permission denied/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // ── lado do hook ────────────────────────────────────────────────────────────

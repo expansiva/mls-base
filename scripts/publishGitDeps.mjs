@@ -120,17 +120,43 @@ export function snapshotMessage(headSha, dirty, subject) {
 }
 
 /**
+ * O fetch do retrato falhou porque o alvo ainda não é um repo na VM — não
+ * porque a rede/auth quebrou. O 1º publish avisa e segue; o build clona; o 2º
+ * empurra o retrato. Mensagens medidas: ssh ("does not appear to be a git
+ * repository") e git-http-backend (404 / "repository … not found").
+ */
+export function isVmRepoMissing(output) {
+  const text = String(output ?? '');
+  return /does not appear to be a git repository/i.test(text)
+    || /repository ['"]?[^'"\s]+['"]? not found/i.test(text)
+    || /returned error:\s*404/i.test(text)
+    || /\bHTTP\/?\s*404\b/i.test(text);
+}
+
+/** Aviso do 1º publish: nomeia a dep, diz que o build cria, e pede o 2º. */
+export function missingVmRepoMessage(depName) {
+  return `[publishGit] ${depName} ainda não existe na VM — o build vai criá-la; publique de novo para o retrato ir`;
+}
+
+/**
  * Empurra o retrato de um projeto de plataforma. Devolve
- * `{ status: 'pushed' | 'unchanged' | 'error', reason }`.
+ * `{ status: 'pushed' | 'unchanged' | 'error' | 'missing', reason }`.
  *
  * `unchanged` compara ÁRVORES, não commits: dois retratos do mesmo disco dão a
  * mesma árvore mesmo com mensagens diferentes, então rodar duas vezes seguidas
  * é no-op de verdade.
+ *
+ * `missing` = o alvo ainda não existe na VM. Não é erro: o publish segue e o
+ * build clona a dep; um segundo publish envia o retrato.
  */
 export function planSnapshot({ repo, remote, url, env, gitSync, ensureRemote }) {
   ensureRemote(repo, url);
   const fetched = gitSync(repo, ['fetch', remote, `+refs/heads/main:refs/remotes/${remote}/main`], env);
-  if (fetched.code !== 0) return { status: 'error', reason: `fetch falhou: ${fetched.out.trim()}` };
+  if (fetched.code !== 0) {
+    const detail = String(fetched.out ?? fetched.stdout ?? '').trim();
+    if (isVmRepoMissing(detail)) return { status: 'missing', reason: detail };
+    return { status: 'error', reason: `fetch falhou: ${detail}` };
+  }
 
   const remoteSha = gitOut(repo, ['rev-parse', `refs/remotes/${remote}/main`], env);
   if (!remoteSha) return { status: 'error', reason: 'a VM não tem main (rode gitReposSetup)' };

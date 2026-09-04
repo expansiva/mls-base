@@ -9,18 +9,26 @@
 // vm-baseline is an immutable snapshot of the bootstrap commit.
 // post-receive (gitPostReceive.sh) compiles on push to main and cuts a release.
 //
+// A dep cloned from GitHub keeps `origin` (the VM of a customer pulls the lib
+// from there) and gets `vm-baseline` so this script will arm it. `--reset-from-origin`
+// is the replace-not-merge update of those libs (`git fetch` + `reset --hard`).
+// It is NOT run by the build — a snapshot the developer just pushed would be
+// wiped. Who fires it (button / schedule, N VMs) is collab-sites / gb62.
+//
 // Usage (on the VM):
 //   node scripts/runtime/gitReposSetup.mjs
 //   node scripts/runtime/gitReposSetup.mjs --root /data/mls-base
+//   node scripts/runtime/gitReposSetup.mjs --root /data/mls-base --reset-from-origin
+//   node scripts/runtime/gitReposSetup.mjs --root /data/mls-base --reset-from-origin 100554 100555
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = resolve(SCRIPT_DIR, '..', '..');
-const VM_ROOT = '/data/mls-base';
+export const VM_ROOT = '/data/mls-base';
 const GIT_USER_NAME = 'collab-vm';
 const GIT_USER_EMAIL = 'vm@collab.codes';
 const INITIAL_COMMIT_MSG = 'vm-baseline: initial snapshot';
@@ -59,6 +67,7 @@ const argv = process.argv.slice(2);
 const rootFlag = argv.indexOf('--root');
 const rootFromFlag = rootFlag >= 0 ? argv[rootFlag + 1] : null;
 const ROOT = resolve(rootFromFlag || DEFAULT_ROOT);
+const RESET_FROM_ORIGIN = argv.includes('--reset-from-origin');
 
 function fail(message) {
   console.error(message);
@@ -295,7 +304,7 @@ function completionCommit(dir, message) {
   return true;
 }
 
-function setupRepo(dir) {
+export function setupRepo(dir) {
   const actions = [];
 
   if (!isRepo(dir)) {
@@ -365,6 +374,105 @@ function setupRepo(dir) {
   };
 }
 
+/**
+ * Depois de um `git clone` de dep faltante na VM: cria `vm-baseline` e arma
+ * com `setupRepo`. O `origin` fica — o caminho normal da VM de cliente é
+ * puxar a lib do GitHub; o retrato do `publishGit` é o override de
+ * desenvolvimento. O guard `skipped-external-remote` não dispara porque o
+ * `vm-baseline` já existe — o guard em si não é afrouxado.
+ */
+export function armClonedDep(dir) {
+  ensureVmBaseline(dir);
+  return setupRepo(dir);
+}
+
+/** Snapshot imutável do clone. Sem isto o guard recusa repo com remote. */
+function ensureVmBaseline(dir) {
+  if (!isRepo(dir) || branchExists(dir, 'vm-baseline')) return false;
+  if (!hasHead(dir)) {
+    throw new Error(`armClonedDep: ${dir} has no HEAD to snapshot as vm-baseline`);
+  }
+  gitOrThrow(dir, ['branch', 'vm-baseline', gitOrThrow(dir, ['rev-parse', 'HEAD'])]);
+  return true;
+}
+
+function originDefaultBranch(dir) {
+  const sym = git(dir, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+  if (sym.ok) {
+    const prefix = 'refs/remotes/origin/';
+    if (sym.stdout.startsWith(prefix)) return sym.stdout.slice(prefix.length);
+  }
+  for (const name of ['main', 'master']) {
+    if (git(dir, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${name}`]).ok) {
+      return name;
+    }
+  }
+  throw new Error(`resetFromOrigin: origin has no default branch in ${dir}`);
+}
+
+/**
+ * Substitui a cópia da VM pela ponta do GitHub: `fetch` + `reset --hard`.
+ * Nunca pull/merge — a cópia é materializada, não uma história a preservar.
+ * Recusa repo sem `origin` e repo com remote mas sem `vm-baseline` (checkout
+ * de desenvolvedor: o mesmo critério do guard, sem afrouxá-lo).
+ *
+ * Não é chamado pelo build. Gatilho: collab-sites / gb62.
+ */
+export function resetFromOrigin(dir) {
+  if (!isRepo(dir)) return { status: 'skipped-not-a-repo' };
+  if (!remotes(dir).includes('origin')) return { status: 'skipped-no-origin' };
+  if (!branchExists(dir, 'vm-baseline')) return { status: 'skipped-no-vm-baseline' };
+
+  gitOrThrow(dir, ['fetch', 'origin']);
+  const branch = originDefaultBranch(dir);
+  const current = currentBranch(dir);
+  if (current && current !== branch) {
+    gitOrThrow(dir, ['checkout', '-q', branch]);
+  }
+  gitOrThrow(dir, ['reset', '--hard', `origin/${branch}`]);
+  const head = gitOrThrow(dir, ['rev-parse', 'HEAD']);
+  const originHead = gitOrThrow(dir, ['rev-parse', `origin/${branch}`]);
+  return { status: 'reset', branch, head, originHead };
+}
+
+function parseResetIds(args) {
+  const ids = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--root') { i += 1; continue; }
+    if (arg === '--reset-from-origin' || arg.startsWith('-')) continue;
+    const match = /^(?:mls-)?(\d+)$/u.exec(arg);
+    if (match) ids.push(match[1]);
+  }
+  return ids;
+}
+
+/**
+ * `fetch+reset` em cada `mls-*` armado que ainda tem `origin`. `ids` (sem o
+ * prefixo `mls-`) restringe o conjunto; vazio = todos. Não clona o que falta.
+ */
+export function resetArmedDepsFromOrigin(root, { ids, log } = {}) {
+  const wanted = Array.isArray(ids) && ids.length > 0
+    ? new Set(ids.map((id) => String(id).replace(/^mls-/u, '')))
+    : null;
+  const results = [];
+  for (const name of discoverProjects(root)) {
+    const id = name.slice('mls-'.length);
+    if (wanted && !wanted.has(id)) continue;
+    const dir = join(root, name);
+    try {
+      const result = resetFromOrigin(dir);
+      log?.(`${name} | ${result.status}${result.branch ? ` origin/${result.branch}` : ''}`);
+      results.push({ name, ...result });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log?.(`${name} | error | ${message}`);
+      results.push({ name, status: 'error', error: message });
+    }
+  }
+  return results;
+}
+
 function main() {
   if (!gitAvailable()) {
     fail(
@@ -390,6 +498,27 @@ function main() {
   const projects = discoverProjects(ROOT);
   if (projects.length === 0) {
     fail(`no mls-<id> folders found under ${ROOT}`);
+  }
+
+  if (RESET_FROM_ORIGIN) {
+    const ids = parseResetIds(argv);
+    console.log(
+      `gitReposSetup --reset-from-origin root=${ROOT}`
+      + (ids.length ? ` ids=${ids.join(',')}` : ` projects=${projects.length}`),
+    );
+    const rows = resetArmedDepsFromOrigin(ROOT, {
+      ids,
+      log: (line) => console.log(line),
+    });
+    const failed = rows.filter((row) => row.status === 'error').length;
+    const counts = new Map();
+    for (const row of rows) counts.set(row.status, (counts.get(row.status) || 0) + 1);
+    console.log('---');
+    for (const [status, n] of [...counts.entries()].sort()) {
+      console.log(`${n} ${status}`);
+    }
+    if (failed) process.exit(1);
+    return;
   }
 
   console.log(`gitReposSetup root=${ROOT} projects=${projects.length}`);
@@ -422,4 +551,24 @@ function main() {
   if (failed) process.exit(1);
 }
 
-main();
+// realpath on BOTH sides: import.meta.url is already resolved, process.argv[1]
+// is whatever the caller typed. Comparing them raw makes the script a silent
+// no-op through a symlink (temp dir on macOS, /data on a VM).
+function invokedAsMain() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+  try {
+    return real(fileURLToPath(import.meta.url)) === real(entry);
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsMain()) {
+  try {
+    main();
+  } catch (error) {
+    fail(error instanceof Error ? (error.stack ?? error.message) : String(error));
+  }
+}

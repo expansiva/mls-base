@@ -19,11 +19,17 @@
 // Clones whatever is missing at the mls-base root (git clone --depth 1,
 // default branch), skipping existing folders, and walks the clones'
 // manifests until the graph is closed (a visited-set guards against cycles).
+//
+// On the VM (`root === /data/mls-base`, or `armCloned: true`), a freshly
+// cloned dep keeps `origin` (the customer VM pulls the lib from GitHub) and
+// is armed (`vm-baseline` then setupRepo) so the next publishGit snapshot
+// can land. A clone on the Mac is not armed — it is a GitHub checkout.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { armClonedDep, VM_ROOT } from '../runtime/gitReposSetup.mjs';
 
 // Default URL when the manifest doesn't carry a `repo` (or the dep came from
 // an enhancement header): built from the target's l5/project.json orgName.
@@ -269,7 +275,7 @@ async function clone(repoUrl, destDir, log) {
 
 // Resolves and materializes the target's dependency closure.
 // Returns Map<id, {dir, repo, requestedBy, cloned}> including the target itself.
-export async function resolveDeps({ root, targetId, orgName, levels, log }) {
+export async function resolveDeps({ root, targetId, orgName, levels, log, armCloned }) {
   const defaultRepo = makeDefaultRepo(orgName);
   const projects = new Map();
   const queue = [{ id: targetId, repo: undefined, requestedBy: '(target)' }];
@@ -286,6 +292,22 @@ export async function resolveDeps({ root, targetId, orgName, levels, log }) {
       log('deps', `cloning mls-${id} (requested by ${requestedBy}) from ${url}`);
       await clone(url, dir, log);
       cloned = true;
+      // Só na VM: cria vm-baseline e arma, conservando origin. Sem o
+      // baseline o guard recusaria (`skipped-external-remote`) — o guard
+      // não é afrouxado. No Mac o clone continua checkout do GitHub.
+      const shouldArm = armCloned === true || (armCloned !== false && root === VM_ROOT);
+      if (shouldArm) {
+        try {
+          const armed = armClonedDep(dir);
+          if (armed.status === 'skipped-external-remote') {
+            throw new Error(`mls-${id}: gitReposSetup recusou armar (remote sem vm-baseline)`);
+          }
+          log('deps', `mls-${id}: armed for retrato (origin kept, receive.advertisePushOptions)`);
+        } catch (error) {
+          await rm(dir, { recursive: true, force: true });
+          throw error;
+        }
+      }
     }
     projects.set(id, { dir, repo, requestedBy, cloned });
 
