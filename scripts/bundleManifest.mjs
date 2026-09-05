@@ -8,7 +8,8 @@
 // `customElements.define` lança e a rota fica morta até o reload.
 //
 // Este manifesto é o que deixa o fallback do zip recusar o gêmeo (404 alto) sem
-// tocar no que nunca foi ao bundle (designSystem.js, componentes do studio).
+// tocar no que nunca foi inlinado num chunk (designSystem.js sai como
+// entrypoint próprio; componentes do studio ainda caem no zip).
 
 export const BUNDLED_MODULES_MANIFEST = '_bundled-modules.json';
 

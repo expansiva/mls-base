@@ -318,6 +318,18 @@ export const RUNTIME_URL_ENTRYPOINTS = [
   '/_100554_/l2/enhancementStyle.js',
 ];
 
+// Tokens file the runtime loads by constructed URL
+// (`/_${projectId}_/l2/designSystem.js` in designSystemRuntime / bootstrap).
+// Must be its own entrypoint — inlining it into a chunk would make two copies
+// if anything else also fetched the URL, and the zip is going away.
+export const DESIGN_SYSTEM_MODULE = 'l2/designSystem.js';
+
+export function designSystemSpecs(clientConfig) {
+  return Object.keys(clientConfig?.projects ?? {}).map(
+    (id) => `/_${id}_/${DESIGN_SYSTEM_MODULE}`,
+  );
+}
+
 const SURVIVING_MODULE_URL_RE = /["'`](\/_\d+_\/[^"'`\s]+\.js)["'`]/gu;
 
 function regionRendererSpecs(region) {
@@ -636,6 +648,9 @@ export function collectEntrypoints(clientConfig, clientRoot) {
   for (const spec of RUNTIME_URL_ENTRYPOINTS) {
     addSource(spec, clientRoot);
   }
+  for (const spec of designSystemSpecs(clientConfig)) {
+    addSource(spec, clientRoot);
+  }
 
   return entries;
 }
@@ -690,25 +705,44 @@ function walkFilesSync(root) {
   return out;
 }
 
-export function checkSurvivingModuleUrls(outdir, fromDir = ROOT) {
+export const REQUIRED_MODULE_URL_FILE = '(required)';
+
+export function checkSurvivingModuleUrls(outdir, fromDir = ROOT, requiredUrls = []) {
   const missing = [];
   const unresolved = [];
+  const seen = new Set();
+  const consider = (file, url) => {
+    if (seen.has(url)) return;
+    seen.add(url);
+    const emitted = resolve(outdir, url.replace(/^\//u, ''));
+    if (existsSync(emitted)) return;
+    // Same split as checkRegionEntrypointsEmitted: a URL whose source is not
+    // on this machine cannot be emitted (Studio-only modules on a client VM).
+    if (!resolveSource(normalizeVirtualSpec(url), fromDir)) {
+      unresolved.push({ file, url });
+      return;
+    }
+    missing.push({ file, url });
+  };
   for (const file of walkFilesSync(outdir)) {
     if (extname(file) !== '.js') continue;
     const rel = toPosix(relative(outdir, file));
     if (rel === BUNDLED_MODULES_MANIFEST) continue;
     const source = readFileSync(file, 'utf8');
-    for (const url of findSurvivingModuleUrls(source)) {
-      const emitted = resolve(outdir, url.replace(/^\//u, ''));
-      if (existsSync(emitted)) continue;
-      // Same split as checkRegionEntrypointsEmitted: a URL whose source is not
-      // on this machine cannot be emitted (Studio-only modules on a client VM).
-      if (!resolveSource(normalizeVirtualSpec(url), fromDir)) {
-        unresolved.push({ file: rel, url });
-        continue;
-      }
-      missing.push({ file: rel, url });
+    for (const url of findSurvivingModuleUrls(source)) consider(rel, url);
+  }
+  // Constructed URLs (`/_${id}_/l2/designSystem.js`) never survive as literals,
+  // so the scan above cannot see them. requiredUrls is the list the runtime
+  // can still fetch — missing file here is the same 404.
+  for (const url of requiredUrls) {
+    if (seen.has(url)) continue;
+    const emitted = resolve(outdir, url.replace(/^\//u, ''));
+    if (existsSync(emitted)) {
+      seen.add(url);
+      continue;
     }
+    if (!resolveSource(normalizeVirtualSpec(url), fromDir)) continue;
+    consider(REQUIRED_MODULE_URL_FILE, url);
   }
   return { missing, unresolved };
 }
@@ -770,8 +804,8 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
   // fallback do `obj/compiled.zip` (cbeCompiledStatic) usa isto para recusar o
   // gêmeo não-empacotado: servir as duas formas do mesmo módulo no mesmo
   // documento cria duas cópias — para um custom element, `define` lança.
-  // Só os módulos INLINADOS entram; o que nunca foi ao bundle (designSystem.js,
-  // componentes do studio) continua a ser servido pelo zip, como hoje.
+  // Só os módulos INLINADOS entram. designSystem.js sai como entrypoint
+  // próprio (não inlinado); componentes do studio ainda caem no zip.
   const bundledModules = bundledModuleUrls(webBuild.metafile);
   await writeFile(
     resolve(outdir, BUNDLED_MODULES_MANIFEST),
@@ -785,7 +819,11 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
     outdir,
     clientRoot,
   ));
-  reportSurvivingModuleUrls(checkSurvivingModuleUrls(outdir, clientRoot));
+  reportSurvivingModuleUrls(checkSurvivingModuleUrls(
+    outdir,
+    clientRoot,
+    [...RUNTIME_URL_ENTRYPOINTS, ...designSystemSpecs(clientConfig)],
+  ));
 
   // copy l2 static resources (html/css/svg/json/md/assets) into dist/<target>
   let copied = 0;

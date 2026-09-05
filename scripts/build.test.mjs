@@ -8,10 +8,13 @@ import {
   BUNDLED_MODULES_MANIFEST,
 } from './bundleManifest.mjs';
 import {
+  DESIGN_SYSTEM_MODULE,
+  REQUIRED_MODULE_URL_FILE,
   RUNTIME_URL_ENTRYPOINTS,
   checkRegionEntrypointsEmitted,
   checkSurvivingModuleUrls,
   collectEntrypoints,
+  designSystemSpecs,
   findSurvivingModuleUrls,
   normalizeVirtualSpec,
   reportRegionEntrypoints,
@@ -453,5 +456,102 @@ test('prova — import literal de collabMessages não sobrevive no JS emitido', 
     assert.equal(js.includes(COLLAB_SPEC), false, 'literal não deve sobreviver no JS emitido');
     assert.equal(existsSync(join(outdir, '_900001_', 'l2', 'collabMessages.js')), false);
     assert.deepEqual(checkSurvivingModuleUrls(outdir), { missing: [], unresolved: [] });
+  });
+});
+
+const DS_REL = 'l2/designSystem.ts';
+const DS_SPEC = `/_${ID}_/${DESIGN_SYSTEM_MODULE}`;
+const DS_KEY = `_${ID}_/l2/designSystem`;
+const DS_BODY = 'export const tokens = [{ themeName: "Default" }];\n';
+
+test('E1 — designSystemSpecs percorre os projetos do config', () => {
+  assert.equal(DESIGN_SYSTEM_MODULE, 'l2/designSystem.js');
+  assert.deepEqual(designSystemSpecs({}), []);
+  assert.deepEqual(
+    designSystemSpecs({ projects: { 900001: { type: 'client' }, 900002: { type: 'lib' } } }),
+    ['/_900001_/l2/designSystem.js', '/_900002_/l2/designSystem.js'],
+  );
+});
+
+test('E2 — designSystem é coletado quando a fonte existe', () => {
+  withProjectFixture(ID, { [DS_REL]: DS_BODY }, ({ proj }) => {
+    const entries = collectEntrypoints({ projects: { [ID]: { type: 'client' } } }, proj);
+    assert.equal(entries[DS_KEY], join(proj, DS_REL));
+  });
+});
+
+test('E2 — projeto sem designSystem.ts não quebra a coleta', () => {
+  withProjectFixture(ID, {}, ({ proj }) => {
+    const entries = collectEntrypoints({ projects: { [ID]: { type: 'client' } } }, proj);
+    assert.equal(entries[DS_KEY], undefined);
+  });
+});
+
+test('E3 — URL construída sem arquivo no dist falha o build', () => {
+  withProjectFixture(ID, { [DS_REL]: DS_BODY }, ({ root, proj }) => {
+    const outdir = join(root, 'dist', 'web');
+    mkdirSync(outdir, { recursive: true });
+    const check = checkSurvivingModuleUrls(outdir, proj, [DS_SPEC]);
+    assert.equal(check.unresolved.length, 0);
+    assert.equal(check.missing.length, 1);
+    assert.equal(check.missing[0].file, REQUIRED_MODULE_URL_FILE);
+    assert.equal(check.missing[0].url, DS_SPEC);
+    assert.throws(
+      () => reportSurvivingModuleUrls(check),
+      (err) => {
+        assert.match(err.message, /404 em produção/);
+        assert.match(err.message, /\(required\) \| \/_900001_\/l2\/designSystem\.js/);
+        return true;
+      },
+    );
+  });
+});
+
+test('E3 — URL construída com o arquivo emitido passa', () => {
+  withProjectFixture(ID, { [DS_REL]: DS_BODY }, ({ root, proj }) => {
+    const outdir = join(root, 'dist', 'web');
+    const target = join(outdir, `_${ID}_`, 'l2', 'designSystem.js');
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, 'export const tokens = [];\n');
+    assert.deepEqual(
+      checkSurvivingModuleUrls(outdir, proj, [DS_SPEC]),
+      { missing: [], unresolved: [] },
+    );
+  });
+});
+
+test('E3 — requiredUrl sem fonte no workspace não falha o build', () => {
+  withProjectFixture(ID, {}, ({ root, proj }) => {
+    const outdir = join(root, 'dist', 'web');
+    mkdirSync(outdir, { recursive: true });
+    assert.deepEqual(
+      checkSurvivingModuleUrls(outdir, proj, [DS_SPEC]),
+      { missing: [], unresolved: [] },
+    );
+  });
+});
+
+test('prova — bundle emite designSystem.js na chave virtual', async () => {
+  await withProjectFixture(ID, { [DS_REL]: DS_BODY }, async ({ root, proj }) => {
+    const entries = collectEntrypoints({ projects: { [ID]: { type: 'client' } } }, proj);
+    const outdir = join(root, 'dist', 'web');
+    await esbuild({
+      absWorkingDir: root,
+      entryPoints: entries,
+      outdir,
+      platform: 'browser',
+      format: 'esm',
+      bundle: true,
+      splitting: true,
+      write: true,
+      logLevel: 'silent',
+    });
+    const emitted = join(outdir, `${DS_KEY}.js`);
+    assert.equal(existsSync(emitted), true, `esperava ${emitted}`);
+    assert.match(readFileSync(emitted, 'utf8'), /themeName/);
+    assert.deepEqual(
+      checkSurvivingModuleUrls(outdir, proj, [DS_SPEC]),
+      { missing: [], unresolved: [] },
+    );
   });
 });
