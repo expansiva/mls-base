@@ -2,7 +2,8 @@
 // build.mjs — mls-base runtime build
 //
 //   server  -> dist/local/_<id>_/...   (tsc emit; /_<id>_/ imports rewritten to
-//                                        relative; resources copied; .js.map)
+//                                        relative, completing .js when the target
+//                                        exists in dist; resources copied; .js.map)
 //   web     -> dist/web/_<id>_/...      (esbuild bundle of the frontend; .map)
 //
 // Source folders stay as mls-<id>; the output uses the _<id>_ layout the Forge
@@ -55,6 +56,7 @@ const TSC_EMIT_BATCH_SIZE = Number.parseInt(process.env.COLLAB_TSC_EMIT_BATCH_SI
 //   from '/_..._/...'  | import '/_..._/...'  | import('/_..._/...')  | require('/_..._/...')
 const ABS_IMPORT_RE =
   /(?<prefix>\b(?:from|import)\s+["']|\b(?:import|require)\s*\(\s*["'])(?<spec>\/_\d+_\/(?:core|l1|l2)\/[^"']+)(?<suffix>["'](?:\s*\))?)/gu;
+const KNOWN_SPEC_EXT = /\.(?:d\.ts|defs\.ts|ts|tsx|js|jsx|mjs|cjs|json|css|less|html|node)$/u;
 
 function log(msg) {
   console.log(`[build] ${msg}`);
@@ -463,6 +465,51 @@ async function validateServerOutput(clientConfig) {
   log(`server output validated (${jsFiles.length} js file(s) in dist/local)`);
 }
 
+// Node ESM (dist/local is `"type":"module"`) requires a file extension. This
+// rewrite already turns `/_<id>_/...` into a relative path; complete `.js` in
+// the same pass when that file exists, so an LLM-omitted extension does not
+// ship as an unresolvable specifier. Missing target stays extensionless —
+// inventing `.js` would hide a genuinely broken import.
+function makeAbsImportRe() {
+  return new RegExp(ABS_IMPORT_RE.source, ABS_IMPORT_RE.flags);
+}
+
+export function rewriteAbsoluteImportSource(source, fromFile, localDist) {
+  let completed = 0;
+  const updated = source.replace(makeAbsImportRe(), (...args) => {
+    const g = args.at(-1);
+    let spec = g.spec;
+    if (!KNOWN_SPEC_EXT.test(spec)) {
+      const jsPath = `${resolve(localDist, spec.slice(1))}.js`;
+      if (existsSync(jsPath)) {
+        spec = `${spec}.js`;
+        completed += 1;
+      }
+    }
+    const targetPath = resolve(localDist, spec.slice(1));
+    let rel = toPosix(relative(dirname(fromFile), targetPath));
+    if (!rel.startsWith('.')) rel = `./${rel}`;
+    return `${g.prefix}${rel}${g.suffix}`;
+  });
+  return { updated, completed };
+}
+
+export async function rewriteLocalDistAbsoluteImports(localDist = LOCAL_DIST) {
+  let rewritten = 0;
+  let completed = 0;
+  for (const file of (await walkFiles(localDist)).filter((f) => extname(f) === '.js')) {
+    const current = await readFile(file, 'utf8');
+    const result = rewriteAbsoluteImportSource(current, file, localDist);
+    if (result.updated !== current) {
+      await writeFile(file, result.updated, 'utf8');
+      rewritten += 1;
+    }
+    completed += result.completed;
+  }
+  log(`rewrote absolute imports in ${rewritten} file(s); completed .js on ${completed} specifier(s)`);
+  return { rewritten, completed };
+}
+
 // ── server build (dist/local) ────────────────────────────────────────────────
 async function buildServer(ids) {
   log(`server build -> dist/local (${ids.map((i) => 'mls-' + i).join(' ')})`);
@@ -526,22 +573,7 @@ async function buildServer(ids) {
   await writeFile(resolve(LOCAL_DIST, 'package.json'), `${JSON.stringify({ type: 'module' }, null, 2)}\n`, 'utf8');
 
   // rewrite /_<id>_/... imports to relative paths within dist/local
-  let rewritten = 0;
-  for (const file of (await walkFiles(LOCAL_DIST)).filter((f) => extname(f) === '.js')) {
-    const current = await readFile(file, 'utf8');
-    const updated = current.replace(ABS_IMPORT_RE, (...args) => {
-      const g = args.at(-1);
-      const targetPath = resolve(LOCAL_DIST, g.spec.slice(1));
-      let rel = toPosix(relative(dirname(file), targetPath));
-      if (!rel.startsWith('.')) rel = `./${rel}`;
-      return `${g.prefix}${rel}${g.suffix}`;
-    });
-    if (updated !== current) {
-      await writeFile(file, updated, 'utf8');
-      rewritten += 1;
-    }
-  }
-  log(`rewrote absolute imports in ${rewritten} file(s)`);
+  await rewriteLocalDistAbsoluteImports(LOCAL_DIST);
 
   // copy non-TS resources (sql/html/css/less/json/svg/md) into dist/local/_<id>_
   let copied = 0;
