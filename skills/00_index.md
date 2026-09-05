@@ -28,6 +28,10 @@ Cross-cutting:
   tsconfigs, the test baseline). **Read before claiming any agent change is done.**
 - [`checklistPosRun.md`](checklistPosRun.md) — after a run: did the generated `.ts` match what the
   `.defs.ts` asked? Commands per agent.
+- [`supervisor.md`](supervisor.md) — **the working agreement with Wagner**: what to decide alone
+  vs escalate, how to prove a claim (measure against `HEAD`, the detector wins), access model
+  (admin is administration; never build a back-door), the one-execution-at-a-time loop. Read this
+  before acting as supervisor.
 - [`executora.md`](executora.md) — how work is specified and handed to the executing session.
 - [`agentsBestPractices.md`](agentsBestPractices.md) — designing a new agent.
 - [`agentTest.md`](agentTest.md) — every agent step gets a `.test.ts`.

@@ -158,7 +158,9 @@ On the VM, `gitReposSetup` arms that leftover first, and then this command can s
 A snapshot-only folder (no origin) is skipped.
 
 **Who fires it is gb62** (collab-sites button / schedule, N VMs). This file only names
-the command. Do not wire it into the git hook or `resolveDeps`.
+the command. Do not wire it into the git hook or `resolveDeps`. Manutenção da plataforma na
+VM de teste tem CLI (`node scripts/vm.mjs <projectId> platform-update|deps-update|hold|status`)
+e não exige admin — o mesmo token do `publishGit`.
 
 ## Remote profile
 
