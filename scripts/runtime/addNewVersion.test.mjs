@@ -11,6 +11,8 @@ import { APPS_DIR, PM2_CONFIG, ensureProjectApp } from './vmApps.mjs';
 import {
   VM_TSCONFIG,
   discoverProjects,
+  pm2ConfigRel,
+  skipPm2,
   updateTsconfigPaths,
   vmTsconfigRel,
   writeVmTsconfig,
@@ -137,6 +139,25 @@ test('release worktree: nenhum arquivo rastreado do mls-base fica sujo (gb73 E2)
     const hookSrc = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
     assert.match(hookSrc, /join\(root, 'logs'\)/);
   });
+});
+
+test('--skip-pm2 é o que o hook passa para não se matar no reload (gb85)', () => {
+  assert.equal(skipPm2(['--client', '102052', '--skip-pm2']), true);
+  assert.equal(skipPm2(['--client', '102052']), false);
+  const src = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
+  assert.match(src, /skipPm2\(argv\)/);
+  assert.match(src, /pm2 reload skipped/);
+});
+
+test('pm2ConfigRel prefere o agregador na raiz', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb85-pm2-'));
+  try {
+    assert.equal(pm2ConfigRel(root), 'servers/pm2.config.js');
+    writeFileSync(join(root, 'pm2.config.js'), 'module.exports = [];\n');
+    assert.equal(pm2ConfigRel(root), 'pm2.config.js');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('.gitignore da raiz ignora current-* e pm2.apps.d (gb73 E5)', () => {

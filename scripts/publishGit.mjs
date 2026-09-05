@@ -59,6 +59,8 @@ const CLI_FLAG_TO_CONF = {
 
 const MARKER_OK = /##gitBackend build=ok release=(\d{14}) project=mls-\d+##/;
 const MARKER_ERR = /##gitBackend build=error\b/;
+const PUSH_DISCONNECT_RE =
+  /RPC failed|curl 18|transfer closed with outstanding read data remaining|unexpected disconnect while reading sideband packet/i;
 export const MISSING_HOOK_MSG = [
   '[publishGit] push aceito, mas a VM não cortou release: o hook gitPostReceive não rodou.',
   'Os arquivos chegaram e a release ativa ficou a mesma. Sem o hook, um publish não publica.',
@@ -913,6 +915,7 @@ async function main() {
 
   const pushed = await runGitLive(repo, pushArgs, env);
   const text = pushed.out;
+  const https = Boolean(conf.GIT_URL);
 
   if (pushed.code !== 0) {
     // Autenticação antes de qualquer outro diagnóstico: um 401 lido como "VM suja" manda o
@@ -922,10 +925,36 @@ async function main() {
       explainDirtyVm(text);
       process.exit(1);
     }
-    if (/non-fast-forward|failed to push some refs/i.test(text)) {
+    if (/non-fast-forward|failed to push some refs/i.test(text) && !isPushDisconnect(text)) {
       fail('a VM tem commits que você não tem — faça pull/rebase.');
     }
-    fail(`[publishGit] git push falhou (exit ${pushed.code}).`);
+  }
+
+  let remoteShaAfter = '';
+  const needsRefCheck =
+    pushed.code !== 0 &&
+    https &&
+    isPushDisconnect(text) &&
+    !MARKER_OK.test(text) &&
+    !MARKER_ERR.test(text);
+  if (needsRefCheck) {
+    remoteShaAfter = readRemoteMainSha(repo, env);
+  }
+  const localHead = gitOut(repo, ['rev-parse', 'HEAD']);
+  const verdict = classifyPushResult({
+    code: pushed.code,
+    text,
+    https,
+    localSha: localHead,
+    remoteShaAfter,
+  });
+
+  if (verdict.kind === 'disconnect-applied') {
+    process.stderr.write(`${disconnectAppliedMessage(localHead)}\n`);
+    process.exit(0);
+  }
+  if (verdict.kind === 'disconnect-not-applied' || verdict.kind === 'push-error') {
+    fail(pushNotAppliedMessage({ code: pushed.code, kind: verdict.kind, localSha: localHead, remoteShaAfter }));
   }
 
   reportBuildMarker(text);
@@ -937,6 +966,68 @@ async function main() {
  * hook compilar a plataforma — era assim que um push com --align deixava a VM
  * com plataforma nova e sem compilar (o caso que o gb13 existe para evitar).
  */
+export function isPushDisconnect(text) {
+  return PUSH_DISCONNECT_RE.test(String(text ?? ''));
+}
+
+/**
+ * After a push that may have been cut short: the distinction is whether the
+ * remote ref advanced, not whether the HTTP connection survived. On https the
+ * hook's pm2 reload kills the app that was streaming the pack — expected.
+ */
+export function classifyPushResult({
+  code,
+  text,
+  https = false,
+  localSha = '',
+  remoteShaAfter = '',
+}) {
+  if (MARKER_ERR.test(text)) return { kind: 'build-error' };
+  if (MARKER_OK.test(text)) return { kind: 'marker-ok' };
+  if (code === 0) return { kind: 'push-ok' };
+  if (https && isPushDisconnect(text)) {
+    if (localSha && remoteShaAfter && localSha === remoteShaAfter) {
+      return { kind: 'disconnect-applied' };
+    }
+    return { kind: 'disconnect-not-applied' };
+  }
+  return { kind: 'push-error' };
+}
+
+export function disconnectAppliedMessage(localSha) {
+  const short = String(localSha || '').slice(0, 7);
+  return (
+    `[publishGit] publish aplicado na VM (main=${short}); ` +
+    'a conexão https caiu no pm2 reload — esperado, não é falha.'
+  );
+}
+
+export function pushNotAppliedMessage({ code, kind, localSha = '', remoteShaAfter = '' }) {
+  if (kind === 'disconnect-not-applied') {
+    const local = String(localSha || '').slice(0, 7) || 'local';
+    const remote = String(remoteShaAfter || '').slice(0, 7) || 'desconhecida';
+    return (
+      `[publishGit] git push caiu (exit ${code}) e a main remota não avançou ` +
+      `(local ${local} ≠ remota ${remote}). Publish NÃO aplicado.`
+    );
+  }
+  return `[publishGit] git push falhou (exit ${code}). Publish NÃO aplicado.`;
+}
+
+export function readRemoteMainSha(repo, env, { gitSyncFn = gitSync, attempts = 4, sleepFn } = {}) {
+  const sleep = sleepFn ?? ((ms) => spawnSync('sleep', [String(ms / 1000)]));
+  for (let i = 0; i < attempts; i += 1) {
+    const fetch = gitSyncFn(repo, ['fetch', '--prune', VM_REMOTE, '+refs/heads/main:refs/remotes/vm/main'], env);
+    if (fetch.code === 0) {
+      const parsed = gitSyncFn(repo, ['rev-parse', 'refs/remotes/vm/main'], env);
+      const sha = parsed.code === 0 ? String(parsed.stdout ?? '').trim() : '';
+      if (sha) return sha;
+    }
+    if (i < attempts - 1) sleep(1000);
+  }
+  return '';
+}
+
 export function clientPushArgs({ remote, changedDeps = [], forceLease = '' }) {
   const args = ['push'];
   if (changedDeps.length) args.push('-o', `deps=${changedDeps.join(',')}`);

@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   clientIdForRelease,
   evaluateBuild,
@@ -11,7 +13,10 @@ import {
   formatOkMarker,
   gateMessage,
   trackedDirtyPaths, authorNote,
+  restoreWorktree, shouldDeferPm2Reload, scheduleDetachedPm2Reload, pm2ConfigRel,
 } from './gitPostReceive.mjs';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const CODE_ERR = 'code.ts(1,1): error TS2307: Cannot find module \'foo\'.';
 const CODE_ERR_2 = 'code.ts(2,1): error TS2307: Cannot find module \'bar\'.';
@@ -201,6 +206,73 @@ test('l5/config.json que declara OUTRO cliente não sequestra a release', () => 
     writeConfig(['mls-102047', 'l5', 'config.json'], '102043');
     assert.deepEqual(clientIdForRelease(root, '102047'), { clientId: '102043', ownClient: false });
   });
+});
+
+function gitRepo(dir, args) {
+  return spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+}
+
+test('restoreWorktree devolve l5/config.json recomposto para o HEAD (gb85)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb85-restore-'));
+  const repo = join(root, 'mls-102052');
+  try {
+    mkdirSync(join(repo, 'l5'), { recursive: true });
+    writeFileSync(join(repo, 'l5', 'config.json'), '{"ok":1}\n');
+    gitRepo(repo, ['init', '-q', '-b', 'main']);
+    gitRepo(repo, ['config', 'user.email', 't@t']);
+    gitRepo(repo, ['config', 'user.name', 't']);
+    gitRepo(repo, ['config', 'commit.gpgsign', 'false']);
+    gitRepo(repo, ['add', '-A']);
+    const committed = gitRepo(repo, ['commit', '-q', '-m', 'init']);
+    assert.equal(committed.status, 0, `${committed.stdout ?? ''}${committed.stderr ?? ''}`);
+    writeFileSync(join(repo, 'l5', 'config.json'), '{"dirty":1}\n');
+    assert.match(gitRepo(repo, ['status', '--porcelain']).stdout, /l5\/config\.json/);
+    restoreWorktree(root, 'mls-102052');
+    assert.equal(readFileSync(join(repo, 'l5', 'config.json'), 'utf8'), '{"ok":1}\n');
+    assert.equal(gitRepo(repo, ['status', '--porcelain']).stdout.trim(), '');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('shouldDeferPm2Reload só no transporte https (COLLAB_GIT_HTTP)', () => {
+  assert.equal(shouldDeferPm2Reload({ COLLAB_GIT_HTTP: '1' }), true);
+  assert.equal(shouldDeferPm2Reload({}), false);
+  assert.equal(shouldDeferPm2Reload({ COLLAB_PUSH_ACTOR_EMAIL: 'a@b' }), false);
+});
+
+test('scheduleDetachedPm2Reload dispara setsid-like (detached) e não espera o pm2', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb85-sched-'));
+  try {
+    writeFileSync(join(root, 'pm2.config.js'), 'module.exports = [];\n');
+    const calls = [];
+    const spawnFn = (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      return { unref() {}, pid: 4242 };
+    };
+    const planned = scheduleDetachedPm2Reload(root, { spawnFn, delaySec: 2 });
+    assert.equal(planned.pm2Config, 'pm2.config.js');
+    assert.equal(planned.delaySec, 2);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].cmd, 'bash');
+    assert.equal(calls[0].opts.detached, true);
+    assert.equal(calls[0].opts.stdio, 'ignore');
+    assert.ok(calls[0].args.includes('pm2.config.js'));
+    assert.ok(calls[0].args.some((a) => String(a).includes('startOrReload')));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('o hook sempre passa --skip-pm2 e só recarrega depois do restoreWorktree', () => {
+  const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
+  assert.match(src, /releaseArgs\.push\('--skip-pm2'\)/);
+  const restoreCall = src.indexOf('restoreWorktree(root, projectName);');
+  const markerCall = src.indexOf('${formatOkMarker(projectName, ts, verdict.declWarn)}');
+  const reloadCall = src.indexOf('shouldDeferPm2Reload(process.env)');
+  assert.ok(restoreCall > 0 && markerCall > restoreCall, 'marker after restore');
+  assert.ok(reloadCall > markerCall, 'pm2 after marker');
+  assert.equal(pm2ConfigRel(tmpdir()), 'servers/pm2.config.js');
 });
 
 test('authorNote anota divergência entre quem empurrou e quem assinou o commit', () => {

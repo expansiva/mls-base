@@ -118,10 +118,19 @@ function makeReleaseId() {
 // (cbeRebuildOnSave.ts), which only needs to recompile+redeploy a pure source
 // edit — no new dependency, no schema change. Both are strictly opt-in; a
 // plain `pnpm build --client <id>` behaves exactly as before.
+export function skipPm2(argv) {
+  return argv.includes('--skip-pm2');
+}
+
+export function pm2ConfigRel(root) {
+  return existsSync(join(root, 'pm2.config.js')) ? 'pm2.config.js' : 'servers/pm2.config.js';
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const skipInstall = argv.includes('--skip-install');
   const skipMigrate = argv.includes('--skip-migrate');
+  const deferPm2 = skipPm2(argv);
 
   const ids = writeVmTsconfig(ROOT);
   console.log(`--- projects on disk: ${ids.map((i) => 'mls-' + i).join(' ') || '(none)'}`);
@@ -211,13 +220,18 @@ function main() {
 
   // Reload pm2 (cluster -> graceful, no downtime; starts on first run). Sites
   // publishes create a root pm2.config.js that lists one app per hosted project.
-  const pm2Config = existsSync(join(ROOT, 'pm2.config.js'))
-    ? 'pm2.config.js'
-    : 'servers/pm2.config.js';
+  // `--skip-pm2`: the git hook restores the worktree and prints the ok marker
+  // first; on https that reload would kill git-http-backend (and this process)
+  // before those steps run.
+  const pm2Config = pm2ConfigRel(ROOT);
   mkdirSync(join(ROOT, 'logs'), { recursive: true });
-  console.log(`--- pm2 reload (${pm2Config})`);
-  runWithRetry(`pm2 startOrReload ${pm2Config} --update-env`);
-  try { run('pm2 save'); } catch { /* non-fatal */ }
+  if (deferPm2) {
+    console.log(`--- pm2 reload skipped (--skip-pm2; caller reloads after the hook finishes)`);
+  } else {
+    console.log(`--- pm2 reload (${pm2Config})`);
+    runWithRetry(`pm2 startOrReload ${pm2Config} --update-env`);
+    try { run('pm2 save'); } catch { /* non-fatal */ }
+  }
 
   // Refresh the per-project obj zips the cbe login serves (mls-<id>/obj/*.zip).
   // This replaces the GitHub Actions (mls-ci) builds: the VM compiles its own

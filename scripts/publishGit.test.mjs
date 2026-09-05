@@ -7,15 +7,20 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   autocommitDirty,
+  classifyPushResult,
   clientPushArgs,
   commitMessageFromNames,
   DIRTY_LOCAL_MSG,
+  disconnectAppliedMessage,
   ensureBookkeepingGitignore,
   isDirty,
+  isPushDisconnect,
   makeRebuildCommit,
   MISSING_HOOK_MSG,
   needsRebuildCommit,
   parseArgs,
+  pushNotAppliedMessage,
+  readRemoteMainSha,
   rebuildCommitMessage,
   remoteConfMissingMessage,
   remoteUrlFor,
@@ -431,6 +436,107 @@ test('clientPushArgs com deps é o que o hook do projeto consome depois do commi
   assert.deepEqual(clientPushArgs({ remote: 'vm', changedDeps: ['102025', '102033'] }), [
     'push', '-o', 'deps=102025,102033', 'vm', 'main',
   ]);
+});
+
+const DISCONNECT_TEXT = [
+  'error: RPC failed; curl 18 transfer closed with outstanding read data remaining',
+  'send-pack: unexpected disconnect while reading sideband packet',
+  'Everything up-to-date',
+].join('\n');
+
+test('isPushDisconnect reconhece o corte https do pm2 reload', () => {
+  assert.equal(isPushDisconnect(DISCONNECT_TEXT), true);
+  assert.equal(isPushDisconnect('error: failed to push some refs'), false);
+  assert.equal(isPushDisconnect(''), false);
+});
+
+test('https: disconnect depois da ref avançar é sucesso (publish aplicado)', () => {
+  const verdict = classifyPushResult({
+    code: 1,
+    text: DISCONNECT_TEXT,
+    https: true,
+    localSha: '5da3322abcdef',
+    remoteShaAfter: '5da3322abcdef',
+  });
+  assert.equal(verdict.kind, 'disconnect-applied');
+  assert.match(disconnectAppliedMessage('5da3322abcdef'), /publish aplicado/);
+  assert.match(disconnectAppliedMessage('5da3322abcdef'), /esperado, não é falha/);
+  assert.doesNotMatch(disconnectAppliedMessage('5da3322abcdef'), /falhou/);
+});
+
+test('https: disconnect sem a ref avançar continua falhando (publish NÃO aplicado)', () => {
+  const verdict = classifyPushResult({
+    code: 1,
+    text: DISCONNECT_TEXT,
+    https: true,
+    localSha: '5da3322abcdef',
+    remoteShaAfter: 'aa11111oldref',
+  });
+  assert.equal(verdict.kind, 'disconnect-not-applied');
+  const message = pushNotAppliedMessage({
+    code: 1,
+    kind: verdict.kind,
+    localSha: '5da3322abcdef',
+    remoteShaAfter: 'aa11111oldref',
+  });
+  assert.match(message, /NÃO aplicado/);
+  assert.match(message, /não avançou/);
+});
+
+test('https: disconnect sem conseguir ler a ref remota também é NÃO aplicado', () => {
+  const verdict = classifyPushResult({
+    code: 1,
+    text: DISCONNECT_TEXT,
+    https: true,
+    localSha: '5da3322abcdef',
+    remoteShaAfter: '',
+  });
+  assert.equal(verdict.kind, 'disconnect-not-applied');
+});
+
+test('marcador ok no texto vence o disconnect (hook terminou antes da queda)', () => {
+  const text = `${DISCONNECT_TEXT}\n##gitBackend build=ok release=20260905183723 project=mls-102052##\n`;
+  const verdict = classifyPushResult({
+    code: 1,
+    text,
+    https: true,
+    localSha: 'aaa',
+    remoteShaAfter: 'bbb',
+  });
+  assert.equal(verdict.kind, 'marker-ok');
+});
+
+test('ssh: disconnect não vira sucesso só porque a ref bateu', () => {
+  const verdict = classifyPushResult({
+    code: 1,
+    text: DISCONNECT_TEXT,
+    https: false,
+    localSha: '5da3322abcdef',
+    remoteShaAfter: '5da3322abcdef',
+  });
+  assert.equal(verdict.kind, 'push-error');
+  assert.match(pushNotAppliedMessage({ code: 1, kind: 'push-error' }), /NÃO aplicado/);
+});
+
+test('readRemoteMainSha injeta a leitura da ref e devolve a SHA', () => {
+  const gitSyncFn = (_repo, args) => {
+    if (args[0] === 'fetch') return { code: 0, stdout: '', stderr: '', out: '' };
+    if (args[0] === 'rev-parse') return { code: 0, stdout: '5da3322abcdef\n', stderr: '', out: '5da3322abcdef\n' };
+    return { code: 1, stdout: '', stderr: '', out: '' };
+  };
+  assert.equal(readRemoteMainSha('/tmp/x', {}, { gitSyncFn, sleepFn() {} }), '5da3322abcdef');
+});
+
+test('readRemoteMainSha vazio depois das tentativas continua sendo falha', () => {
+  let fetches = 0;
+  const gitSyncFn = () => {
+    fetches += 1;
+    return { code: 1, stdout: '', stderr: '', out: 'down' };
+  };
+  const sleeps = [];
+  assert.equal(readRemoteMainSha('/tmp/x', {}, { gitSyncFn, attempts: 3, sleepFn: (ms) => sleeps.push(ms) }), '');
+  assert.equal(fetches, 3);
+  assert.deepEqual(sleeps, [1000, 1000]);
 });
 
 test('MISSING_HOOK_MSG afirma o que ficou por fazer, não pergunta', () => {

@@ -256,7 +256,7 @@ function git(repo, args) {
   return { code: result.status ?? 1, out: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
-function restoreWorktree(root, projectName) {
+export function restoreWorktree(root, projectName) {
   const repo = join(root, projectName);
   if (!existsSync(join(repo, '.git'))) return;
   const status = git(repo, ['status', '--porcelain']);
@@ -395,6 +395,59 @@ function printError(project, verdict) {
   process.stderr.write(formatErrorOutput(project, verdict));
 }
 
+/** True when this hook runs under git-http-backend (the app serves /git/). */
+export function shouldDeferPm2Reload(env = process.env) {
+  return env.COLLAB_GIT_HTTP === '1';
+}
+
+export function pm2ConfigRel(root) {
+  return existsSync(join(root, 'pm2.config.js')) ? 'pm2.config.js' : 'servers/pm2.config.js';
+}
+
+/**
+ * Reload in a new session after a delay, so git-http-backend can finish writing
+ * the hook output before pm2 kills the app that owns the TCP connection.
+ */
+export function scheduleDetachedPm2Reload(root, { spawnFn = spawn, delaySec = 2 } = {}) {
+  const pm2Config = pm2ConfigRel(root);
+  const child = spawnFn(
+    'bash',
+    ['-c', 'sleep "$1"; pm2 startOrReload "$2" --update-env; pm2 save || true', 'pm2-reload', String(delaySec), pm2Config],
+    { cwd: root, detached: true, stdio: 'ignore' },
+  );
+  if (typeof child?.unref === 'function') child.unref();
+  process.stderr.write(
+    `gitPostReceive: pm2 reload em ${delaySec}s fora da árvore do hook (${pm2Config}) — ` +
+      'no https o reload mata o processo que serve o /git/\n',
+  );
+  return { pm2Config, delaySec };
+}
+
+async function reloadPm2Now(root) {
+  const pm2Config = pm2ConfigRel(root);
+  mkdirSync(join(root, 'logs'), { recursive: true });
+  process.stderr.write(`--- pm2 reload (${pm2Config})\n`);
+  let last = { code: 1, out: '' };
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    last = await runLive('pm2', ['startOrReload', pm2Config, '--update-env'], { cwd: root, env: process.env });
+    if (last.code === 0) break;
+    if (attempt < 3) {
+      process.stderr.write(`--- retry ${attempt}/2 after failure\n`);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+  }
+  if (last.code !== 0) {
+    process.stderr.write(
+      `gitPostReceive: pm2 reload falhou (exit ${last.code}) — a release já está em current\n`,
+    );
+  }
+  try {
+    await runLive('pm2', ['save'], { cwd: root, env: process.env });
+  } catch {
+    /* non-fatal */
+  }
+}
+
 async function main() {
   const { root, project } = parseArgs(process.argv.slice(2));
   const id = projectIdOf(project);
@@ -449,11 +502,14 @@ async function main() {
   const { clientId, ownClient } = clientIdForRelease(root, id);
   const releaseArgs = ['scripts/runtime/addNewVersion.mjs'];
   if (clientId) releaseArgs.push('--client', clientId);
+  // Reload is ours: restoreWorktree and the ok marker must run first. On https
+  // the app IS git-http-backend; pm2 reload inside addNewVersion killed the hook
+  // before those steps (dirty worktree → next push refused).
+  releaseArgs.push('--skip-pm2');
 
   // Multiprojeto: o app do projeto tem porta e alias PRÓPRIOS. Escrever a
-  // config antes do release porque o `pm2 startOrReload` acontece lá dentro —
-  // e o alias current-<id> que o app aponta é criado no mesmo passo, antes do
-  // reload.
+  // config antes do release porque o alias current-<id> que o app aponta é
+  // criado no mesmo passo, antes do reload (que agora corre depois).
   const releaseEnv = { ...process.env, CBE_BUILD_OBJS: 'false' };
   if (ownClient) {
     const app = ensureProjectApp({ root, projectId: clientId });
@@ -506,6 +562,14 @@ async function main() {
     );
   }
   process.stderr.write(`release ${ts} ativa\n`);
+
+  // Marker already flushed. Reload last: ssh/SSM in-process; https detached so
+  // this hook (and the TCP connection that carries its output) can finish.
+  if (shouldDeferPm2Reload(process.env)) {
+    scheduleDetachedPm2Reload(root);
+  } else {
+    await reloadPm2Now(root);
+  }
 }
 
 function invokedAsMain() {

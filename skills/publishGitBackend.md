@@ -28,6 +28,14 @@ Each repo gets `main` + an immutable `vm-baseline` snapshot and
 silently overwriting. The hook only swaps the release when the compile passes, and prints
 `##gitBackend build=ok|error##`; `publishGit`'s exit code follows the BUILD.
 
+**https and `pm2 reload` (gb85, 05/09/2026).** `/git/` is served by the app itself. A `pm2 reload`
+inside the hook used to kill git-http-backend — `restoreWorktree` never ran (`l5/config.json` dirty
+→ next push refused) and the client saw `RPC failed; curl 18` / exit 1 after a release that had
+already landed. The hook now calls `addNewVersion --skip-pm2`, restores the worktree, prints the
+marker, then reloads: in-process on ssh/SSM, detached (`sleep 2` + new session) when
+`COLLAB_GIT_HTTP=1`. `publishGit` on https treats that disconnect as success only when `vm/main`
+equals local HEAD; if the ref did not move, it still exits 1 and says **Publish NÃO aplicado**.
+
 ## One rule that is not obvious
 
 **The local `obj/` is disposable, and `publishGit` deletes it.** Before pushing, it removes
@@ -313,6 +321,8 @@ What to know when it refuses:
 | `login` says "o collab-auth não devolveu refresh" | a pasted token, or a collab-auth that has not been deployed with the `loopback` entry in `COLLAB_AUTH_ALLOWED_RETURN_HOSTS`. It works, but only for an hour |
 | `401` and git never asks for a password | the `WWW-Authenticate: Basic` header is missing; without it git does not call the credential helper at all |
 | push accepted, `mls-<id>` unknown | 404: that project is not hosted on this VM (`/data/mls-base/mls-<id>/.git` does not exist) |
+| `RPC failed; curl 18` / `unexpected disconnect` and exit 0 | expected on https: pm2 reloaded the app that was streaming the hook. Confirm `main` on the VM = local HEAD. Exit 1 with **Publish NÃO aplicado** means the ref did not move |
+| `working directory has unstaged changes` on the *next* push | the previous https hook was killed before `restoreWorktree` (pre-gb85). On the VM: `git checkout -- l5/config.json` in the project folder |
 
 **Where the pieces are.** The door is `mls-102034/l1/server/layer_1_external/transport/http/gitHttp.ts`,
 registered in `startServer.ts:224` before the catch-all `GET /*`. It does not implement the protocol:
@@ -538,4 +548,6 @@ new dep in the closure: two-publish cycle, VM clone keeps origin and is armed vi
 platform install unpinned via `.npmrc` `frozen-lockfile=false` (Wagner 04/09) added 04/09/2026;
 pre-gb77 clone on the VM (origin, no vm-baseline) is armed by setupRepo at VM_ROOT (gb64 rodada 2)
 added 04/09/2026;
-step 10 runs `pnpm install` after clone/pull so a fresh VM is buildable (gb54) added 04/09/2026.*
+step 10 runs `pnpm install` after clone/pull so a fresh VM is buildable (gb54) added 04/09/2026;
+https pm2 reload no longer kills the hook: `--skip-pm2`, restoreWorktree, then detached reload;
+publishGit confirms the remote ref on disconnect (gb85) added 05/09/2026.*
