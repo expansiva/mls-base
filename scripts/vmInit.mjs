@@ -12,8 +12,8 @@
 // one rule, one place, two triggers. This file is only the Mac side.
 //
 // Every step is idempotent: a second run finds everything in place and changes
-// nothing. The VM is the source of truth for a git-managed project — the
-// traditional publish skips it (see publishMlsBase.py, `.collab-git`).
+// nothing. The VM is the source of truth for a git-managed project
+// (`.collab-git` is written before gitReposSetup).
 
 import { spawnSync } from 'node:child_process';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -150,7 +150,7 @@ function ensurePlatform(conf, base) {
   if (!probe.out.includes('init-ok')) {
     fail(
       `a plataforma não está montada na VM — falta:\n  ${initScript}\n` +
-        'Monte com um publish tradicional (ex.: `pnpm publish:local` de dentro de um mls-* já publicado) e rode vm:init de novo.',
+        'Na VM, clone mls-base (collab-runtime passo 10) ou rode `node scripts/runtime/ensureMlsBaseCheckout.mjs` se a pasta já existir. Depois rode vm:init de novo.',
     );
   }
   log('plataforma na VM: ok (projectInit --from-model)');

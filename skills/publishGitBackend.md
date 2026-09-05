@@ -1,13 +1,19 @@
-# Skill: Git-push publish (gitBackend) — the second way an app reaches the VM
+# Skill: Git-push publish (gitBackend) — how an app reaches the VM
 
-Complements [`runtimeEnvironment.md`](runtimeEnvironment.md), which describes the **traditional**
-publish (tarball → VM → `pnpm build` → release). This file describes the **git path**, built
-30–31/08/2026, and how the two coexist.
+Complements [`runtimeEnvironment.md`](runtimeEnvironment.md), which describes the VM runtime
+(build, release, pm2, nginx). This file is the **only** publish path: git push to a repo on
+the VM, where a `post-receive` hook compiles and cuts the release. The tarball path was
+deleted 04/09/2026 (gb73). Platform files (`scripts/`, root config) arrive by `git pull` of
+`mls-base` from GitHub, not in the push.
+
+`--app-env` has no equivalent here **by decision** (Wagner, 04/09): the VM's `.env`
+(`APP_ENV`) is what the runtime reads. Do not stamp `appEnv` onto `l5/project.json` on
+the way in.
 
 ## The idea
 
 Every `mls-<id>` folder on the VM is a normal (non-bare) git repo. You push; a `post-receive` hook
-compiles and cuts a release. No tarball, no full publish.
+compiles and cuts a release.
 
 | piece | file |
 |---|---|
@@ -22,31 +28,18 @@ Each repo gets `main` + an immutable `vm-baseline` snapshot and
 silently overwriting. The hook only swaps the release when the compile passes, and prints
 `##gitBackend build=ok|error##`; `publishGit`'s exit code follows the BUILD.
 
-## Two rules that are not obvious
+## One rule that is not obvious
 
-**1. The local `obj/` is disposable, and `publishGit` deletes it.** Before pushing, it removes
+**The local `obj/` is disposable, and `publishGit` deletes it.** Before pushing, it removes
 `obj/` from disk and from git, ensures the ignore and commits (`chore: remove obj/`). The build that
 matters is produced on the VM by the hook (and on GitHub by the Action). Keeping `obj/` versioned
 makes the hook's rewrite dirty the VM worktree, and `updateInstead` then refuses every later push.
 
-**2. The traditional publish destroys these repos, and re-arms them.** `publishMlsBase.py` replaces
-each project folder wholesale (`rm -rf`, the rsync `--delete` equivalent) and the tarball excludes
-`.git`. So after a **successful** deploy it re-runs `gitReposSetup` on the VM. A failure to re-arm
-is a warning only — the app is already up; the exit code stays 0 and the message says what to run
-by hand. The `--sites` path does not wipe source dirs and does not re-arm.
-
-**Since gb16 this only applies to publish-managed projects.** A project born with `vm:init`
-carries `.collab-git`, and the traditional publish reads those markers off the VM before packing:
-it neither wipes the folder nor ships its sources/obj. Its history survives every traditional
-publish, so `publishGit` stays a fast-forward and never asks for `--align`. Publishing such a
-project the traditional way is refused, with the `publishGit` command in the message.
-
-**Accepted cost (publish-managed projects only):** after a traditional publish the VM's history is
-new (`vm-baseline: initial snapshot`), so the next `publishGit` asks for `--align` (diff +
-confirmation) once. Visible and
-explainable, which is the point. Measured 02/09/2026: the expected diff is the VM `.gitignore`
-block that `gitReposSetup` writes, plus `l5/config.json` (a build artefact). Confirmation of
-`--align` is human by design — `clone` never answers it and never force-pushes.
+`--align` remains for the first push onto a repo whose history is unrelated (a folder that
+existed before it was git-managed, or a clone that never shared a commit with the VM).
+Confirmation is human by design — `clone` never answers it and never force-pushes. A project
+born with `vm:init` carries `.collab-git` inside `vm-baseline`, so later pushes are
+fast-forward and do not ask.
 
 ## Supervisor cycle (preferred)
 
@@ -76,16 +69,15 @@ From inside `mls-<id>`:
 
 | script | what it is |
 |---|---|
-| `pnpm publish` / `pnpm publish:remote` | **new projects** (clone of mls-102039, id rewritten): `publishGit.mjs <id> remote --git-url=https://<id>.collabcodes.com`. Canonical path. Domain is the `<id>.collabcodes.com` convention, not an l5 field. |
+| `pnpm publish` / `pnpm publish:remote` | `publishGit.mjs <id> remote --git-url=https://<id>.collabcodes.com`. Canonical path. Domain is the `<id>.collabcodes.com` convention, not an l5 field. |
 | `pnpm publish:git` | `node ../scripts/publishGit.mjs <id> local` — git push to lima. |
-| `pnpm publish` (102047 and older) | traditional remote publish via collab-sites (`--sites`). Still what **creates / mounts** a VM that never had a slot. Not emitted for new projects. |
-| `pnpm publish:local` (102047 and older) | traditional local publish (tarball → lima). |
 
 New projects are born with this `package.json` from `mls-102039` (literal `102039`, rewritten
-when `projectInit --from-model` clones and renumbers). The old python/rsync launcher
-(`runPublishMlsBase.mjs`) is not in that file. The static tree `scripts/templates/project/`
-was deleted (gb70, 04/09/2026) — it was a second source of truth and shipped without
-`shellTemplates`.
+when `projectInit --from-model` clones and renumbers). Older clients (102044–102051) were
+retargeted to the same three scripts (gb73). Creating / mounting a VM slot is
+collab-sites *Add project* / `pnpm vm:init`, not a publish. The static tree
+`scripts/templates/project/` was deleted (gb70, 04/09/2026) — it was a second source of
+truth and shipped without `shellTemplates`.
 
 Gate, markers (`##gitBackend build=ok|error##`) and exit code are the same on both git wrappers.
 
@@ -218,8 +210,8 @@ Three cases — never overwrites local work, never force-pushes, never auto-answ
 | exists, no `.git` | `git init`, add remote `vm`, propose `--align` |
 | exists, with `.git` | ensure remote `vm`, fetch, print ahead/behind/diverged/unrelated/same |
 
-Unrelated histories after a traditional publish is the **normal** case (rule 2 above). `clone`
-says so in one line and suggests `--align`; it does not run it.
+Unrelated histories (a folder that never shared a commit with the VM) get one line and a
+suggestion of `--align`; `clone` does not run it.
 
 Full loop:
 
@@ -396,11 +388,12 @@ In order:
    `vm-baseline`, and **nothing to push to**. Lima never showed it because there mls-base arrived
    as a copy, not a clone. `projectInit` now also re-runs `gitReposSetup` on a project that already
    exists, so a VM created before the fix heals with *Update platform*.
-   **Lima is still a copy until converted.** `ensureMlsBaseCheckout.mjs` (gb73) is the
+   **Lima was a copy; it is a checkout now.** `ensureMlsBaseCheckout.mjs` (gb73) is the
    versioned, idempotent conversion: `git init` → `remote add origin $MLS_BASE_REPO` →
    `fetch` → `checkout -f -B main origin/main`. Same variables as this step
    (`MLS_BASE_DIR`, `MLS_BASE_REPO`). Ignored VM state stays; a folder that is already a
-   checkout is left alone. Wagner runs it on lima — the script does not ssh.
+   checkout is left alone. Proven on lima 04/09 (HEAD matched origin/main). The script
+   does not ssh — run it on the VM.
 
 7. Step 12 (`scripts/12-mls-project.sh`) runs
    `node /data/mls-base/scripts/runtime/projectInit.mjs <projectId> --root /data/mls-base --from-model`
@@ -435,8 +428,8 @@ In order:
    It needs no push: it builds (`buildProjectsObj --only <id> --force`), cuts the release
    (`addNewVersion.mjs`), writes `pm2.apps.d/app<porta>.config.js` and reloads pm2. Once the app
    answers on its port, the door is up and every later release comes from `pnpm publish:remote`.
-   The legacy alternative is the sites **publish job** (tarball + `pnpm build --client <id>`) —
-   which is why gb51 item 4 gates turning it off.
+   There is no tarball fallback: the python publisher was deleted (gb73). The first release
+   is this button, then git.
    The scaffold's `l5/config.json` (from the cloned model) must declare four things or the release dies
    in a way that names the wrong culprit: `defaultProjectId`, itself as `projects.<id>.type =
    "client"`, a `publication` target, and — the one that costs a whole cycle — the **masters**
@@ -514,22 +507,20 @@ pm2.config.js                     aggregator: reads pm2.apps.d/
 `current-*` and `pm2.apps.d` are in the mls-base `.gitignore` (gb73), so they never
 show up as `??` on a platform checkout. Each release stamps `platformCommit` in
 `releases/<id>/release.json` (`releaseStamp.mjs`) — HEAD of that checkout, or
-`unknown` while lima is still a copy. Same pin + same platform commit ⇒ same
+`unknown` when `/data/mls-base` is not a checkout. Same pin + same platform commit ⇒ same
 release on both VMs.
 
 The port is `2000 + the id's last three digits` (`scripts/runtime/projectPorts.mjs`; the
 same rule lives in `collab-sites`). An app whose `cwd` is the global `current` serves
 whichever project pushed last — always point an app at `current-<id>`.
 
-## Where it stands (02/09/2026)
+## Where it stands (04/09/2026)
 
-- Validated end to end on the local Lima VM: a push-created release runs and scores the same as the
-  traditional publish.
-- Wrappers `publish:git` / `publish:remote` and `clone` landed 02/09/2026 (102047 first).
+- The tarball/python publisher is gone (gb73). `publish` / `publish:git` / `publish:remote` all
+  call `publishGit.mjs`.
+- Validated end to end on lima and the remote 102043 VM: a push-created release runs.
 - `servers/remote.conf.example` is the template; the real `remote.conf` is gitignored and filled
   per VM.
-- **Production VMs are not ready**: `git` must be installed and `gitReposSetup` run there. Without
-  that, `pnpm publish:remote` has no destination.
 - The `--align` confirmation prompt is in Portuguese; product text should be English/i18n.
 - Compiling on the developer machine is being retired in favour of compiling on the VM; until that
   lands, the GitHub Action keeps re-creating `obj/` and `publishGit` keeps removing it locally.
@@ -540,6 +531,7 @@ model added 03/09/2026; step 12, the project template and the single-owner table
 new-project `package.json` and dep-only rebuild-on-the-project (gb69) added 04/09/2026;
 static template deleted, `projectInit --from-model` clones mls-102039 (gb70) added 04/09/2026;
 lima platform checkout + `platformCommit` on the release stamp (gb73) added 04/09/2026;
+tarball/python publisher deleted, `publishGit` is the only path (gb73 rodada 3) added 04/09/2026;
 new dep in the closure: two-publish cycle, VM clone keeps origin and is armed via vm-baseline
 (gb77) added 04/09/2026; fetch+reset of armed deps, trigger is gb62 (gb77 rodada 2) added 04/09/2026;
 platform install unpinned via `.npmrc` `frozen-lockfile=false` (Wagner 04/09) added 04/09/2026;

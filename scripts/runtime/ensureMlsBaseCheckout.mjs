@@ -2,11 +2,11 @@
 // ensureMlsBaseCheckout.mjs — convert /data/mls-base from a tarball copy into a
 // git checkout of MLS_BASE_REPO (the same URL collab-runtime step 10 uses).
 //
-// Lima used to receive the platform as a copy (publishMlsBase.py tarball). The
-// remote VM is already a checkout of https://github.com/expansiva/mls-base, so
-// "update platform" is `git pull --ff-only`. This script makes lima take that
-// same path without wiping VM state: ignored files (releases, current, .env,
-// config.json, node_modules, mls-*) stay; tracked files become origin/main.
+// Lima used to receive the platform as a tarball copy. The remote VM is already
+// a checkout of https://github.com/expansiva/mls-base, so "update platform" is
+// `git pull --ff-only`. This script makes lima take that same path without
+// wiping VM state: ignored files (releases, current, .env, config.json,
+// node_modules, mls-*) stay; tracked files become origin/main.
 //
 // Idempotent: a folder that is already a checkout (has .git, origin, HEAD) is
 // left alone. Running twice does not pull and does not rewrite.

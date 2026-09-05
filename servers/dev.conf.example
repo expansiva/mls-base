@@ -1,5 +1,5 @@
-# Ad-hoc profile for publishMlsBase.py (python scripts/publish/publishMlsBase.py <id> dev).
-# Everyday `pnpm publish:local` does NOT use this file: it reads mls-base/.env
+# Ad-hoc profile for publishGit.mjs (node scripts/publishGit.mjs <id> <profile>).
+# Everyday `pnpm publish:git` does NOT use this file: it reads mls-base/.env
 # (PUBLISH_LOCAL_SSH_HOST, PUBLISH_LOCAL_SSH_CONFIG, PUBLISH_LOCAL_REMOTE_BASE).
 # Real servers/*.conf files are gitignored.
 

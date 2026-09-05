@@ -24,25 +24,24 @@ collab-sites) for real production. The runtime is NOT the Studio: it is a self-c
 
 ## Publish flow
 
-> There is a **second** path since 30/08/2026: push to a git repo on the VM, where a `post-receive`
-> hook compiles and cuts the release. See [`publishGitBackend.md`](publishGitBackend.md) — it also
-> explains how a traditional publish destroys those repos and re-arms them.
+There is **one** path: git push to a repo on the VM, where a `post-receive` hook compiles and
+cuts the release. See [`publishGitBackend.md`](publishGitBackend.md). The tarball publisher
+was deleted 04/09/2026 (gb73). Platform files arrive by `git pull` of `mls-base` from GitHub.
 
-Entry point: `mls-<client>/package.json` scripts — `publish` (remote, `--sites`) and
-`publish:local`. Both call `mls-base/scripts/runPublishMlsBase.mjs`, a thin launcher for
-`mls-base/scripts/publish/publishMlsBase.py`, which composes the client `config.json`, packs the
-project SOURCES into a tarball and ships them — the **build always happens on the VM**.
+Entry point: `mls-<client>/package.json` scripts — `publish` / `publish:remote` (HTTPS/JWT to
+the VM domain) and `publish:git` (ssh to lima). All three call
+`mls-base/scripts/publishGit.mjs`. The **build always happens on the VM**.
 
-- **Local path**: tarball over ssh (Lima) or multipass transfer. Target comes from
-  `mls-base/.env` (gitignored): `PUBLISH_LOCAL_SSH_HOST`, `PUBLISH_LOCAL_SSH_CONFIG`,
-  `PUBLISH_LOCAL_REMOTE_BASE` (optional `PUBLISH_LOCAL_CERT` / `PUBLISH_LOCAL_MULTIPASS_INSTANCE`).
-  Ad-hoc profiles still use `mls-base/servers/<profile>.conf`.
-- **Remote path (`--sites`)**: CLI flags on the `publish` script in `package.json`
-  (`--ssh-host`, `--remote-base`, `--server-project-id`). Creates a publish job on collab-sites
-  (upload → human authorization via link → running → done). collab-sites executes the publish
-  on the VM through AWS SSM:
-  download artifact, extract, write the per-app pm2 config, run the build, configure nginx.
-  See `collab-sites/src/layer_3_usecases/publish.ts`.
+- **Local path** (`publish:git`): ssh. Target comes from `mls-base/.env` (gitignored):
+  `PUBLISH_LOCAL_SSH_HOST`, `PUBLISH_LOCAL_SSH_CONFIG`, `PUBLISH_LOCAL_REMOTE_BASE`
+  (optional `PUBLISH_LOCAL_CERT` / `PUBLISH_LOCAL_MULTIPASS_INSTANCE`). Ad-hoc profiles
+  still use `mls-base/servers/<profile>.conf`.
+- **Remote path** (`publish` / `publish:remote`): `git push https://<id>.collabcodes.com/git/…`
+  authenticated by the collab-auth JWT (`pnpm publishGit login`). `--ssh-host` still works
+  when `servers/remote.conf` is filled; `--git-url` is the switch that drops ssh.
+
+`--app-env` is not a publish flag. The runtime reads `APP_ENV` from the VM's `.env`
+(decision, Wagner 04/09 — do not stamp `l5/project.json` on the way in).
 
 ## On-VM build and release (`pnpm build`)
 
@@ -61,8 +60,8 @@ The mls lib (`types/mls.d.ts`, `monaco.d.ts`, `static/libs/mls.js`) is **pinned*
 not match, it overwrites and logs `corrected … to pin libs=…`. Bumping the lib is a commit that
 changes `collabLibs`. Each release writes `releases/<id>/release.json` with the pin, the client
 git HEAD (`versionRef`), the model commit from `.collab-git` (gb70) and `platformCommit` — HEAD
-of the `mls-base` checkout on the VM, or `unknown` when the folder is still a copy
-(`scripts/runtime/releaseStamp.mjs`).
+of the `mls-base` checkout on the VM, or `unknown` when `/data/mls-base` is not a
+checkout (`scripts/runtime/releaseStamp.mjs`).
 
 ## pm2 topology and ports
 
@@ -131,9 +130,9 @@ builds its own: `scripts/runtime/buildProjectsObj.mjs` (run by addNewVersion aft
 `pnpm build:objs` manually; `CBE_BUILD_OBJS=false` skips) iterates every `mls-*` at the base,
 rebuilds stale projects through the local `scripts/buildCI` pipeline in offline mode (shipped
 `types/`, sha1 versionRefs when there is no `.git`) and copies the zips into `mls-<id>/obj/`.
-Incremental by source mtime; a project that fails to build keeps its previous obj. The publish
-syncs ALL `mls-*` projects to ssh/multipass targets by default (`PUBLISH_ALL_PROJECTS` /
-`--all-projects` to override; sites publishes default to the config.json set only).
+Incremental by source mtime; a project that fails to build keeps its previous obj. A
+`publishGit` of the client also pushes a snapshot of each declared dep; it does not ship
+every `mls-*` on disk.
 
 ## Known gaps (as of 2026-08-06)
 
@@ -153,7 +152,7 @@ syncs ALL `mls-*` projects to ssh/multipass targets by default (`PUBLISH_ALL_PRO
 
 ## Pointers
 
-- Publish scripts: `mls-base/scripts/runPublishMlsBase.mjs`, `mls-base/scripts/publish/publishMlsBase.py`
+- Publish: `mls-base/scripts/publishGit.mjs` (see [`publishGitBackend.md`](publishGitBackend.md))
 - Platform checkout (lima copy → same recipe as collab-runtime step 10): `mls-base/scripts/runtime/ensureMlsBaseCheckout.mjs`
 - Build/release on VM: `mls-base/scripts/runtime/addNewVersion.mjs`
 - Server env & runtime mode: `mls-base/mls-102034/l1/server/layer_1_external/config/env.ts`

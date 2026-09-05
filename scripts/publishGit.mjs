@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 // scripts/publishGit.mjs — publish ONE mls-* project to the VM via git push.
 //
-// Day-to-day path: change a project locally, commit, push over the same SSH
-// the full publish already uses. The VM hook (gitPostReceive) compiles and
-// either cuts a release or prints the tsc error. Exit code follows the BUILD
-// (A1: a red build can still accept the push).
+// Day-to-day path: change a project locally, commit, push. The VM hook
+// (gitPostReceive) compiles and either cuts a release or prints the tsc error.
+// Exit code follows the BUILD (A1: a red build can still accept the push).
 //
-// Host / ssh-config / remote base: same keys as publishMlsBase.py
-// (PUBLISH_LOCAL_* in mls-base/.env for `local`; CLI flags or
-// servers/<profile>.conf for `remote`). No new config surface.
+// Host / ssh-config / remote base: PUBLISH_LOCAL_* in mls-base/.env for
+// `local`; CLI flags or servers/<profile>.conf for `remote`. No new config
+// surface.
 //
 // Local obj/ is disposable: the VM hook (and the GitHub Action) rebuild it.
 // Each run deletes obj/ from disk and git and commits that, then pushes.
@@ -86,7 +85,7 @@ function usage() {
     '           --paste: cola o token na mão (fallback); --install-helper: registra o credential',
     '           helper no git config global (para `git clone` cru). O access renova sozinho no push',
     '  --git-url=https://<vm> — publica por https (JWT) em vez de ssh; sem isto nada muda',
-    '  local  — PUBLISH_LOCAL_* from mls-base/.env (same as publishMlsBase.py)',
+    '  local  — PUBLISH_LOCAL_* from mls-base/.env',
     '  remote — CLI flags, else servers/remote.conf (copy from servers/remote.conf.example)',
     '  clone  — git clone from the VM; existing folder: connect remote `vm` and report state, never force',
     '  --align — first-time unrelated histories: --force-with-lease after a diff + confirm',
@@ -633,7 +632,7 @@ function describeCloneRelation(rel) {
       return 'divergente. Clone não sobrescreve. pull/rebase, ou --align (confirmação humana).';
     case 'unrelated':
       return (
-        'histórias não relacionadas (caso normal depois de um publish tradicional). ' +
+        'histórias não relacionadas com a VM. ' +
         'Para alinhar, rode publishGit com --align (confirmação humana; clone não executa force).'
       );
     default:

@@ -340,7 +340,7 @@ test('remoteUrlFor: GIT_URL manda (gb50, https+JWT); sem ele nada muda e continu
     remoteUrlFor({ GIT_URL: 'https://102043.collabcodes.com', SSH_HOST: 'ubuntu@1.2.3.4:' }, 'mls-102043'),
     'https://102043.collabcodes.com/git/mls-102043.git',
   );
-  // A garantia de que a lima e o publish tradicional não mudaram de comportamento.
+  // A garantia de que o caminho ssh (lima, sem GIT_URL) não mudou de comportamento.
   assert.equal(
     remoteUrlFor({ SSH_HOST: 'ubuntu@1.2.3.4:', REMOTE_BASE: '/data/mls-base' }, 'mls-102043'),
     'ssh://ubuntu@1.2.3.4:/data/mls-base/mls-102043',

@@ -163,7 +163,7 @@ function isExcludedFromCompile(relPath) {
 // ("e.g. `/_102048_/l2/designSystem.js`") ou uma URL montada em runtime
 // (`/_100554_/l2/enhancementStyle.js` no libModel) viravam "dependência não
 // declarada". Efeito medido em 03/09: o mls-102029 não compilava sozinho por
-// dois achados que não existiam — e o publish tradicional engolia isso em
+// dois achados que não existiam — e o build da VM engolia isso em
 // silêncio ("previous obj stays"), então ninguém via.
 //
 // Este scan só ALIMENTA a checagem de dep não declarada; o fecho que se clona e

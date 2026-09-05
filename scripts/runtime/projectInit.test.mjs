@@ -292,6 +292,8 @@ test('o modelo 102039 emite package.json com o publish git (https) e sem o pytho
   assert.match(gitLocal, new RegExp(`publishGit\\.mjs ${MODEL_ID} local`));
   assert.match(pkg.scripts.buildCI, new RegExp(`buildCI\\.mjs ${MODEL_ID}`));
   const blob = JSON.stringify(pkg);
+  // tombstone: the tarball launcher was deleted (gb73). Keep this so a model
+  // cannot grow that path back.
   assert.doesNotMatch(blob, /runPublishMlsBase/);
   assert.doesNotMatch(blob, /--sites/);
 });

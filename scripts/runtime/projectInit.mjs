@@ -16,8 +16,8 @@
 //      registry (`_schema_migrations does not exist`). Measured on 102043 (gb56). An
 //      empty client is not a client;
 //   4. `.collab-git` is written BEFORE gitReposSetup, so the marker lands INSIDE the
-//      vm-baseline commit — a project unprotected until its first push is a project the
-//      traditional publish may wipe;
+//      vm-baseline commit — a project unprotected until its first push is a project
+//      anyone with disk access on the VM may wipe;
 //   5. gitReposSetup gives it `main` + `vm-baseline` + the push hook;
 //   6. the result is checked, not assumed: no model id left, `main` exists, the project
 //      DECLARES its dependencies, and `shellTemplates.spa` is present (without that the
