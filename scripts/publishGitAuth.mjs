@@ -67,20 +67,35 @@ export function tokenState(token, nowSeconds = Math.floor(Date.now() / 1000)) {
  * colagem não precisa refazer nada — a sessão vale até o access expirar, e aí o login por redirect
  * grava o par completo. Migração silenciosa é melhor que um erro pedindo `login` de novo.
  */
+function emptySession() {
+  return { access: '', refresh: '', orgId: '', state: 'invalid', email: '', expiresAt: '' };
+}
+
+function readStoredOrgId(home) {
+  const path = tokenStorePath(home);
+  if (!existsSync(path)) return '';
+  try {
+    return String(JSON.parse(readFileSync(path, 'utf8')).orgId ?? '').trim();
+  } catch {
+    return '';
+  }
+}
+
 export function readSession({ home = homedir(), env = process.env } = {}) {
   if (env.COLLAB_PUBLISH_TOKEN) {
     const access = env.COLLAB_PUBLISH_TOKEN.trim();
-    return { access, refresh: '', ...tokenState(access), fromEnv: true };
+    return { access, refresh: '', orgId: String(env.COLLAB_ORG_ID ?? '').trim(), ...tokenState(access), fromEnv: true };
   }
   const path = tokenStorePath(home);
-  if (!existsSync(path)) return { access: '', refresh: '', state: 'invalid', email: '', expiresAt: '' };
+  if (!existsSync(path)) return emptySession();
   try {
     const stored = JSON.parse(readFileSync(path, 'utf8'));
     const access = String(stored.access ?? stored.token ?? '').trim();
     const refresh = String(stored.refresh ?? '').trim();
-    return { access, refresh, ...tokenState(access) };
+    const orgId = String(stored.orgId ?? '').trim();
+    return { access, refresh, orgId, ...tokenState(access) };
   } catch {
-    return { access: '', refresh: '', state: 'invalid', email: '', expiresAt: '' };
+    return emptySession();
   }
 }
 
@@ -89,18 +104,20 @@ export function readToken(options = {}) {
   return readSession(options).access;
 }
 
-export function writeSession({ access, refresh = '' }, { home = homedir() } = {}) {
+export function writeSession({ access, refresh = '', orgId }, { home = homedir() } = {}) {
   const path = tokenStorePath(home);
   mkdirSync(dirname(path), { recursive: true });
   const { email, expiresAt } = tokenState(access);
+  const storedOrgId = orgId !== undefined ? String(orgId ?? '').trim() : readStoredOrgId(home);
   const body = { access, refresh, email, expiresAt, savedAt: new Date().toISOString() };
+  if (storedOrgId) body.orgId = storedOrgId;
   writeFileSync(path, `${JSON.stringify(body, null, 2)}\n`);
   try {
     chmodSync(path, 0o600);
   } catch {
     // Windows não tem o modo; o arquivo continua na home do usuário.
   }
-  return { path, email, expiresAt };
+  return { path, email, expiresAt, orgId: storedOrgId };
 }
 
 /** Compatibilidade com o gb50: gravar só o access, sem refresh (o caminho `--paste`). */
@@ -130,6 +147,59 @@ export function expOf(token) {
   return payload && typeof payload.exp === 'number' ? payload.exp : 0;
 }
 
+/**
+ * collab-sites lê papéis de `active_org.teams`. `active_org: null` (o token do
+ * publishGit hoje) conta como ausente — a lista de papéis fica vazia e o CLI
+ * não autentica como nada.
+ */
+export function tokenHasActiveOrg(token) {
+  const payload = parseJwtPayload(token);
+  const active = payload?.active_org;
+  if (!active || typeof active !== 'object') return false;
+  const id = String(active.id ?? active.slug ?? '').trim();
+  return Boolean(id);
+}
+
+export function orgsFromPayload(payload) {
+  const seen = new Set();
+  const orgs = [];
+  const push = (org) => {
+    if (!org || typeof org !== 'object') return;
+    const id = String(org.id ?? '').trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    orgs.push({ id, slug: String(org.slug ?? '').trim(), role: String(org.role ?? '').trim() });
+  };
+  if (Array.isArray(payload?.orgs)) {
+    for (const org of payload.orgs) push(org);
+  }
+  push(payload?.active_org);
+  return orgs;
+}
+
+/**
+ * Qual org mandar no refresh. Uma org → essa, sem perguntar. Várias → a
+ * guardada (`orgId` em ~/.collab/publishGit.json ou COLLAB_ORG_ID). Sem
+ * escolha, não escolhe por conta própria: falha listando as orgs.
+ */
+export function chooseOrgId(orgs, storedOrgId) {
+  const list = Array.isArray(orgs) ? orgs.filter((org) => org && org.id) : [];
+  const wanted = String(storedOrgId ?? '').trim();
+  if (wanted) {
+    const match = list.find((org) => org.id === wanted || org.slug === wanted);
+    return { ok: true, orgId: match?.id ?? wanted, reason: '' };
+  }
+  if (list.length <= 1) {
+    return { ok: true, orgId: list[0]?.id ?? '', reason: '' };
+  }
+  const names = list.map((org) => org.slug || org.id).join(', ');
+  return {
+    ok: false,
+    orgId: '',
+    reason: `this account belongs to more than one org (${names}). Set orgId in ~/.collab/publishGit.json or COLLAB_ORG_ID to choose; the CLI will not pick one.`,
+  };
+}
+
 async function postJson(url, body, fetchImpl) {
   const response = await fetchImpl(url, {
     method: 'POST',
@@ -145,25 +215,48 @@ async function postJson(url, body, fetchImpl) {
   return { ok: response.ok, status: response.status, payload };
 }
 
+async function postRefresh(refresh, orgId, env, fetchImpl) {
+  const body = { refresh_token: refresh };
+  if (orgId) body.org_id = orgId;
+  const { ok, status, payload } = await postJson(
+    `${authBaseUrl(env)}/auth/token/refresh`,
+    body,
+    fetchImpl,
+  );
+  const access = typeof payload.access_token === 'string' ? payload.access_token : '';
+  if (!ok || !access) {
+    return { ok: false, status, access: '', reason: payload.msg || `refresh recusado (HTTP ${status})`, orgId: orgId || '' };
+  }
+  return { ok: true, status, access, reason: '', orgId: orgId || '' };
+}
+
 /**
  * Troca o refresh por um access novo.
  *
  * O `/auth/token/refresh` do collab-auth devolve **só** o access — o refresh continua o mesmo, com
  * validade de 30 dias (`refreshTokenExpiresAt`, default `refreshTokenExpiryDays`). Por isso o
  * arquivo não é reescrito com um refresh novo: não existe um.
+ *
+ * collab-sites lê papéis de `active_org.teams`; a rota já aceita `org_id`. Mandamos quando
+ * sabemos qual org (uma no token, ou a escolha persistida). Se o pedido COM org for recusado
+ * (org desconhecida, select-org recusado), degradamos para o token de hoje — o publish não
+ * pode parar porque o CLI de manutenção quis um claim a mais. O que persiste é a escolha de
+ * org, ao lado do refresh; não um access extra.
  */
-export async function refreshAccess(refresh, { env = process.env, fetchImpl = fetch } = {}) {
+export async function refreshAccess(refresh, { env = process.env, fetchImpl = fetch, access = '', orgId = '' } = {}) {
   if (!refresh) return { ok: false, status: 0, access: '', reason: 'sem refresh token guardado' };
-  const { ok, status, payload } = await postJson(
-    `${authBaseUrl(env)}/auth/token/refresh`,
-    { refresh_token: refresh },
-    fetchImpl,
-  );
-  const access = typeof payload.access_token === 'string' ? payload.access_token : '';
-  if (!ok || !access) {
-    return { ok: false, status, access: '', reason: payload.msg || `refresh recusado (HTTP ${status})` };
+  const stored = String(env.COLLAB_ORG_ID || orgId || '').trim();
+  const chosen = chooseOrgId(orgsFromPayload(parseJwtPayload(access)), stored);
+  if (!chosen.ok) {
+    return { ok: false, status: 0, access: '', reason: chosen.reason, code: 'org-choice' };
   }
-  return { ok: true, status, access, reason: '' };
+  if (chosen.orgId) {
+    const withOrg = await postRefresh(refresh, chosen.orgId, env, fetchImpl);
+    if (withOrg.ok) return withOrg;
+    const fallback = await postRefresh(refresh, '', env, fetchImpl);
+    return { ...fallback, degraded: true, orgId: chosen.orgId, orgAttempt: chosen.orgId, orgReason: withOrg.reason };
+  }
+  return postRefresh(refresh, '', env, fetchImpl);
 }
 
 /** Troca uma API key (`cak_…`) por um JWT curto de serviço (gb53, `POST /auth/token/exchange`). */
@@ -293,10 +386,18 @@ export async function resolvePushToken({ home = homedir(), env = process.env, fe
   }
 
   const session = readSession({ home, env });
-  if (session.access && !needsRefresh(expOf(session.access))) {
+  const accessFresh = Boolean(session.access && !needsRefresh(expOf(session.access)));
+  const canSeekOrg = accessFresh
+    && !tokenHasActiveOrg(session.access)
+    && orgsFromPayload(parseJwtPayload(session.access)).length > 0;
+
+  if (accessFresh && !canSeekOrg) {
     return { ok: true, token: session.access, source: 'access', reason: '' };
   }
   if (!session.refresh) {
+    if (accessFresh) {
+      return { ok: true, token: session.access, source: 'access', reason: '' };
+    }
     return {
       ok: false,
       token: '',
@@ -308,10 +409,28 @@ export async function resolvePushToken({ home = homedir(), env = process.env, fe
         : 'nenhuma sessão guardada',
     };
   }
-  const renewed = await refreshAccess(session.refresh, { env, fetchImpl });
-  if (!renewed.ok) return { ok: false, token: '', source: 'refresh', reason: renewed.reason };
-  writeSession({ access: renewed.access, refresh: session.refresh }, { home });
-  return { ok: true, token: renewed.access, source: 'refreshed', reason: '' };
+  const renewed = await refreshAccess(session.refresh, {
+    env,
+    fetchImpl,
+    access: session.access,
+    orgId: session.orgId,
+  });
+  if (renewed.ok) {
+    writeSession({ access: renewed.access, refresh: session.refresh, orgId: renewed.orgId || undefined }, { home });
+    return { ok: true, token: renewed.access, source: 'refreshed', reason: '' };
+  }
+  if (accessFresh) {
+    return { ok: true, token: session.access, source: 'access', reason: '' };
+  }
+  // Várias orgs e nenhuma guardada: o refreshAccess recusa escolher. O publish
+  // degrada para o token de hoje (refresh sem org_id) — não pode parar por um claim a mais.
+  if (renewed.code === 'org-choice') {
+    const fallback = await refreshAccess(session.refresh, { env, fetchImpl });
+    if (!fallback.ok) return { ok: false, token: '', source: 'refresh', reason: fallback.reason };
+    writeSession({ access: fallback.access, refresh: session.refresh }, { home });
+    return { ok: true, token: fallback.access, source: 'refreshed', reason: '' };
+  }
+  return { ok: false, token: '', source: 'refresh', reason: renewed.reason };
 }
 
 /**

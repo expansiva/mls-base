@@ -7,7 +7,8 @@ import {
   credentialResponse, httpsUrl, isAuthFailure, parseJwtPayload, readToken, tokenState,
   tokenStorePath, withCredentialHelper, writeToken, credentialHelperValue, AUTH_EXIT,
   needsRefresh, readSession, resolvePushToken, writeServiceToken, writeSession,
-  isPublishHost, parseCredentialInput,
+  isPublishHost, parseCredentialInput, refreshAccess, chooseOrgId, orgsFromPayload,
+  tokenHasActiveOrg,
 } from './publishGitAuth.mjs';
 
 function jwt(payload) {
@@ -112,8 +113,8 @@ test('AUTH_EXIT é 3, o código que o publish reserva para "faça login"', () =>
 // ── gb53: renovação automática e token de serviço ────────────────────────────────
 
 /** collab-auth de mentira para as duas rotas de token, contando as chamadas. */
-async function fakeTokenServer({ refreshOk = true, exchangeOk = true, access = '' } = {}) {
-  const calls = { refresh: 0, exchange: 0 };
+async function fakeTokenServer({ refreshOk = true, exchangeOk = true, access = '', refuseOrgId = '' } = {}) {
+  const calls = { refresh: 0, exchange: 0, bodies: [] };
   const { createServer } = await import('node:http');
   const server = createServer((request, response) => {
     let body = '';
@@ -126,6 +127,12 @@ async function fakeTokenServer({ refreshOk = true, exchangeOk = true, access = '
       };
       if (url.pathname === '/auth/token/refresh') {
         calls.refresh += 1;
+        let parsed = {};
+        try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+        calls.bodies.push(parsed);
+        if (refuseOrgId && parsed.org_id === refuseOrgId) {
+          return send(400, { statusCode: 400, msg: 'Unknown org' });
+        }
         return refreshOk
           ? send(200, { statusCode: 200, access_token: access, token_type: 'Bearer', expires_in: 3600 })
           : send(401, { statusCode: 401, msg: 'Invalid or expired refresh token' });
@@ -317,6 +324,140 @@ test('parseCredentialInput lê o protocolo do git credential (chave=valor por li
   assert.equal(fields.host, '102043.collabcodes.com');
   assert.deepEqual(parseCredentialInput(''), {});
   assert.deepEqual(parseCredentialInput(undefined), {});
+});
+
+const collabOrg = { id: '603ebd39-1111-2222-3333-444444444444', slug: 'collab', role: 'member' };
+const acmeOrg = { id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', slug: 'acme', role: 'member' };
+
+test('tokenHasActiveOrg: null ou ausente é falso; id/slug é verdadeiro', () => {
+  assert.equal(tokenHasActiveOrg(jwt({ active_org: null, orgs: [collabOrg] })), false);
+  assert.equal(tokenHasActiveOrg(jwt({ orgs: [collabOrg] })), false);
+  assert.equal(tokenHasActiveOrg(jwt({ active_org: { id: collabOrg.id, slug: 'collab' } })), true);
+  assert.equal(tokenHasActiveOrg('nao.e.jwt'), false);
+});
+
+test('chooseOrgId: uma org escolhe essa; várias sem escolha falham listando; guardada vence', () => {
+  assert.deepEqual(chooseOrgId([collabOrg], ''), { ok: true, orgId: collabOrg.id, reason: '' });
+  assert.deepEqual(chooseOrgId([], ''), { ok: true, orgId: '', reason: '' });
+  const many = chooseOrgId([collabOrg, acmeOrg], '');
+  assert.equal(many.ok, false);
+  assert.match(many.reason, /more than one org/u);
+  assert.match(many.reason, /collab/u);
+  assert.match(many.reason, /acme/u);
+  assert.match(many.reason, /orgId|COLLAB_ORG_ID/u);
+  assert.equal(chooseOrgId([collabOrg, acmeOrg], acmeOrg.id).orgId, acmeOrg.id);
+  assert.equal(chooseOrgId([collabOrg, acmeOrg], 'acme').orgId, acmeOrg.id);
+  assert.deepEqual(orgsFromPayload({ orgs: [collabOrg], active_org: null }), [collabOrg]);
+});
+
+test('refreshAccess manda org_id quando o token tem uma org', async () => {
+  const novo = freshJwt();
+  const { server, calls, env } = await fakeTokenServer({ access: novo });
+  try {
+    const current = jwt({ email: 'w@collab.codes', exp: Math.floor(Date.now() / 1000) - 10, orgs: [collabOrg], active_org: null });
+    const renewed = await refreshAccess('r1', { env, access: current });
+    assert.equal(renewed.ok, true);
+    assert.equal(renewed.access, novo);
+    assert.equal(renewed.orgId, collabOrg.id);
+    assert.equal(calls.refresh, 1);
+    assert.equal(calls.bodies[0].refresh_token, 'r1');
+    assert.equal(calls.bodies[0].org_id, collabOrg.id);
+  } finally {
+    server.close();
+  }
+});
+
+test('refreshAccess falha com mensagem útil quando há várias orgs e nenhuma guardada', async () => {
+  const { server, calls, env } = await fakeTokenServer({ access: freshJwt() });
+  try {
+    const current = jwt({ email: 'w@collab.codes', exp: Math.floor(Date.now() / 1000) - 10, orgs: [collabOrg, acmeOrg] });
+    const renewed = await refreshAccess('r1', { env, access: current });
+    assert.equal(renewed.ok, false);
+    assert.equal(renewed.code, 'org-choice');
+    assert.match(renewed.reason, /more than one org/u);
+    assert.match(renewed.reason, /collab/u);
+    assert.match(renewed.reason, /COLLAB_ORG_ID|orgId/u);
+    assert.equal(calls.refresh, 0, 'não escolhe por conta própria — nem chega na rede');
+  } finally {
+    server.close();
+  }
+});
+
+test('refreshAccess degrada (não lança) quando o refresh com org é recusado', async () => {
+  const novo = freshJwt();
+  const { server, calls, env } = await fakeTokenServer({ access: novo, refuseOrgId: collabOrg.id });
+  try {
+    const current = jwt({ email: 'w@collab.codes', exp: Math.floor(Date.now() / 1000) - 10, orgs: [collabOrg] });
+    const renewed = await refreshAccess('r1', { env, access: current });
+    assert.equal(renewed.ok, true);
+    assert.equal(renewed.access, novo);
+    assert.equal(renewed.degraded, true);
+    assert.equal(calls.refresh, 2);
+    assert.equal(calls.bodies[0].org_id, collabOrg.id);
+    assert.equal(calls.bodies[1].org_id, undefined);
+  } finally {
+    server.close();
+  }
+});
+
+test('resolvePushToken: access válido sem active_org e uma org ⇒ refresh com org_id e persiste a escolha', async () => {
+  const novo = jwt({ email: 'w@collab.codes', exp: Math.floor(Date.now() / 1000) + 3600, active_org: { id: collabOrg.id, slug: 'collab' } });
+  const { server, calls, env } = await fakeTokenServer({ access: novo });
+  const home = mkdtempSync(join(tmpdir(), 'collab-org-'));
+  try {
+    const current = jwt({ email: 'w@collab.codes', exp: Math.floor(Date.now() / 1000) + 3600, orgs: [collabOrg], active_org: null });
+    writeSession({ access: current, refresh: 'r1' }, { home });
+    const resolved = await resolvePushToken({ home, env });
+    assert.equal(resolved.ok, true);
+    assert.equal(resolved.token, novo);
+    assert.equal(resolved.source, 'refreshed');
+    assert.equal(calls.bodies[0].org_id, collabOrg.id);
+    assert.equal(readSession({ home, env: {} }).orgId, collabOrg.id);
+  } finally {
+    server.close();
+  }
+});
+
+test('resolvePushToken: várias orgs sem escolha, access válido ⇒ degrada e o publish não para', async () => {
+  const { server, calls, env } = await fakeTokenServer({ access: freshJwt() });
+  const home = mkdtempSync(join(tmpdir(), 'collab-orgs-'));
+  try {
+    const current = jwt({
+      email: 'w@collab.codes',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      orgs: [collabOrg, acmeOrg],
+      active_org: null,
+    });
+    writeSession({ access: current, refresh: 'r1' }, { home });
+    const resolved = await resolvePushToken({ home, env });
+    assert.equal(resolved.ok, true);
+    assert.equal(resolved.token, current);
+    assert.equal(resolved.source, 'access');
+    assert.equal(calls.refresh, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test('resolvePushToken: access expirado, várias orgs sem escolha ⇒ refresh sem org_id (token de hoje)', async () => {
+  const novo = freshJwt();
+  const { server, calls, env } = await fakeTokenServer({ access: novo });
+  const home = mkdtempSync(join(tmpdir(), 'collab-orgs-stale-'));
+  try {
+    const current = jwt({
+      email: 'w@collab.codes',
+      exp: Math.floor(Date.now() / 1000) - 10,
+      orgs: [collabOrg, acmeOrg],
+    });
+    writeSession({ access: current, refresh: 'r1' }, { home });
+    const resolved = await resolvePushToken({ home, env });
+    assert.equal(resolved.ok, true);
+    assert.equal(resolved.token, novo);
+    assert.equal(calls.refresh, 1);
+    assert.equal(calls.bodies[0].org_id, undefined);
+  } finally {
+    server.close();
+  }
 });
 
 test('o helper de VERDADE (subprocesso) não devolve nada para o github.com', async () => {

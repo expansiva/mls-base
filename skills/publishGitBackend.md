@@ -151,8 +151,9 @@ A snapshot-only folder (no origin) is skipped.
 
 **Who fires it is gb62** (collab-sites button / schedule, N VMs). This file only names
 the command. Do not wire it into the git hook or `resolveDeps`. Manutenção da plataforma na
-VM de teste tem CLI (`node scripts/vm.mjs <projectId> platform-update|deps-update|hold|status`)
-e não exige admin — o mesmo token do `publishGit`.
+VM de teste tem CLI (`node scripts/vm.mjs <projectId> platform-update|deps-update|hold|status`) —
+o mesmo token do `publishGit`. O refresh manda `org_id` para o access trazer `active_org`
+(collab-sites lê papéis dali); as rotas exigem `collab-sites:admin`.
 
 ## Remote profile
 

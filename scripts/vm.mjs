@@ -12,7 +12,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { AUTH_EXIT, resolvePushToken } from './publishGitAuth.mjs';
+import { AUTH_EXIT, resolvePushToken, tokenHasActiveOrg } from './publishGitAuth.mjs';
 
 const DEFAULT_SITES_BASE = 'https://sites.collab.codes';
 const API_PREFIX = '/api/v1';
@@ -124,6 +124,24 @@ function failAuth(text) {
   );
 }
 
+/**
+ * Um 403 do sites não é "falta o papel operator" — isso diagnosticou errado
+ * quando o token nem carregava `active_org`. Sem o claim, collab-sites lê
+ * `active_org.teams` vazio e recusa como nada. Com o claim, aí sim falta o
+ * papel que a rota exigiu (hoje `collab-sites:admin`).
+ */
+export function sitesForbiddenMessage(token) {
+  if (!tokenHasActiveOrg(token)) {
+    return '[vm] this token does not carry an organization (active_org is missing); refresh must send org_id so collab-sites can read roles from active_org.teams';
+  }
+  return '[vm] this token has no collab-sites:admin authority';
+}
+
+function failIfSitesAuth(result, token) {
+  if (result.status === 401) failAuth('collab-sites rejected the token');
+  if (result.status === 403) fail(sitesForbiddenMessage(token));
+}
+
 function log(message) {
   process.stderr.write(`[vm] ${message}\n`);
 }
@@ -182,7 +200,7 @@ async function waitForCommand({ baseUrl, token, serverId, commandId, fetchImpl, 
   while (true) {
     const url = commandUrl(baseUrl, serverId, 'command', commandId);
     const result = await sitesRequest(url, { token, fetchImpl });
-    if (result.status === 401) failAuth('collab-sites rejected the token');
+    failIfSitesAuth(result, token);
     if (!result.ok) {
       fail(`[vm] falha lendo comando ${commandId} (HTTP ${result.status}): ${result.payload.error ?? result.payload.msg ?? ''}`.trim());
     }
@@ -204,10 +222,7 @@ async function resolveToken(options) {
 
 async function loadServer({ baseUrl, token, projectId, fetchImpl }) {
   const listed = await sitesRequest(commandUrl(baseUrl, '', 'list'), { token, fetchImpl });
-  if (listed.status === 401) failAuth('collab-sites rejected the token');
-  if (listed.status === 403) {
-    fail('[vm] this token has no collab-sites:operator authority (admin.collab.codes is not the testing path)');
-  }
+  failIfSitesAuth(listed, token);
   if (!listed.ok) {
     fail(`[vm] could not read the sites inventory (HTTP ${listed.status}): ${listed.payload.error ?? listed.payload.msg ?? ''}`.trim());
   }
@@ -243,7 +258,7 @@ export async function run(argv, {
       body: { hold: parsed.hold },
       fetchImpl,
     });
-    if (result.status === 401) failAuth('collab-sites rejected the token');
+    failIfSitesAuth(result, token);
     if (!result.ok) fail(`[vm] hold falhou (HTTP ${result.status}): ${result.payload.error ?? result.payload.msg ?? ''}`.trim());
     stdout(statusView(result.payload.server ?? server));
     return 0;
@@ -256,7 +271,7 @@ export async function run(argv, {
     body,
     fetchImpl,
   });
-  if (queued.status === 401) failAuth('collab-sites rejected the token');
+  failIfSitesAuth(queued, token);
   if (!queued.ok) {
     fail(`[vm] ${parsed.command} falhou (HTTP ${queued.status}): ${queued.payload.error ?? queued.payload.msg ?? ''}`.trim());
   }

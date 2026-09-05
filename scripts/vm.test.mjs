@@ -12,6 +12,7 @@ import {
   findServerByProjectId,
   parseArgs,
   sitesBaseUrl,
+  sitesForbiddenMessage,
 } from './vm.mjs';
 
 const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -70,6 +71,38 @@ test('a URL é montada a partir do projectId via inventário, não instanceId', 
     'https://sites.collab.codes/api/v1/servers/srv_abc/platform-deps/update',
   );
   assert.equal(findServerByProjectId([hosted], '102099'), null);
+});
+
+function jwt(payload) {
+  const part = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  return `${part({ alg: 'RS256' })}.${part(payload)}.assinatura`;
+}
+
+test('403 sem active_org diz que o token não carrega organização — não inventa falta de operator', () => {
+  const token = jwt({
+    email: 'w@collab.codes',
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    orgs: [{ id: '603ebd39-1111', slug: 'collab', role: 'member' }],
+    active_org: null,
+  });
+  const message = sitesForbiddenMessage(token);
+  assert.match(message, /does not carry an organization/u);
+  assert.match(message, /active_org is missing/u);
+  assert.match(message, /org_id/u);
+  assert.doesNotMatch(message, /operator/u);
+  assert.doesNotMatch(message, /collab-sites:admin/u);
+});
+
+test('403 com active_org sem papel cita collab-sites:admin, o papel que a rota exigiu', () => {
+  const token = jwt({
+    email: 'w@collab.codes',
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    active_org: { id: '603ebd39-1111', slug: 'collab', teams: [] },
+  });
+  const message = sitesForbiddenMessage(token);
+  assert.match(message, /collab-sites:admin/u);
+  assert.doesNotMatch(message, /operator/u);
+  assert.doesNotMatch(message, /does not carry an organization/u);
 });
 
 test('parseArgs: hold on|off e ids do deps-update', () => {
