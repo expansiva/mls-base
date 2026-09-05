@@ -518,7 +518,7 @@ whichever project pushed last — always point an app at `current-<id>`.
 ## Where it stands (04/09/2026)
 
 - The tarball/python publisher is gone (gb73). `publish` / `publish:git` / `publish:remote` all
-  call `publishGit.mjs`.
+  call `publishGit.mjs`. The collab-sites tarball job (authorize-by-link) is gone (gb81).
 - Validated end to end on lima and the remote 102043 VM: a push-created release runs.
 - `servers/remote.conf.example` is the template; the real `remote.conf` is gitignored and filled
   per VM.
