@@ -7,11 +7,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   clientIdForRelease,
+  compileFecho,
   evaluateBuild,
+  fechoCompileVerdict,
+  fechoMissingMessage,
   firstTscExcerpt,
   formatErrorOutput,
   formatOkMarker,
   gateMessage,
+  parseBuildObjSummary,
+  planFechoCompile,
   trackedDirtyPaths, authorNote,
   restoreWorktree, shouldDeferPm2Reload, scheduleDetachedPm2Reload, pm2ConfigRel,
 } from './gitPostReceive.mjs';
@@ -273,6 +278,95 @@ test('o hook sempre passa --skip-pm2 e só recarrega depois do restoreWorktree',
   assert.ok(restoreCall > 0 && markerCall > restoreCall, 'marker after restore');
   assert.ok(reloadCall > markerCall, 'pm2 after marker');
   assert.equal(pm2ConfigRel(tmpdir()), 'servers/pm2.config.js');
+});
+
+test('o hook compila o fecho incremental depois do gate e antes da release', () => {
+  const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
+  const gate = src.indexOf("['scripts/runtime/buildProjectsObj.mjs', '--only', id, '--force']");
+  const fecho = src.indexOf('compileFecho(root, clientId)');
+  const release = src.indexOf("releaseArgs = ['scripts/runtime/addNewVersion.mjs']");
+  assert.ok(gate > 0 && fecho > gate, 'fecho after pushed-project --force gate');
+  assert.ok(release > fecho, 'release after fecho compile');
+  assert.match(src, /CBE_BUILD_OBJS: 'false'/);
+});
+
+test('fecho é lido do l5/config.json do cliente e compilado sem --force', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb92-fecho-'));
+  try {
+    mkdirSync(join(root, 'mls-900001', 'l5'), { recursive: true });
+    mkdirSync(join(root, 'mls-900002'), { recursive: true });
+    writeFileSync(
+      join(root, 'mls-900001', 'l5', 'config.json'),
+      JSON.stringify({
+        projects: {
+          900001: { type: 'client' },
+          900002: { type: 'master frontend' },
+          900003: { type: 'lib' },
+        },
+      }),
+    );
+    const plan = planFechoCompile(root, '900001');
+    assert.deepEqual(plan.ids, ['900001', '900002', '900003']);
+    assert.deepEqual(plan.present, ['900001', '900002']);
+    assert.deepEqual(plan.missing, ['900003']);
+    assert.deepEqual(plan.args, ['scripts/runtime/buildProjectsObj.mjs', '--only', '900001,900002']);
+    assert.equal(plan.args.includes('--force'), false);
+
+    const calls = [];
+    const notes = [];
+    const run = async (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      return { code: 0, out: '[buildProjectsObj] summary: built [-] | up-to-date [900001, 900002] | failed [-]' };
+    };
+    const result = await compileFecho(root, '900001', { run, write: (text) => notes.push(text) });
+    assert.equal(result.ok, true);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args, plan.args);
+    assert.equal(calls[0].opts.env.BUILDCI_OFFLINE, '1');
+    assert.equal(calls[0].args.includes('--force'), false);
+    assert.ok(notes.some((line) => line.includes(fechoMissingMessage('900003'))));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('falha de um projeto do fecho aborta nomeando-o', () => {
+  const out = [
+    '[buildProjectsObj] mls-900002 FAILED (previous obj stays): boom',
+    '[buildProjectsObj] summary: built [900001] | up-to-date [-] | failed [900002]',
+  ].join('\n');
+  const result = fechoCompileVerdict(0, out);
+  assert.equal(result.ok, false);
+  assert.equal(result.project, 'mls-900002');
+  const printed = formatErrorOutput(result.project, result.verdict);
+  assert.match(printed, /##gitBackend build=error project=mls-900002##/);
+});
+
+test('projeto do fecho ausente na VM só registra, não entra no --only', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb92-fecho-miss-'));
+  try {
+    mkdirSync(join(root, 'mls-900001', 'l5'), { recursive: true });
+    writeFileSync(
+      join(root, 'mls-900001', 'l5', 'config.json'),
+      JSON.stringify({ projects: { 900001: { type: 'client' }, 900002: { type: 'lib' } } }),
+    );
+    const plan = planFechoCompile(root, '900001');
+    assert.deepEqual(plan.missing, ['900002']);
+    assert.deepEqual(plan.present, ['900001']);
+    assert.equal(plan.args[2], '900001');
+    const notes = [];
+    const run = async () => ({ code: 0, out: '[buildProjectsObj] summary: built [-] | up-to-date [900001] | failed [-]' });
+    await compileFecho(root, '900001', { run, write: (text) => notes.push(text) });
+    assert.ok(notes.some((line) => line.includes(fechoMissingMessage('900002'))));
+    assert.equal(fechoMissingMessage('900002'), 'gitPostReceive: mls-900002 não existe na VM — ignorado');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('parseBuildObjSummary lê built / up-to-date / failed', () => {
+  const parsed = parseBuildObjSummary('[buildProjectsObj] summary: built [900001] | up-to-date [900002] | failed [-]');
+  assert.deepEqual(parsed, { built: ['900001'], skipped: ['900002'], failed: [] });
 });
 
 test('authorNote anota divergência entre quem empurrou e quem assinou o commit', () => {

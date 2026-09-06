@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,11 @@ import { collectReleaseStamp, writeReleaseStamp } from './releaseStamp.mjs';
 import { APPS_DIR, PM2_CONFIG, ensureProjectApp } from './vmApps.mjs';
 import {
   VM_TSCONFIG,
+  activateCurrent,
+  assertFechoCompiledZips,
   discoverProjects,
+  extrasOutsideFecho,
+  fechoProjectIds,
   pm2ConfigRel,
   skipPm2,
   updateTsconfigPaths,
@@ -130,7 +134,7 @@ test('release worktree: nenhum arquivo rastreado do mls-base fica sujo (gb73 E2)
 
     const addSrc = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
     assert.match(addSrc, /join\(ROOT, 'releases'\)/);
-    assert.match(addSrc, /join\(ROOT, 'current'\)/);
+    assert.match(addSrc, /join\((?:ROOT|root), 'current'\)/);
     assert.match(addSrc, /join\(ROOT, releaseAlias\)/);
     assert.match(addSrc, /join\(ROOT, 'logs'\)/);
     assert.match(addSrc, /join\(ROOT, 'config\.json'\)/);
@@ -164,6 +168,82 @@ test('.gitignore da raiz ignora current-* e pm2.apps.d (gb73 E5)', () => {
   const ignore = readFileSync(join(MLS_BASE, '.gitignore'), 'utf8');
   assert.match(ignore, /^current-\*$/m);
   assert.match(ignore, /^pm2\.apps\.d$/m);
+});
+
+test('sem compiled.zip de um projeto do fecho, current não muda e a mensagem lista o projeto', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb92-zip-'));
+  try {
+    const oldRel = join(root, 'releases', '20260101000000');
+    const newRel = join(root, 'releases', '20260102000000');
+    mkdirSync(oldRel, { recursive: true });
+    mkdirSync(newRel, { recursive: true });
+    symlinkSync(oldRel, join(root, 'current'));
+    mkdirSync(join(root, 'mls-900001', 'obj'), { recursive: true });
+    writeFileSync(join(root, 'mls-900001', 'obj', 'compiled.zip'), 'zip');
+    mkdirSync(join(root, 'mls-900002'), { recursive: true });
+    const before = readlinkSync(join(root, 'current'));
+    assert.throws(
+      () => activateCurrent(root, newRel, ['900001', '900002']),
+      /release aborted: obj\/compiled\.zip missing for mls-900002/,
+    );
+    assert.equal(readlinkSync(join(root, 'current')), before);
+    assert.equal(resolve(readlinkSync(join(root, 'current'))), resolve(oldRel));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('com zip de todo o fecho, activateCurrent troca o current', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb92-zip-ok-'));
+  try {
+    const oldRel = join(root, 'releases', '20260101000000');
+    const newRel = join(root, 'releases', '20260102000000');
+    mkdirSync(oldRel, { recursive: true });
+    mkdirSync(newRel, { recursive: true });
+    symlinkSync(oldRel, join(root, 'current'));
+    for (const id of ['900001', '900002']) {
+      mkdirSync(join(root, `mls-${id}`, 'obj'), { recursive: true });
+      writeFileSync(join(root, `mls-${id}`, 'obj', 'compiled.zip'), 'zip');
+    }
+    activateCurrent(root, newRel, ['900001', '900002']);
+    assert.equal(resolve(readlinkSync(join(root, 'current'))), resolve(newRel));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('assertFechoCompiledZips lista todos os zips ausentes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb92-zip-list-'));
+  try {
+    mkdirSync(join(root, 'mls-900001'), { recursive: true });
+    mkdirSync(join(root, 'mls-900002'), { recursive: true });
+    assert.throws(
+      () => assertFechoCompiledZips(root, ['900001', '900002']),
+      /release aborted: obj\/compiled\.zip missing for mls-900001, mls-900002/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('activateCurrent corre antes do ln do alias (current não muda se o zip falta)', () => {
+  const src = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
+  const guard = src.indexOf('activateCurrent(ROOT, releaseDir, fechoProjectIds(releaseConfig))');
+  const currentLog = src.indexOf("console.log(`--- current -> releases/${releaseId}`)");
+  const alias = src.indexOf("run(`ln -sfn '${releaseDir}' '${join(ROOT, releaseAlias)}'`)");
+  assert.ok(guard > 0 && currentLog > guard && alias > currentLog);
+});
+
+test('CBE_BUILD_OBJS=false pula só quem está fora do fecho', () => {
+  assert.deepEqual(
+    extrasOutsideFecho(['900001', '900002', '100554', '100555'], ['900001', '900002']),
+    ['100554', '100555'],
+  );
+  assert.deepEqual(fechoProjectIds({ projects: { 900001: { type: 'client' }, 900002: { type: 'lib' } } }), ['900001', '900002']);
+  const src = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
+  assert.match(src, /extrasOutsideFecho\(ids, fechoProjectIds\(releaseConfig\)\)/);
+  assert.match(src, /CBE_BUILD_OBJS !== 'false' && extras\.length > 0/);
+  assert.doesNotMatch(src, /run\('node scripts\/runtime\/buildProjectsObj\.mjs'\)/);
 });
 
 test('discoverProjects ignora mls-*-temp e arquivos', () => {

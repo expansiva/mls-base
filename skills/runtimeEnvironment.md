@@ -126,10 +126,14 @@ NOTE: the VM origin must be an allowed returnTo on collab-auth.
 ## Project compilation ON the VM (replaces GitHub Actions)
 
 The per-repo GitHub Actions (mls-ci) used to produce each project's `obj/*.zip`; the VM now
-builds its own: `scripts/runtime/buildProjectsObj.mjs` (run by addNewVersion after pm2 reload;
-`pnpm build:objs` manually; `CBE_BUILD_OBJS=false` skips) iterates every `mls-*` at the base,
-rebuilds stale projects through the local `scripts/buildCI` pipeline in offline mode (shipped
-`types/`, sha1 versionRefs when there is no `.git`) and copies the zips into `mls-<id>/obj/`.
+builds its own: `scripts/runtime/buildProjectsObj.mjs`. The git hook compiles the client's
+fecho (`l5/config.json` `projects`) incrementally — `--only` those ids, no `--force` —
+**before** the release; `addNewVersion` then refuses `ln -sfn current` if any fecho
+`obj/compiled.zip` is missing. After activation, the obj pass is best-effort and only for
+projects **outside** the fecho (Studio: 100554, …); `CBE_BUILD_OBJS=false` skips those
+extras, never the fecho. `pnpm build:objs` still iterates every `mls-*` at the base.
+Rebuilds go through the local `scripts/buildCI` pipeline in offline mode (shipped
+`types/`, sha1 versionRefs when there is no `.git`) and copy the zips into `mls-<id>/obj/`.
 Incremental by source mtime; a project that fails to build keeps its previous obj. A
 `publishGit` of the client also pushes a snapshot of each declared dep; it does not ship
 every `mls-*` on disk.

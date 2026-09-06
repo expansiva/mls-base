@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// gitPostReceive.mjs — compile the pushed mls-* project; on success cut a
+// gitPostReceive.mjs — compile the pushed mls-* project and, incrementally,
+// the client's fecho (`l5/config.json` projects, no --force); on success cut a
 // release via addNewVersion.mjs. Invoked by gitPostReceive.sh while holding
 // /data/mls-base/.gitbuild.lock. The shell wrapper always exits 0 (A1).
 //
@@ -355,6 +356,97 @@ export function clientIdForRelease(root, pushedId = '') {
   return { clientId: clientOf(join(root, 'config.json')), ownClient: false };
 }
 
+/** Ids in `config.projects` — the release fecho the browser will load from obj/compiled.zip. */
+export function fechoProjectIds(config) {
+  return Object.keys(config?.projects ?? {}).filter((id) => /^\d+$/u.test(String(id)));
+}
+
+export function readFechoIds(root, clientId) {
+  if (!clientId) return [];
+  try {
+    const config = JSON.parse(readFileSync(join(root, `mls-${clientId}`, 'l5', 'config.json'), 'utf8'));
+    return fechoProjectIds(config);
+  } catch {
+    return [];
+  }
+}
+
+export function fechoMissingMessage(id) {
+  return `gitPostReceive: mls-${id} não existe na VM — ignorado`;
+}
+
+/**
+ * Incremental compile of the client's fecho: `--only` the projects on disk,
+ * never `--force`. Missing folders are logged, not a failure (same as deps).
+ */
+export function planFechoCompile(root, clientId) {
+  const ids = readFechoIds(root, clientId);
+  const present = [];
+  const missing = [];
+  for (const id of ids) {
+    if (existsSync(join(root, `mls-${id}`))) present.push(id);
+    else missing.push(id);
+  }
+  return {
+    ids,
+    present,
+    missing,
+    args: present.length > 0
+      ? ['scripts/runtime/buildProjectsObj.mjs', '--only', present.join(',')]
+      : null,
+  };
+}
+
+export function parseBuildObjSummary(out) {
+  const m = /\[buildProjectsObj\] summary: built \[([^\]]*)\] \| up-to-date \[([^\]]*)\] \| failed \[([^\]]*)\]/u
+    .exec(String(out ?? ''));
+  const parse = (raw) => {
+    const text = String(raw ?? '').trim();
+    if (!text || text === '-') return [];
+    return text.split(',').map((part) => part.trim()).filter(Boolean);
+  };
+  if (!m) return { built: [], skipped: [], failed: [] };
+  return { built: parse(m[1]), skipped: parse(m[2]), failed: parse(m[3]) };
+}
+
+function asMls(id) {
+  return `mls-${String(id).replace(/^mls-/u, '')}`;
+}
+
+/**
+ * A batched `--only a,b,c` exits 0 when any id is up-to-date even if another
+ * failed (`buildProjectsObj` only exits 1 when nothing built and nothing skipped).
+ * Name the failed project the same way the dep loop names a dep.
+ */
+export function fechoCompileVerdict(code, out, fallbackIds = []) {
+  const verdict = evaluateBuild(code, out);
+  const summary = parseBuildObjSummary(out);
+  if (summary.failed.length > 0) {
+    return { ok: false, project: asMls(summary.failed[0]), verdict };
+  }
+  if (!verdict.ok) {
+    const named = verdict.blocked?.[0] ?? fallbackIds[0];
+    return { ok: false, project: named ? asMls(named) : 'mls-unknown', verdict };
+  }
+  return { ok: true, project: '', verdict };
+}
+
+export async function compileFecho(root, clientId, { run = runLive, write = (text) => process.stderr.write(text) } = {}) {
+  const plan = planFechoCompile(root, clientId);
+  for (const id of plan.missing) write(`${fechoMissingMessage(id)}\n`);
+  if (!plan.args) return { ok: true, project: '', present: plan.present };
+  write(`gitPostReceive: compilando fecho ${plan.present.map((id) => `mls-${id}`).join(', ')}\n`);
+  const build = await run('node', plan.args, {
+    cwd: root,
+    env: { ...process.env, BUILDCI_OFFLINE: '1' },
+  });
+  const result = fechoCompileVerdict(build.code, build.out, plan.present);
+  if (result.ok) {
+    for (const id of plan.present) restoreWorktree(root, `mls-${id}`);
+  }
+  return { ...result, present: plan.present };
+}
+
 function runLive(command, args, opts) {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
@@ -500,6 +592,16 @@ async function main() {
   }
 
   const { clientId, ownClient } = clientIdForRelease(root, id);
+  // Fecho incremental (no --force): zip of every config.projects id, including
+  // platform deps that arrived via deps-update rather than this push. Missing
+  // folders are ignored; a compile/typeCheck failure names the project and
+  // the release does not go up.
+  const fecho = await compileFecho(root, clientId);
+  if (!fecho.ok) {
+    printError(fecho.project, fecho.verdict);
+    return;
+  }
+
   const releaseArgs = ['scripts/runtime/addNewVersion.mjs'];
   if (clientId) releaseArgs.push('--client', clientId);
   // Reload is ours: restoreWorktree and the ok marker must run first. On https
@@ -528,8 +630,8 @@ async function main() {
     releaseArgs,
     {
       cwd: root,
-      // Gate already built this project's obj. Other projects' objs already
-      // exist on the VM (needed by cbe login, not by scripts/build.mjs).
+      // Fecho objs were just compiled incrementally. CBE_BUILD_OBJS=false now
+      // skips only projects outside config.projects (Studio), not the fecho.
       env: releaseEnv,
     },
   );

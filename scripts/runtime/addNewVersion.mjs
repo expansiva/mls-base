@@ -122,6 +122,37 @@ export function skipPm2(argv) {
   return argv.includes('--skip-pm2');
 }
 
+/** Ids in `config.projects` — the release fecho served from obj/compiled.zip. */
+export function fechoProjectIds(config) {
+  return Object.keys(config?.projects ?? {}).filter((id) => /^\d+$/u.test(String(id)));
+}
+
+export function missingCompiledZips(root, ids) {
+  return ids.filter((id) => !existsSync(join(root, `mls-${id}`, 'obj', 'compiled.zip')));
+}
+
+/**
+ * Same condition `hasCompiledZip` uses to decide 404: no zip, no module.
+ * Throw before `ln -sfn current` so the previous release stays live.
+ */
+export function assertFechoCompiledZips(root, ids) {
+  const missing = missingCompiledZips(root, ids);
+  if (missing.length === 0) return;
+  const list = missing.map((id) => `mls-${id}`).join(', ');
+  throw new Error(`release aborted: obj/compiled.zip missing for ${list}`);
+}
+
+export function activateCurrent(root, releaseDir, fechoIds) {
+  assertFechoCompiledZips(root, fechoIds);
+  execSync(`ln -sfn '${releaseDir}' '${join(root, 'current')}'`);
+}
+
+/** Studio / extra mls-* on disk that are not in this release's config.projects. */
+export function extrasOutsideFecho(diskIds, fechoIds) {
+  const fecho = new Set(fechoIds);
+  return diskIds.filter((id) => !fecho.has(id));
+}
+
 export function pm2ConfigRel(root) {
   return existsSync(join(root, 'pm2.config.js')) ? 'pm2.config.js' : 'servers/pm2.config.js';
 }
@@ -199,7 +230,9 @@ function main() {
   }
 
   // Atomic activation: point current -> releases/<id> (ln -sfn replaces in place).
-  run(`ln -sfn '${releaseDir}' '${join(ROOT, 'current')}'`);
+  // Guard = detector: every fecho project must have obj/compiled.zip (same
+  // existsSync hasCompiledZip uses) or the previous release stays live.
+  activateCurrent(ROOT, releaseDir, fechoProjectIds(releaseConfig));
   console.log(`--- current -> releases/${releaseId}`);
 
   const releaseAlias = process.env.COLLAB_RELEASE_ALIAS || '';
@@ -233,18 +266,20 @@ function main() {
     try { run('pm2 save'); } catch { /* non-fatal */ }
   }
 
-  // Refresh the per-project obj zips the cbe login serves (mls-<id>/obj/*.zip).
-  // This replaces the GitHub Actions (mls-ci) builds: the VM compiles its own
-  // copies from the synced sources. Incremental + best-effort, AFTER activation:
-  // a project that fails to build keeps its previous obj and never blocks the
-  // release. Disable with CBE_BUILD_OBJS=false in the .env.
-  if (process.env.CBE_BUILD_OBJS !== 'false') {
-    console.log('--- building project objs for the cbe login (CBE_BUILD_OBJS=false to skip)');
+  // Refresh objs of projects OUTSIDE the release fecho (Studio: 100554, …).
+  // Incremental + best-effort, AFTER activation. The fecho was compiled before
+  // current switched (git hook) and is required by assertFechoCompiledZips —
+  // CBE_BUILD_OBJS=false skips only these extras, never the fecho.
+  const extras = extrasOutsideFecho(ids, fechoProjectIds(releaseConfig));
+  if (process.env.CBE_BUILD_OBJS !== 'false' && extras.length > 0) {
+    console.log(`--- building objs outside the fecho (${extras.map((id) => `mls-${id}`).join(', ')}; CBE_BUILD_OBJS=false to skip)`);
     try {
-      run('node scripts/runtime/buildProjectsObj.mjs');
+      run(`node scripts/runtime/buildProjectsObj.mjs --only ${extras.join(',')}`);
     } catch (error) {
       console.error(`[addNewVersion] obj build failed (release stays active): ${error instanceof Error ? error.message : String(error)}`);
     }
+  } else if (process.env.CBE_BUILD_OBJS === 'false') {
+    console.log('--- obj build skipped for projects outside the fecho (CBE_BUILD_OBJS=false)');
   }
 
   console.log(`addNewVersion done (release ${releaseId}).`);

@@ -5,8 +5,8 @@
 // compile the component .less with design-system tokens and inject
 // `if(this.loadStyle) this.loadStyle(`<css>`)` after super() in the compiled
 // per-file JS). It only works on per-file tsc output that keeps the
-// `/// <mls ... />` header (dist/local, dist/mls-<id>); esbuild bundles
-// (dist/web) strip that header and are NOT supported.
+// `/// <mls ... />` header (dist/local, dist/mls-<id>). dist/web no longer
+// holds app JS (no bundle), so this script does not run there.
 //
 // mls-ci hardcodes its paths (cwd/preBuild/_<id>_/l2 for the JS,
 // <pkg>/../../l2 for the .less). Under pnpm the package resolves into the

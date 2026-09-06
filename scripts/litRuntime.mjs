@@ -1,15 +1,10 @@
 // litRuntime.mjs — o Lit em UM lugar só, para o app inteiro.
 //
-// Antes: o `dist/web` empacotava o Lit do node_modules dentro dos chunks, e o
-// importmap dos shells mandava o `lit` bare para o jsdelivr. Quem era servido
-// pelo `obj/compiled.zip` (fonte crua) pegava o CDN; quem vinha do `dist/web`
-// pegava a cópia inlinada. Dois Lit no mesmo documento — `instanceof` mente,
-// e um custom element compartilhado registra duas vezes.
-//
-// Agora: os módulos do Lit são emitidos UMA vez em `<dist>/_libs/lit/` (com
-// `splitting`, então o `reactive-element` existe em um único chunk), o esbuild
-// do app marca `lit` como `external`, e o importmap dos shells — gerado daqui —
-// aponta os dois mundos para essas mesmas URLs.
+// Os módulos do Lit são emitidos UMA vez em `<dist>/_libs/lit/` (com
+// `splitting`, então o `reactive-element` existe em um único chunk). O
+// importmap dos shells — gerado daqui — é a única forma de `lit` chegar ao
+// browser: todo módulo do app vem do zip, e o importmap aponta os specifiers
+// `lit` para essas URLs.
 //
 // A configuração mora no master frontend aura (`mls-102033/l2/shared/litRuntime.json`),
 // não aqui: é decisão de plataforma, não de script de build.

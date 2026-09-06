@@ -4,7 +4,8 @@
 //   server  -> dist/local/_<id>_/...   (tsc emit; /_<id>_/ imports rewritten to
 //                                        relative, completing .js when the target
 //                                        exists in dist; resources copied; .js.map)
-//   web     -> dist/web/_<id>_/...      (esbuild bundle of the frontend; .map)
+//   web     -> dist/<target>/            (Lit único + shells com importmap + css +
+//                                        l3; módulos do app vêm do compiled.zip)
 //
 // Source folders stay as mls-<id>; the output uses the _<id>_ layout the Forge
 // runtime expects (resolveProjectDistPath -> dist/local/_<id>_, and the active
@@ -19,7 +20,6 @@
 //                                             # publish: compile without recomposing config
 //   node scripts/build.mjs --targets web,cdncloudflare
 
-import { build as esbuild } from 'esbuild';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
@@ -30,11 +30,9 @@ import {
   emitLitRuntime,
   injectImportMap,
   litExportEntries,
-  litExternals,
   litPackageDir,
   readLitRuntimeConfig,
 } from './litRuntime.mjs';
-import { BUNDLED_MODULES_MANIFEST, bundledModuleUrls } from './bundleManifest.mjs';
 import { readTypeCheckPolicy } from './typeCheckPolicy.mjs';
 import { typeCheckProject } from './typeCheckRun.mjs';
 
@@ -269,88 +267,6 @@ export function setProjectRoot(id, absPath) {
 function clientConfigPath(id) {
   // Single source of truth: mls-<id>/l5/config.json (composed by the publish generators).
   return join(projectDir(id), 'l5', 'config.json');
-}
-
-// Resolve a "/_<id>_/rest" specifier (or relative source) to a real .ts/.js file.
-function resolveSource(spec, fromDir) {
-  let base;
-  const m = /^\/_(\d+)_\/(.+)$/u.exec(spec);
-  if (m) {
-    base = resolve(projectDir(m[1]), m[2]);
-  } else if (spec.startsWith('/')) {
-    base = resolve(ROOT, spec.slice(1));
-  } else {
-    base = resolve(fromDir, spec);
-  }
-
-  const candidates = [base];
-  if (extname(base) === '.js') {
-    candidates.push(`${base.slice(0, -3)}.ts`, `${base.slice(0, -3)}.tsx`);
-  }
-  if (!extname(base)) {
-    candidates.push(`${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx'));
-  }
-  return candidates.find((c) => existsSync(c));
-}
-
-// Output key (_<id>_/relpath without extension) for an absolute source file.
-function outputKey(absFile) {
-  const posix = toPosix(absFile);
-  const m = /\/mls-(\d+)\/(.+)$/u.exec(posix);
-  if (!m) return undefined;
-  return `_${m[1]}_/${m[2].replace(/\.(ts|tsx|js|jsx)$/u, '')}`;
-}
-
-// `./_102033_/l2/cbe/x.js` → `/_102033_/l2/cbe/x.js`. Non-virtual specs stay as-is
-// so resolveSource still resolves them from fromDir.
-export function normalizeVirtualSpec(spec) {
-  const withoutDot = spec.replace(/^\.\//u, '');
-  const virtual = withoutDot.startsWith('/') ? withoutDot : `/${withoutDot}`;
-  return /^\/_\d+_\//u.test(virtual) ? virtual : spec;
-}
-
-// Modules the browser fetches by URL at runtime via `import(variable)`.
-// esbuild cannot rewrite those, so the URL survives in the emitted JS
-// and 404s unless the file is an entrypoint (a small re-export shim).
-// Keep the import dynamic: studio mode is lazy and must not land in
-// the initial chunk. Explicit list — not a source scan: the surviving-URL
-// guard fails the build when a new literal has no file; add it here.
-export const RUNTIME_URL_ENTRYPOINTS = [
-  '/_102033_/l2/cbe/studioStructure.js',
-  '/_100554_/l2/enhancementStyle.js',
-];
-
-// Tokens file the runtime loads by constructed URL
-// (`/_${projectId}_/l2/designSystem.js` in designSystemRuntime / bootstrap).
-// Must be its own entrypoint — inlining it into a chunk would make two copies
-// if anything else also fetched the URL, and the zip is going away.
-export const DESIGN_SYSTEM_MODULE = 'l2/designSystem.js';
-
-export function designSystemSpecs(clientConfig) {
-  return Object.keys(clientConfig?.projects ?? {}).map(
-    (id) => `/_${id}_/${DESIGN_SYSTEM_MODULE}`,
-  );
-}
-
-const SURVIVING_MODULE_URL_RE = /["'`](\/_\d+_\/[^"'`\s]+\.js)["'`]/gu;
-
-function regionRendererSpecs(region) {
-  if (!region || typeof region !== 'object') return [];
-  const specs = [];
-  if (typeof region.entrypoint === 'string' && region.entrypoint) {
-    specs.push(region.entrypoint);
-  }
-  for (const profile of Object.values(region.profiles ?? {})) {
-    const renderer = profile?.renderer;
-    if (!renderer || typeof renderer !== 'object') continue;
-    if (typeof renderer.source === 'string' && renderer.source) {
-      specs.push(renderer.source);
-    }
-    if (typeof renderer.entrypoint === 'string' && renderer.entrypoint) {
-      specs.push(renderer.entrypoint);
-    }
-  }
-  return specs;
 }
 
 async function pathExists(p) {
@@ -596,18 +512,6 @@ async function buildServer(ids) {
 }
 
 // ── web build (dist/<target>) ────────────────────────────────────────────────
-function aliasPlugin() {
-  return {
-    name: 'collab-alias',
-    setup(api) {
-      api.onResolve({ filter: /^\/_\d+_\/(core|l1|l2)\// }, (args) => {
-        const resolved = resolveSource(args.path, args.resolveDir);
-        return resolved ? { path: resolved } : null;
-      });
-    },
-  };
-}
-
 // Resolve a virtual path like "./_102033_/l2/.../index.html" to its real source
 // file and its dist-relative path (which keeps the _<id>_ form).
 function resolveVirtual(p) {
@@ -617,188 +521,16 @@ function resolveVirtual(p) {
   return { abs, rel };
 }
 
-export function collectEntrypoints(clientConfig, clientRoot) {
-  const entries = {};
-  const addSource = (src, fromDir) => {
-    const file = resolveSource(src, fromDir);
-    if (!file) return;
-    const key = outputKey(file);
-    if (key) entries[key] = file;
-  };
-
-  // entrypoints declared inside each module's moduleFrontendDefinition (module.ts):
-  //   headerRenderer/asideRenderer/routes -> entrypoint: '/_<id>_/l2/.../x.js'
-  const entryRe = /entrypoint\s*:\s*["'](\/_\d+_\/[^"']+\.js)["']/gu;
-  for (const [projId, project] of Object.entries(clientConfig.projects ?? {})) {
-    const projRoot = projectDir(projId);
-    for (const mod of project.modules ?? []) {
-      const fe = mod.frontend;
-      if (fe?.moduleSource) addSource(fe.moduleSource, projRoot);
-      for (const page of fe?.pages ?? []) {
-        if (page.source) addSource(page.source, projRoot);
-      }
-      // Generated BFF test files (page11 <page>.test.ts) — tsc excludes **/*.test.ts, so the
-      // entrypoint-driven esbuild is the only path that emits their compiled .js into the dist the
-      // monitor Tests runner resolves. Stored as "_<id>_/..." (no leading slash); normalize to a
-      // "/_<id>_/..." specifier so resolveSource matches and falls back to the .test.ts source.
-      for (const testPath of fe?.pageTests ?? []) {
-        addSource(testPath.startsWith('/') ? testPath : `/${testPath.replace(/^\.\//u, '')}`, projRoot);
-      }
-      // covers modules without config "pages" (e.g. the master-backend monitor)
-      const moduleFile = fe?.moduleSource
-        ? resolve(projRoot, fe.moduleSource)
-        : join(projRoot, 'l2', mod.moduleId, 'module.ts');
-      if (existsSync(moduleFile)) {
-        const src = readFileSync(moduleFile, 'utf8');
-        let mm;
-        while ((mm = entryRe.exec(src)) !== null) addSource(mm[1], projRoot);
-      }
-    }
+export async function buildWeb(clientConfig, targetName, ids) {
+  if (!clientConfig.publication?.targets?.[targetName]) {
+    throw new Error(`Unknown publication target "${targetName}" in config.json`);
   }
-
-  // Flat `regions[name].entrypoint` (the form clientShell ships) and
-  // `regions[name].profiles[].renderer.{source,entrypoint}`.
-  const regions = clientConfig.clientShell?.regions ?? {};
-  for (const region of Object.values(regions)) {
-    for (const spec of regionRendererSpecs(region)) {
-      addSource(normalizeVirtualSpec(spec), clientRoot);
-    }
-  }
-
-  // The shell HTML declares the initial module script (the frontend bootstrap),
-  // e.g. <script type="module" src="/_102033_/l2/shared/bootstrap.js">. Collect
-  // every module script referenced there as an entrypoint.
-  const scriptRe = /<script[^>]+type=["']module["'][^>]+src=["'](\/_\d+_\/[^"']+)\.js["']/gu;
-  for (const shellPath of Object.values(clientConfig.shellTemplates ?? {})) {
-    const { abs } = resolveVirtual(shellPath);
-    if (!existsSync(abs)) continue;
-    const html = readFileSync(abs, 'utf8');
-    let m;
-    while ((m = scriptRe.exec(html)) !== null) addSource(`${m[1]}.ts`, clientRoot);
-  }
-
-  for (const spec of RUNTIME_URL_ENTRYPOINTS) {
-    addSource(spec, clientRoot);
-  }
-  for (const spec of designSystemSpecs(clientConfig)) {
-    addSource(spec, clientRoot);
-  }
-
-  return entries;
-}
-
-export function checkRegionEntrypointsEmitted(regions, outdir, fromDir) {
-  const missing = [];
-  const unresolved = [];
-  for (const [name, region] of Object.entries(regions ?? {})) {
-    for (const spec of regionRendererSpecs(region)) {
-      const file = resolveSource(normalizeVirtualSpec(spec), fromDir);
-      if (!file) {
-        unresolved.push({ region: name, entrypoint: spec });
-        continue;
-      }
-      const key = outputKey(file);
-      const emitted = key ? resolve(outdir, `${key}.js`) : undefined;
-      if (!emitted || !existsSync(emitted)) {
-        missing.push({ region: name, entrypoint: spec, source: file });
-      }
-    }
-  }
-  return { missing, unresolved };
-}
-
-export function reportRegionEntrypoints({ missing, unresolved }) {
-  for (const item of unresolved) {
-    log(`região ${item.region}: entrypoint ${item.entrypoint} não resolve para fonte no workspace — não emitido`);
-  }
-  if (missing.length === 0) return;
-  const lines = missing
-    .map((item) => `${item.region} | ${item.entrypoint} | ${item.source}`)
-    .join('\n');
-  throw new Error(
-    `clientShell.regions declara entrypoint(s) com fonte no workspace que o bundle não emitiu:\n${lines}`,
-  );
-}
-
-export function findSurvivingModuleUrls(source) {
-  const urls = [];
-  const re = new RegExp(SURVIVING_MODULE_URL_RE.source, SURVIVING_MODULE_URL_RE.flags);
-  let match;
-  while ((match = re.exec(source)) !== null) urls.push(match[1]);
-  return urls;
-}
-
-function walkFilesSync(root) {
-  if (!existsSync(root)) return [];
-  const out = [];
-  for (const entry of readdirSync(root, { withFileTypes: true, recursive: true })) {
-    if (entry.isFile()) out.push(join(entry.parentPath ?? entry.path, entry.name));
-  }
-  return out;
-}
-
-export const REQUIRED_MODULE_URL_FILE = '(required)';
-
-export function checkSurvivingModuleUrls(outdir, fromDir = ROOT, requiredUrls = []) {
-  const missing = [];
-  const unresolved = [];
-  const seen = new Set();
-  const consider = (file, url) => {
-    if (seen.has(url)) return;
-    seen.add(url);
-    const emitted = resolve(outdir, url.replace(/^\//u, ''));
-    if (existsSync(emitted)) return;
-    // Same split as checkRegionEntrypointsEmitted: a URL whose source is not
-    // on this machine cannot be emitted (Studio-only modules on a client VM).
-    if (!resolveSource(normalizeVirtualSpec(url), fromDir)) {
-      unresolved.push({ file, url });
-      return;
-    }
-    missing.push({ file, url });
-  };
-  for (const file of walkFilesSync(outdir)) {
-    if (extname(file) !== '.js') continue;
-    const rel = toPosix(relative(outdir, file));
-    if (rel === BUNDLED_MODULES_MANIFEST) continue;
-    const source = readFileSync(file, 'utf8');
-    for (const url of findSurvivingModuleUrls(source)) consider(rel, url);
-  }
-  // Constructed URLs (`/_${id}_/l2/designSystem.js`) never survive as literals,
-  // so the scan above cannot see them. requiredUrls is the list the runtime
-  // can still fetch — missing file here is the same 404.
-  for (const url of requiredUrls) {
-    if (seen.has(url)) continue;
-    const emitted = resolve(outdir, url.replace(/^\//u, ''));
-    if (existsSync(emitted)) {
-      seen.add(url);
-      continue;
-    }
-    if (!resolveSource(normalizeVirtualSpec(url), fromDir)) continue;
-    consider(REQUIRED_MODULE_URL_FILE, url);
-  }
-  return { missing, unresolved };
-}
-
-export function reportSurvivingModuleUrls({ missing, unresolved }) {
-  for (const item of unresolved) {
-    log(`${item.file} | ${item.url} | projeto ausente nesta máquina`);
-  }
-  if (missing.length === 0) return;
-  const lines = missing.map((item) => `${item.file} | ${item.url}`).join('\n');
-  throw new Error(
-    `bundle emite literal(is) /_<id>_/…js sem arquivo correspondente em dist — 404 em produção:\n${lines}`,
-  );
-}
-
-async function buildWeb(clientConfig, clientRoot, targetName, ids) {
-  const target = clientConfig.publication?.targets?.[targetName];
-  if (!target) throw new Error(`Unknown publication target "${targetName}" in config.json`);
 
   const outdir = resolve(DIST, targetName);
   await rm(outdir, { recursive: true, force: true });
 
-  // O Lit sai UMA vez, para os dois mundos (ver scripts/litRuntime.mjs). Tem de
-  // vir antes do bundle do app: e daqui que sai a lista de `external`.
+  // O Lit sai UMA vez em _libs/lit/ (ver scripts/litRuntime.mjs). O importmap
+  // dos shells, gerado abaixo, é a única forma de `lit` chegar ao browser.
   const litConfig = readLitRuntimeConfig(ROOT);
   const { dir: litPkgDir, pkgJson: litPkgJson } = litPackageDir(ROOT, litConfig.package);
   const litEntries = litExportEntries(litPkgJson);
@@ -806,56 +538,7 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
     root: ROOT, outdir, config: litConfig, entries: litEntries, pkgDir: litPkgDir,
   });
   log(`lit runtime -> ${litConfig.outDir} (${litCount} módulos, servidos em ${litConfig.baseUrl})`);
-
-  const entryPoints = collectEntrypoints(clientConfig, clientRoot);
-  log(`web build -> dist/${targetName} (${Object.keys(entryPoints).length} entrypoints)`);
-
-  const webBuild = await esbuild({
-    absWorkingDir: ROOT,
-    entryPoints,
-    outdir,
-    metafile: true,
-    platform: 'browser',
-    format: 'esm',
-    bundle: true,
-    external: litExternals(litConfig.package, litEntries),
-    splitting: true,
-    sourcemap: target.sourcemap === true,
-    minify: target.minify === true,
-    target: ['es2022'],
-    // Lit needs legacy (experimentalDecorators) semantics; with es2022 esbuild would
-    // otherwise default useDefineForClassFields=true and break @property fields
-    // ("Unsupported decorator location: field").
-    tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } },
-    chunkNames: '_chunks/[name]-[hash]',
-    plugins: [aliasPlugin()],
-    logLevel: 'info',
-  });
-
-  // Manifesto dos módulos que o esbuild ENGOLIU para dentro dos chunks. O
-  // fallback do `obj/compiled.zip` (cbeCompiledStatic) usa isto para recusar o
-  // gêmeo não-empacotado: servir as duas formas do mesmo módulo no mesmo
-  // documento cria duas cópias — para um custom element, `define` lança.
-  // Só os módulos INLINADOS entram. designSystem.js sai como entrypoint
-  // próprio (não inlinado); componentes do studio ainda caem no zip.
-  const bundledModules = bundledModuleUrls(webBuild.metafile);
-  await writeFile(
-    resolve(outdir, BUNDLED_MODULES_MANIFEST),
-    `${JSON.stringify(bundledModules, null, 2)}\n`,
-    'utf8',
-  );
-  log(`manifesto de módulos empacotados -> ${BUNDLED_MODULES_MANIFEST} (${bundledModules.length})`);
-
-  reportRegionEntrypoints(checkRegionEntrypointsEmitted(
-    clientConfig.clientShell?.regions ?? {},
-    outdir,
-    clientRoot,
-  ));
-  reportSurvivingModuleUrls(checkSurvivingModuleUrls(
-    outdir,
-    clientRoot,
-    [...RUNTIME_URL_ENTRYPOINTS, ...designSystemSpecs(clientConfig)],
-  ));
+  log(`web build -> dist/${targetName} (Lit + shells + css + l3; módulos do app vêm do zip)`);
 
   // copy l2 static resources (html/css/svg/json/md/assets) into dist/<target>
   let copied = 0;
@@ -901,8 +584,7 @@ async function buildWeb(clientConfig, clientRoot, targetName, ids) {
   await writeComponentStylesForWeb(clientConfig, outdir, ids);
 
   // copy shell templates referenced by config.json (kept in their _<id>_ path),
-  // injetando o importmap do Lit gerado acima — e a MESMA fonte que decidiu o
-  // `external` do bundle, para os dois mundos apontarem para as mesmas URLs.
+  // injetando o importmap do Lit gerado acima.
   const litImportMap = buildLitImportMap(litConfig.package, litConfig.baseUrl, litEntries);
   let shells = 0;
   for (const shellPath of Object.values(clientConfig.shellTemplates ?? {})) {
@@ -1011,7 +693,7 @@ async function main() {
     await buildServer(ids);
     // post-compile: compile each project's .less and inject into the per-file JS
     // (same mls-ci routine the GitHub Action uses; requires the /// <mls header,
-    // so it applies to dist/local only — esbuild output strips it)
+    // so it applies to dist/local only)
     run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local', ...ids]);
     await validateServerOutput(clientConfig);
     // make the chosen client config discoverable at the projects-dir root
@@ -1024,7 +706,7 @@ async function main() {
       ? args.targets.split(',').map((t) => t.trim()).filter(Boolean)
       : [clientConfig.publication?.defaultTarget ?? 'web'];
     for (const t of targets) {
-      await buildWeb(clientConfig, clientRoot, t, ids);
+      await buildWeb(clientConfig, t, ids);
     }
   }
 
