@@ -4,21 +4,20 @@
 //   server  -> dist/local/_<id>_/...   (tsc emit; /_<id>_/ imports rewritten to
 //                                        relative, completing .js when the target
 //                                        exists in dist; resources copied; .js.map)
-//   web     -> dist/<target>/            (Lit único + shells com importmap + css +
+//   web     -> dist/web/                 (Lit único + shells com importmap + css +
 //                                        l3; módulos do app vêm do compiled.zip)
 //
 // Source folders stay as mls-<id>; the output uses the _<id>_ layout the Forge
-// runtime expects (resolveProjectDistPath -> dist/local/_<id>_, and the active
-// publication target serves from dist/<target>).
+// runtime expects (resolveProjectDistPath -> dist/local/_<id>_, resolveWebDistPath
+// -> dist/web).
 //
 // Usage:
-//   node scripts/build.mjs                 # server + web (default target)
+//   node scripts/build.mjs                 # server + web
 //   node scripts/build.mjs --only server   # only dist/local
 //   node scripts/build.mjs --only web      # only dist/web
 //   node scripts/build.mjs --client 102043 # pick the client app config
 //   node scripts/build.mjs --client 102043 --use-existing-config --only server
 //                                             # publish: compile without recomposing config
-//   node scripts/build.mjs --targets web,cdncloudflare
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -44,6 +43,7 @@ function baseTsconfigRel() {
   return existsSync(resolve(ROOT, 'tsconfig.vm.json')) ? './tsconfig.vm.json' : './tsconfig.json';
 }
 const LOCAL_DIST = resolve(DIST, 'local');
+const WEB_DIST_DIR = 'web';
 const TSC_BIN = resolve(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
 const TS_SEGMENTS = ['core', 'l1', 'l2'];
 const RES_SEGMENTS = ['core', 'l1', 'l2', 'l5'];
@@ -511,7 +511,7 @@ async function buildServer(ids) {
   log(`copied ${copied} resource file(s) to dist/local`);
 }
 
-// ── web build (dist/<target>) ────────────────────────────────────────────────
+// ── web build (dist/web) ─────────────────────────────────────────────────────
 // Resolve a virtual path like "./_102033_/l2/.../index.html" to its real source
 // file and its dist-relative path (which keeps the _<id>_ form).
 function resolveVirtual(p) {
@@ -521,12 +521,8 @@ function resolveVirtual(p) {
   return { abs, rel };
 }
 
-export async function buildWeb(clientConfig, targetName, ids) {
-  if (!clientConfig.publication?.targets?.[targetName]) {
-    throw new Error(`Unknown publication target "${targetName}" in config.json`);
-  }
-
-  const outdir = resolve(DIST, targetName);
+export async function buildWeb(clientConfig, ids) {
+  const outdir = resolve(DIST, WEB_DIST_DIR);
   await rm(outdir, { recursive: true, force: true });
 
   // O Lit sai UMA vez em _libs/lit/ (ver scripts/litRuntime.mjs). O importmap
@@ -538,9 +534,9 @@ export async function buildWeb(clientConfig, targetName, ids) {
     root: ROOT, outdir, config: litConfig, entries: litEntries, pkgDir: litPkgDir,
   });
   log(`lit runtime -> ${litConfig.outDir} (${litCount} módulos, servidos em ${litConfig.baseUrl})`);
-  log(`web build -> dist/${targetName} (Lit + shells + css + l3; módulos do app vêm do zip)`);
+  log(`web build -> dist/${WEB_DIST_DIR} (Lit + shells + css + l3; módulos do app vêm do zip)`);
 
-  // copy l2 static resources (html/css/svg/json/md/assets) into dist/<target>
+  // copy l2 static resources (html/css/svg/json/md/assets) into dist/web
   let copied = 0;
   for (const id of ids) {
     const l2 = join(projectDir(id), 'l2');
@@ -557,7 +553,7 @@ export async function buildWeb(clientConfig, targetName, ids) {
     }
   }
   copied += await copyL3Assets(ids, outdir);
-  log(`copied ${copied} static file(s) to dist/${targetName}`);
+  log(`copied ${copied} static file(s) to dist/${WEB_DIST_DIR}`);
 
   // compile Tailwind for each master-frontend project, overwriting the copied
   // source css with the built one. @source covers every project's l2 so
@@ -651,11 +647,10 @@ function detectClientId(explicit) {
 }
 
 function parseArgs(argv) {
-  const args = { only: '', client: '', targets: '', useExistingConfig: false };
+  const args = { only: '', client: '', useExistingConfig: false };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--only') args.only = argv[++i] ?? '';
     else if (argv[i] === '--client') args.client = argv[++i] ?? '';
-    else if (argv[i] === '--targets') args.targets = argv[++i] ?? '';
     else if (argv[i] === '--use-existing-config') args.useExistingConfig = true;
   }
   return args;
@@ -702,12 +697,7 @@ async function main() {
   }
 
   if (args.only !== 'server') {
-    const targets = args.targets
-      ? args.targets.split(',').map((t) => t.trim()).filter(Boolean)
-      : [clientConfig.publication?.defaultTarget ?? 'web'];
-    for (const t of targets) {
-      await buildWeb(clientConfig, t, ids);
-    }
+    await buildWeb(clientConfig, ids);
   }
 
   log('build finished');

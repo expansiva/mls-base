@@ -22,8 +22,6 @@ if (byType('client').length !== 1) errors.push(`must declare exactly 1 project o
 if (byType('master frontend').length === 0) errors.push('must declare at least 1 project of type "master frontend"');
 if (byType('master backend').length === 0) errors.push('must declare at least 1 project of type "master backend"');
 if (!config.defaultProjectId || !config.projects?.[config.defaultProjectId]) errors.push(`defaultProjectId "${config.defaultProjectId}" is not declared in projects`);
-if (!config.publication?.targets || Object.keys(config.publication.targets).length === 0) errors.push('must declare at least one publication target');
-else if (!config.publication.targets[config.publication.defaultTarget]) errors.push(`publication.defaultTarget "${config.publication.defaultTarget}" is not declared`);
 if (!config.shellTemplates?.spa) errors.push('shellTemplates.spa is required');
 
 const [clientEntry] = byType('client');

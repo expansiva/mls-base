@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,7 @@ import {
 
 const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ID = '900001';
-const TARGET = 'web-test-gb91';
+const WEB = 'web';
 
 function listFiles(root) {
   if (!existsSync(root)) return [];
@@ -24,7 +24,7 @@ function listFiles(root) {
   return out;
 }
 
-test('buildWeb: dist/<target> é Lit + shells + css, sem JS do app', { timeout: 120_000 }, async () => {
+test('buildWeb: dist/web é Lit + shells + css, sem JS do app', { timeout: 120_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'gb91-'));
   const proj = join(root, `mls-${ID}`);
   mkdirSync(join(proj, 'l2', 'spa'), { recursive: true });
@@ -42,21 +42,22 @@ test('buildWeb: dist/<target> é Lit + shells + css, sem JS do app', { timeout: 
     ].join('\n'),
   );
   setProjectRoot(ID, proj);
-  const outdir = join(MLS_BASE, 'dist', TARGET);
+  const outdir = join(MLS_BASE, 'dist', WEB);
+  const backup = join(MLS_BASE, 'dist', 'web.gb93-test-bak');
+  if (existsSync(backup)) rmSync(backup, { recursive: true, force: true });
+  if (existsSync(outdir)) renameSync(outdir, backup);
   try {
     await buildWeb(
       {
-        publication: { targets: { [TARGET]: {} } },
         shellTemplates: { spa: `./_${ID}_/l2/spa/index.html` },
         projects: { [ID]: { type: 'client' } },
       },
-      TARGET,
       [ID],
     );
     const jsUnderAppL2 = listFiles(join(outdir, `_${ID}_`, 'l2'))
       .filter((f) => f.endsWith('.js'))
       .map((f) => relative(outdir, f));
-    assert.deepEqual(jsUnderAppL2, [], `não deve haver JS do app em dist/${TARGET}/_${ID}_/l2/`);
+    assert.deepEqual(jsUnderAppL2, [], `não deve haver JS do app em dist/${WEB}/_${ID}_/l2/`);
     assert.equal(existsSync(join(outdir, '_chunks')), false);
     assert.equal(existsSync(join(outdir, '_libs', 'lit', 'index.js')), true);
     assert.equal(existsSync(join(outdir, `_${ID}_`, 'l2', 'y.css')), true);
@@ -66,6 +67,7 @@ test('buildWeb: dist/<target> é Lit + shells + css, sem JS do app', { timeout: 
   } finally {
     setProjectRoot(ID, undefined);
     rmSync(outdir, { recursive: true, force: true });
+    if (existsSync(backup)) renameSync(backup, outdir);
     rmSync(root, { recursive: true, force: true });
   }
 });
