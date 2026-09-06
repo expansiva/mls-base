@@ -218,3 +218,27 @@ step or the root. Helper: `findMutableParentStep` (exists in both `agentNs3Draft
   `getStepById`, `getAllSteps`).
 - LLM scheduling: `src/layer_3_usecases/llmStepScheduler.ts`, `schedulerManager.ts`.
 - Task creation: `src/layer_2_controllers/addMessageAI.ts`, `addTaskAISteps.ts`.
+
+## Storage configuration (`collab-messages` appconfig)
+
+Each organization instance reads AWS region/bucket from `appconfig.json`. Credentials stay in `aws.accessKeyId` / `aws.secretAccessKey` (not the default AWS chain).
+
+```json
+"storage": {
+  "dynamoRegion": "us-east-1",
+  "s3Region": "us-east-1",
+  "bucket": "collab-messages",
+  "tablePrefix": ""
+}
+```
+
+- No `storage` block ⇒ same as today: DynamoDB `us-west-1`, S3 `us-east-1`, bucket `aws.bucketName` (`helpers/storageConfig.ts:1-2`).
+- `tablePrefix` is reserved (default `""`). Table names stay `messages|threads|users|tasks|storage` via `tableNameOf` (`helpers/config.ts:103-105`).
+- `instanceId` is reserved and appears on `/health`; `serviceTokens` is typed and loaded, never returned (token values). Unused until federation.
+- Shape without secrets: `collab-messages/appconfig.example.json`.
+
+`GET /health` and alias `GET /msg/health` (`fastifyServer.ts:542-545`) include `storage: { dynamoRegion, s3Region, bucket, tablePrefix, instanceId, accountId?, ok, error? }`. `accountId` comes from `sts:GetCallerIdentity` (cached; never the key). `/health` stays 200 so the process can be inspected.
+
+`GET /ready` and alias `GET /msg/ready` return 503 with the AWS error code when the startup probe (`ListTables` limit 1, retried every 5 min, `storageHealth.ts` / `storageHealthAws.ts`) fails. The process stays up. The 102034 proxy forwards `/msg/*` without rewriting (`msgProxy.ts:27`), so callers on the app domain must use `/msg/health` and `/msg/ready`.
+
+*Written 06/09/2026.*
