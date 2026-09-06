@@ -79,6 +79,8 @@ number of pending operations, the scan is the suspect, not the LLM.
   `storage.target: "derived"`): read models with **no table**. Mirrors the `mdmRefs` channel.
   When the l4 declared `derivation`, that block travels on the ref so the usecase can implement
   the aggregation; absent on older l4, and the run must not fail.
+  `aggregate[].signBy {field, negativeValues}` em `sum`: linhas com `field ∈ negativeValues`
+  entram negativas; ausente = todas positivas.
 - Absent ≠ empty: use `??`, not `||`/`length > 0`, when the distinction carries meaning.
 
 ## Where the run leaves evidence
@@ -100,4 +102,5 @@ backend run and records `handoff: suppressed by /nochain — next: @@agentChange
 instead of dispatching. The flag is on the invocation, never inferred from CLI vs browser.
 
 *Written 31/08/2026; 5b (staleness = existence) added 02/09/2026; leftover-wipe abort added 02/09/2026;
-wipe-memory (`wipedThisRun`) added 02/09/2026; `/nochain` added 06/09/2026; gen-adapter fan-out added 06/09/2026.*
+wipe-memory (`wipedThisRun`) added 02/09/2026; `/nochain` added 06/09/2026; gen-adapter fan-out added 06/09/2026;
+`derivedRefs.derivation.aggregate[].signBy` added 06/09/2026.*

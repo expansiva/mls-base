@@ -44,6 +44,11 @@ who declares the projection declares the account. Absent on L4 written before th
 **6. A persona is not an actor.** Demographics and personas describe who uses the product; only an
 actor with distinct permissions belongs in the access matrix.
 
+**7. `mutability: appendOnly` ⇒ no update/delete.** E4 may declare `mutability: 'editable' |
+'appendOnly'` on an entity; E8 then emits no catalogue `update`/`delete`/`inactivate`/`reactivate`
+and the `recordForm` keeps only create. Absent = editable. L4 written before the field keeps
+compiling — nothing is migrated.
+
 ## Running it
 
 `pipeline.json` records each step's status (`approved`, plus `autoReason` when `/fast` skipped a
@@ -55,4 +60,4 @@ path and suppresses only that handoff; the run summary records
 `handoff: suppressed by /nochain — next: @@agentChangeBackend /rebuild all <module>` as a fact, not
 a degradation. The flag is on the invocation, never inferred from CLI vs browser.
 
-*Written 31/08/2026; `/nochain` added 06/09/2026.*
+*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026.*
