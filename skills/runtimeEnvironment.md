@@ -20,7 +20,12 @@ collab-sites) for real production. The runtime is NOT the Studio: it is a self-c
   l3 assets, l5 admin/config). The publish is triggered FROM this project.
 - **collab-sites** (repo root; UI surfaced at admin.collab.codes, API at sites.collab.codes) —
   manages the production VMs and finishes the remote publish.
-- **collab-messages** — task/step engine backend. Planned to also run in production (see Gaps).
+- **collab-messages** — task/step engine backend. **One instance per organization**,
+  installed only on that organization's host VM (`install.sh --messages-host` or
+  `collab msg install`). Other VMs of the same org reach it through `/msg` with
+  `MSG_PROXY_TARGET=https://<hostProjectId>.collabcodes.com`. Storage (DynamoDB + S3)
+  lives in the organization's AWS sub-account; the VM reads the IAM key from
+  Parameter Store after assuming `collab-messages-param-reader` in that account.
 
 ## Publish flow
 
@@ -138,10 +143,12 @@ Incremental by source mtime; a project that fails to build keeps its previous ob
 `publishGit` of the client also pushes a snapshot of each declared dep; it does not ship
 every `mls-*` on disk.
 
-## Known gaps (as of 2026-08-06)
+## Known gaps (as of 2026-09-06)
 
-- **collab-messages in production**: will run as an additional pm2 app named `msg` on the
-  production VM. Not wired yet (today collab-messages runs only in the Studio environment).
+- **collab-messages in production**: wired as an organization shared resource. Installed
+  only on the host VM (`pm2` apps `msg` + `msg-worker`). Not installed on every VM.
+  Live proof (host VM `pm2 ls`, `/health` showing the sub-account, consumer `/msg/health`)
+  is the supervisor's remote-VM pass of cm04, not this skill.
 - **Monitor admin gating**: the cbe login now identifies the user (JWT), but monitor admin
   actions (releases activate, logs) are not yet gated by it ("ADMIN ONLY once auth exists").
 - **collab-auth returnTo allowlist** must include the VM domains (`*.collabcodes.com`) for the
@@ -164,3 +171,5 @@ every `mls-*` on disk.
   schemaBootstrap), client seeds in `mls-<client>/l1/<module>/layer_1_external/adapters/persistence/`
 - VM management & remote publish: `collab-sites/src/layer_3_usecases/` (servers, publish, releases, sites)
 - Local VM profile: `mls-base/servers/dev.conf` (+ `dev.conf.example`), pm2: `mls-base/servers/pm2.config.js`
+
+*collab-messages as organization shared resource (host VM only, MSG_PROXY_TARGET on consumers) added 06/09/2026 (cm04).*

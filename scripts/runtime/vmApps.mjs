@@ -25,8 +25,22 @@ import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 export const APPS_DIR = 'pm2.apps.d';
 export const PM2_CONFIG = 'pm2.config.js';
 
+function envBlock(projectId, port, msgProxyTarget) {
+  const lines = [
+    "    NODE_ENV: 'production',",
+    "    TZ: 'UTC',",
+    `    PORT: ${JSON.stringify(String(port))},`,
+    `    COLLAB_PROJECT_ID: ${JSON.stringify(String(projectId))}`,
+  ];
+  if (msgProxyTarget) {
+    lines[lines.length - 1] += ",";
+    lines.push(`    MSG_PROXY_TARGET: ${JSON.stringify(String(msgProxyTarget))}`);
+  }
+  return lines.join("\n");
+}
+
 /** Conteúdo de pm2.apps.d/app<porta>.config.js. */
-export function pm2AppConfig(projectId, port, remoteBase) {
+export function pm2AppConfig(projectId, port, remoteBase, msgProxyTarget) {
   const appName = appNameOf(port);
   return `module.exports = {
   name: ${JSON.stringify(appName)},
@@ -37,10 +51,7 @@ export function pm2AppConfig(projectId, port, remoteBase) {
   watch: false,
   kill_timeout: 180000,
   env: {
-    NODE_ENV: 'production',
-    TZ: 'UTC',
-    PORT: ${JSON.stringify(String(port))},
-    COLLAB_PROJECT_ID: ${JSON.stringify(String(projectId))}
+${envBlock(projectId, port, msgProxyTarget)}
   },
   log_date_format: 'YYYY-MM-DDTHH:mm:ss',
   out_file: ${JSON.stringify(`${remoteBase}/logs/${appName}-out.log`)},
@@ -48,6 +59,16 @@ export function pm2AppConfig(projectId, port, remoteBase) {
   merge_logs: true
 };
 `;
+}
+
+export function msgProxyTargetFromPm2Config(text) {
+  const match = String(text).match(/MSG_PROXY_TARGET:\s*("(?:\\.|[^"])*")/u);
+  if (!match) return undefined;
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Conteúdo do pm2.config.js agregador. */
@@ -74,14 +95,18 @@ export function isAggregator(text) {
  * `{ port, appName, wrote, replacedLegacy }` — `wrote` false quando nada mudou
  * (idempotente: rodar de novo não reescreve).
  */
-export function ensureProjectApp({ root, projectId, remoteBase = root }) {
+export function ensureProjectApp({ root, projectId, remoteBase = root, msgProxyTarget }) {
   const port = projectIdToPort(projectId);
   const appName = appNameOf(port);
   const appsDir = join(root, APPS_DIR);
   mkdirSync(appsDir, { recursive: true });
 
   const appPath = join(appsDir, `${appName}.config.js`);
-  const appText = pm2AppConfig(projectId, port, remoteBase);
+  const existingText = existsSync(appPath) ? readFileSync(appPath, "utf8") : "";
+  const target = msgProxyTarget === undefined
+    ? msgProxyTargetFromPm2Config(existingText)
+    : msgProxyTarget;
+  const appText = pm2AppConfig(projectId, port, remoteBase, target);
   let wrote = false;
   if (!existsSync(appPath) || readFileSync(appPath, 'utf8') !== appText) {
     writeFileSync(appPath, appText);

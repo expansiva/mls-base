@@ -407,7 +407,10 @@ In order:
 3. It clones the **collab-runtime** repo (`runtime.repoUrl` → `runtime.repoDir`).
 4. It runs `install.sh --profile=… --server-id=… --project-id=… --sites-url=… --agent-token=…`.
 5. `install.sh` runs the numbered steps: data disk, apt update, nginx, postgres, timescaledb,
-   redis, node, 7zip, pm2, certbot, mls-base, collab-messages.
+   redis, node, 7zip, pm2, certbot, mls-base, and — **only when the VM is the organization's
+   collab-messages host** — collab-messages (`--messages-host`; default is skip, log
+   `skipped: not the messages host`). An existing VM becomes the host later via
+   `collab msg install` (SSM from collab-sites).
 6. Step 10 (`scripts/10-mls-runtime.sh`) installs rsync+git, enables pnpm through corepack,
    clones `mls-base` from GitHub into `/data/mls-base`, runs `pnpm install` there (no
    lockfile flag — `.npmrc` has `frozen-lockfile=false`, gb55) as the deploy user, then
@@ -543,7 +546,12 @@ pm2.config.js                     aggregator: reads pm2.apps.d/
 ```
 
 `current-*` and `pm2.apps.d` are in the mls-base `.gitignore` (gb73), so they never
-show up as `??` on a platform checkout. Each release stamps `platformCommit` in
+show up as `??` on a platform checkout. `pm2.apps.d/app<porta>.config.js` is written by
+both the git hook (`vmApps.mjs`) and the sites slot (`buildPm2AppConfig`); the two
+generators must stay byte-identical. On a VM that is **not** the organization's
+collab-messages host, the file carries `MSG_PROXY_TARGET=https://<hostProjectId>.collabcodes.com`
+so `/msg` on that project proxies to the host. On the host VM the env is omitted
+(loopback `127.0.0.1:8180`). Each release stamps `platformCommit` in
 `releases/<id>/release.json` (`releaseStamp.mjs`) — HEAD of that checkout, or
 `unknown` when `/data/mls-base` is not a checkout. Same pin + same platform commit ⇒ same
 release on both VMs.
@@ -579,4 +587,6 @@ step 10 runs `pnpm install` after clone/pull so a fresh VM is buildable (gb54) a
 https pm2 reload no longer kills the hook: `--skip-pm2`, restoreWorktree, then detached reload;
 publishGit confirms the remote ref on disconnect (gb85) added 05/09/2026;
 detached reload triggers on CGI env (not the app's `COLLAB_GIT_HTTP`), and the hook detects a
-split cluster after reload (gb94) added 06/09/2026.*
+split cluster after reload (gb94) added 06/09/2026;
+collab-messages is an organization resource, installed only on the host VM (`--messages-host`);
+`MSG_PROXY_TARGET` on consumer pm2 configs (cm04) added 06/09/2026.*

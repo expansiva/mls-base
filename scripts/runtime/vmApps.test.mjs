@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appNameOf, ProjectPortError, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
-import { ensureProjectApp, isAggregator, pm2AggregatorConfig, pm2AppConfig } from './vmApps.mjs';
+import { ensureProjectApp, isAggregator, msgProxyTargetFromPm2Config, pm2AggregatorConfig, pm2AppConfig } from './vmApps.mjs';
 
 // ── porta: a MESMA regra do collab-sites (sites.ts, `projectIdToPort`) ──────
 //
@@ -40,9 +40,78 @@ test('pm2AppConfig aponta para o alias do projeto, nunca para o `current` global
   assert.match(text, /cwd: "\/data\/mls-base\/current-102043"/u);
   assert.match(text, /PORT: "2043"/u);
   assert.match(text, /COLLAB_PROJECT_ID: "102043"/u);
+  assert.equal(text.includes('MSG_PROXY_TARGET'), false);
   // o `current` global serve o último push de qualquer projeto — um app
   // multiprojeto pendurado nele serviria o app do vizinho
   assert.equal(/cwd: "\/data\/mls-base\/current"/u.test(text), false);
+});
+
+test('pm2AppConfig coloca MSG_PROXY_TARGET só quando o slot pede', () => {
+  const text = pm2AppConfig('102043', 2043, '/data/mls-base', 'https://102051.collabcodes.com');
+  assert.match(text, /COLLAB_PROJECT_ID: "102043",/u);
+  assert.match(text, /MSG_PROXY_TARGET: "https:\/\/102051\.collabcodes\.com"/u);
+  assert.equal(msgProxyTargetFromPm2Config(text), 'https://102051.collabcodes.com');
+});
+
+test('pm2AppConfig é o arquivo canônico (sites buildPm2AppConfig deve copiar byte a byte)', () => {
+  const without = pm2AppConfig('102043', 2043, '/data/mls-base');
+  const withTarget = pm2AppConfig('102043', 2043, '/data/mls-base', 'https://102051.collabcodes.com');
+  assert.equal(without, `module.exports = {
+  name: "app2043",
+  script: './dist/local/_102034_/l1/server/layer_1_external/transport/http/startServer.js',
+  cwd: "/data/mls-base/current-102043",
+  instances: 2,
+  exec_mode: 'cluster',
+  watch: false,
+  kill_timeout: 180000,
+  env: {
+    NODE_ENV: 'production',
+    TZ: 'UTC',
+    PORT: "2043",
+    COLLAB_PROJECT_ID: "102043"
+  },
+  log_date_format: 'YYYY-MM-DDTHH:mm:ss',
+  out_file: "/data/mls-base/logs/app2043-out.log",
+  error_file: "/data/mls-base/logs/app2043-error.log",
+  merge_logs: true
+};
+`);
+  assert.equal(withTarget, `module.exports = {
+  name: "app2043",
+  script: './dist/local/_102034_/l1/server/layer_1_external/transport/http/startServer.js',
+  cwd: "/data/mls-base/current-102043",
+  instances: 2,
+  exec_mode: 'cluster',
+  watch: false,
+  kill_timeout: 180000,
+  env: {
+    NODE_ENV: 'production',
+    TZ: 'UTC',
+    PORT: "2043",
+    COLLAB_PROJECT_ID: "102043",
+    MSG_PROXY_TARGET: "https://102051.collabcodes.com"
+  },
+  log_date_format: 'YYYY-MM-DDTHH:mm:ss',
+  out_file: "/data/mls-base/logs/app2043-out.log",
+  error_file: "/data/mls-base/logs/app2043-error.log",
+  merge_logs: true
+};
+`);
+});
+
+test('ensureProjectApp preserva MSG_PROXY_TARGET já escrito pelo sites', () => {
+  withRoot((root) => {
+    const first = pm2AppConfig('102043', 2043, '/data/mls-base', 'https://102051.collabcodes.com');
+    mkdirSync(join(root, 'pm2.apps.d'), { recursive: true });
+    writeFileSync(join(root, 'pm2.apps.d', 'app2043.config.js'), first);
+    writeFileSync(join(root, 'pm2.config.js'), pm2AggregatorConfig());
+    const again = ensureProjectApp({ root, projectId: '102043', remoteBase: '/data/mls-base' });
+    assert.equal(again.wrote, false);
+    assert.equal(
+      readFileSync(join(root, 'pm2.apps.d', 'app2043.config.js'), 'utf8'),
+      first,
+    );
+  });
 });
 
 test('o agregador é reconhecido pelo próprio conteúdo', () => {
