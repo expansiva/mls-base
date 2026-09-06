@@ -107,4 +107,17 @@ Componentes inspirados no padrão visual do shadcn podem existir como código de
 
 Essas ferramentas executam durante build ou publish e não são carregadas como dependências de execução no navegador.
 
-        
+## Nomes de arquivo (shortName sem ponto)
+
+Regra da casa (cfe `stor.ts:506`; CF `cfeMaterializeCore.ts:1149`): o **shortName** nunca contém
+ponto. Extensões aceitas, compostas primeiro: `.defs.ts`, `.test.ts`, `.d.ts` (tolerada — a cfe a
+pula de propósito em `stor.server.ts:235`), `.ts`, `.less`, `.html`. Um `x.logic.ts` vira shortName
+`x.logic` — família do versionRef 0 do service worker.
+
+Guard (só lê, nunca renomeia): `mls-102020/l2/nomesSemPonto.test.ts`, espelhado em 102021, 102027,
+102029, 102033 e 102034. Varre `l1..l7` e falha se, removida **uma** dessas extensões, o resto do
+nome ainda tem ponto. Ignora `node_modules`, `obj`, `dist`, `.git`. Fora do escopo: `*.schema.json`,
+md, png, e contratos legados `mls-102051/l4/.../<ws>.<bff>.defs.ts`.
+
+*Escrito 06/09/2026.*
+
