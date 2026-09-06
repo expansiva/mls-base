@@ -163,6 +163,28 @@ VM de teste tem CLI (`node scripts/vm.mjs <projectId> platform-update|deps-updat
 o mesmo token do `publishGit`. O refresh manda `org_id` para o access trazer `active_org`
 (collab-sites lê papéis dali); as rotas exigem `collab-sites:admin`.
 
+## Testing a platform change on the dev VM without GitHub (06/09/2026)
+
+`publishGit <id> local` carries the client **and** a disk snapshot of every `mls-*` in its
+`mlsDep.json` (`publishGitDeps.mjs`) — so a change in `mls-102033`/`102034`/`102029`/`102020`
+reaches lima with no commit to GitHub. What it does **not** carry is the platform root itself
+(`scripts/`, `skills/`, root config): `/data/mls-base` is a checkout of `origin/main`.
+
+For the dev VM, push the root straight into that checkout, with the same mechanism the `mls-*`
+repos already use:
+
+```bash
+ssh -F $HOME/.lima/ubuntu24/ssh.config lima-ubuntu24 \
+  'git -C /data/mls-base config receive.denyCurrentBranch updateInstead'
+GIT_SSH_COMMAND="ssh -F $HOME/.lima/ubuntu24/ssh.config" \
+  git push ssh://lima-ubuntu24/data/mls-base HEAD:main
+```
+
+Fast-forward only (the VM checkout is behind `origin/main`, never divergent), the worktree must be
+clean of **tracked** changes, and untracked leftovers on the VM do not block it. This is a dev-VM
+path: a production VM takes the platform by `platform-update` (pull from GitHub), which is what
+`releaseStamp`'s `platformCommit` is there to prove.
+
 ## Remote profile
 
 `local` reads `mls-base/.env` (`PUBLISH_LOCAL_SSH_HOST`, `PUBLISH_LOCAL_SSH_CONFIG`,
