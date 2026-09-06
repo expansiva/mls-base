@@ -13,11 +13,13 @@ import {
   DIRTY_LOCAL_MSG,
   disconnectAppliedMessage,
   ensureBookkeepingGitignore,
+  formatPublishClientConfigTail,
   isDirty,
   isPushDisconnect,
   makeRebuildCommit,
   MISSING_HOOK_MSG,
   needsRebuildCommit,
+  noteTsconfigPaths,
   parseArgs,
   pushNotAppliedMessage,
   readRemoteMainSha,
@@ -26,6 +28,7 @@ import {
   remoteUrlFor,
   resolveProfileConf,
   runClone,
+  warnClientConfig,
 } from './publishGit.mjs';
 
 const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -545,4 +548,64 @@ test('MISSING_HOOK_MSG afirma o que ficou por fazer, não pergunta', () => {
   assert.match(MISSING_HOOK_MSG, /rode o publish de novo/);
   assert.doesNotMatch(MISSING_HOOK_MSG, /\?/);
   assert.doesNotMatch(MISSING_HOOK_MSG, /ausente neste repo/);
+});
+
+test('warnClientConfig avisa e não lança; o exit do publish continua o da BUILD', () => {
+  const root = mkdtempSync(join(tmpdir(), 'publish-config-'));
+  try {
+    mkdirSync(join(root, 'mls-102039', 'l5'), { recursive: true });
+    writeFileSync(join(root, 'mls-102039', 'l5', 'config.json'), '{}\n');
+    const lines = [];
+    const result = warnClientConfig(root, '102039', (text) => lines.push(text));
+    assert.equal(result.ok, false);
+    assert.match(lines.join(''), /WARN \(does not block\)/);
+    assert.match(lines.join(''), /shellTemplates\.spa is required/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('formatPublishClientConfigTail lê o marker do hook e não muda o MARKER_OK', () => {
+  const hook = [
+    'gitPostReceive: clientConfig: WARN (does not block):',
+    '  - shellTemplates.spa is required',
+    '##clientConfig warn n=1##',
+    '##gitBackend build=ok release=20260906120000 project=mls-102039##',
+  ].join('\n');
+  assert.match(formatPublishClientConfigTail(hook), /1 aviso\(s\) \(não bloqueia a release\)/);
+  const MARKER_OK = /##gitBackend build=ok release=(\d{14}) project=mls-\d+##/;
+  assert.equal(MARKER_OK.exec(hook)[1], '20260906120000');
+  assert.equal(formatPublishClientConfigTail('##gitBackend build=ok release=20260906120000 project=mls-102039##'), '');
+});
+
+test('noteTsconfigPaths no clone acrescenta o mapeamento; publish chama o validador', () => {
+  const src = readFileSync(SCRIPT, 'utf8');
+  assert.match(src, /noteTsconfigPaths\(ROOT\)/);
+  assert.match(src, /warnClientConfig\(ROOT, id\)/);
+  assert.match(src, /formatPublishClientConfigTail/);
+  const clone = src.indexOf("if (command === 'clone')");
+  const note = src.indexOf('noteTsconfigPaths(ROOT)');
+  assert.ok(clone > 0 && note > clone, 'paths sync is the Mac clone path (vm:init included)');
+});
+
+test('noteTsconfigPaths adiciona paths e diz que é setup, não agente', () => {
+  const root = mkdtempSync(join(tmpdir(), 'publish-paths-'));
+  try {
+    writeFileSync(join(root, 'tsconfig.json'), `{
+    "compilerOptions": {
+        "paths": {
+            "/_102039_/*": ["./mls-102039/*"]
+        }
+    }
+}
+`);
+    mkdirSync(join(root, 'mls-102077', 'l5'), { recursive: true });
+    writeFileSync(join(root, 'mls-102077', 'l5', 'config.json'), '{}\n');
+    const lines = [];
+    assert.deepEqual(noteTsconfigPaths(root, (text) => lines.push(text)), ['102077']);
+    assert.match(lines.join(''), /setup mapping, not an agent error/);
+    assert.match(readFileSync(join(root, 'tsconfig.json'), 'utf8'), /"\/_102077_\/\*"/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

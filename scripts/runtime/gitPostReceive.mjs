@@ -12,13 +12,19 @@
 // become declWarn=N on the success marker. If the typeCheck marker is
 // missing (old buildCI), fall back to the pass=code count — never the
 // other way around. Marker lines are the gb3 contract — one line, exact
-// format.
+// format. Client l5/config.json is validated warn-only (Wagner 06/09):
+// named list in the log + ##clientConfig## marker; never blocks the release.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTypeCheckMarkers } from '../typeCheckPolicy.mjs';
+import {
+  clientConfigMarker,
+  formatClientConfigWarn,
+  validateClientConfigFile,
+} from '../validateClientConfig.mjs';
 import { ensureProjectApp } from './vmApps.mjs';
 import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 
@@ -291,6 +297,38 @@ export function authorNote(actorEmail, commitEmail) {
   if (!commitEmail) return `push por ${actorEmail} (autor do commit desconhecido)`;
   if (actorEmail.trim().toLowerCase() === commitEmail.trim().toLowerCase()) return '';
   return `push por ${actorEmail}, commit assinado por ${commitEmail} — identidades divergentes`;
+}
+
+/**
+ * Warn-only. collab-sites *Build release* calls this hook without publishGit,
+ * so this is the place that always sees a release. Missing shellTemplates is
+ * not a degraded app — it is an app that will 502 — but the release still
+ * goes up (Wagner 06/09): the named list is logged, never a throw / exit != 0.
+ */
+export function reportClientConfig(root, projectId, {
+  write = (text) => process.stderr.write(text),
+  now = () => new Date().toISOString(),
+} = {}) {
+  const configPath = join(root, `mls-${projectId}`, 'l5', 'config.json');
+  const result = validateClientConfigFile(configPath);
+  write(`${formatClientConfigWarn(result, 'gitPostReceive:')}\n`);
+  write(`${clientConfigMarker(result)}\n`);
+  try {
+    mkdirSync(join(root, 'logs'), { recursive: true });
+    appendFileSync(
+      join(root, 'logs', 'git-push.jsonl'),
+      `${JSON.stringify({
+        at: now(),
+        projectId,
+        endpoint: 'clientConfig',
+        ok: result.ok,
+        errors: result.errors,
+      })}\n`,
+    );
+  } catch (error) {
+    write(`gitPostReceive: log de clientConfig não escrito (${error.message})\n`);
+  }
+  return result;
 }
 
 function notePushActor(root, projectName) {
@@ -652,6 +690,8 @@ async function main() {
     process.stderr.write(`${formatSkippedMarker(projectName)}\n`);
     return;
   }
+
+  reportClientConfig(root, id);
 
   for (const depId of deps) {
     if (depId === id) continue;

@@ -4,6 +4,9 @@
 // Day-to-day path: change a project locally, commit, push. The VM hook
 // (gitPostReceive) compiles and either cuts a release or prints the tsc error.
 // Exit code follows the BUILD (A1: a red build can still accept the push).
+// Client l5/config.json is validated warn-only before the push (the hook
+// repeats it — Build release skips this file). clone adds a missing
+// tsconfig.json paths entry so `/_<id>_/` imports resolve on the Mac.
 //
 // Host / ssh-config / remote base: PUBLISH_LOCAL_* in mls-base/.env for
 // `local`; CLI flags or servers/<profile>.conf for `remote`. No new config
@@ -36,6 +39,8 @@ import {
   credentialHelperValue, resolvePushToken,
 } from './publishGitAuth.mjs';
 import { runRedirectLogin } from './publishGitLogin.mjs';
+import { addMissingTsconfigPaths } from './syncTsconfigPaths.mjs';
+import { formatClientConfigWarn, validateClientConfigFile } from './validateClientConfig.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_REMOTE_BASE = '/data/mls-base';
@@ -839,6 +844,7 @@ async function main() {
 
   if (command === 'clone') {
     await runClone({ dest: repo, url, env, id, profile });
+    noteTsconfigPaths(ROOT);
     process.exit(0);
   }
 
@@ -847,6 +853,7 @@ async function main() {
     fail(`publique a partir de main (branch atual: ${branch}).`);
   }
   removeLocalObj(repo);
+  warnClientConfig(ROOT, id);
   if (isDirty(repo)) {
     if (!autocommit) fail(DIRTY_LOCAL_MSG);
     autocommitDirty(repo);
@@ -1036,8 +1043,33 @@ export function clientPushArgs({ remote, changedDeps = [], forceLease = '' }) {
   return args;
 }
 
+export function warnClientConfig(root, projectId, write = (text) => process.stderr.write(text)) {
+  const result = validateClientConfigFile(join(root, `mls-${projectId}`, 'l5', 'config.json'));
+  write(`${formatClientConfigWarn(result, '[publishGit]')}\n`);
+  return result;
+}
+
+export function noteTsconfigPaths(root, write = (text) => process.stderr.write(text)) {
+  const added = addMissingTsconfigPaths(root);
+  if (added.length) {
+    write(
+      `[publishGit] tsconfig.json paths: added ${added.map((id) => `"/_${id}_/*"`).join(', ')}` +
+        ' — setup mapping, not an agent error.\n',
+    );
+  }
+  return added;
+}
+
+export function formatPublishClientConfigTail(text) {
+  const warn = /##clientConfig warn n=(\d+)##/.exec(String(text ?? ''));
+  if (!warn) return '';
+  return `[publishGit] clientConfig: ${warn[1]} aviso(s) (não bloqueia a release).`;
+}
+
 /** Lê o marcador do hook no texto do push e sai com o código certo. */
 function reportBuildMarker(text) {
+  const configTail = formatPublishClientConfigTail(text);
+  if (configTail) process.stderr.write(`${configTail}\n`);
   const okMatch = MARKER_OK.exec(text);
   if (okMatch) {
     process.stderr.write(`release ${okMatch[1]} ativa na VM\n`);

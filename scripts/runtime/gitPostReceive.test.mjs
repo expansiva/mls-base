@@ -20,6 +20,7 @@ import {
   trackedDirtyPaths, authorNote,
   restoreWorktree, shouldDeferPm2Reload, scheduleDetachedPm2Reload, pm2ConfigRel,
   reloadPm2Now, staleClusterWorkers, formatStaleWorkerLog, parsePm2Jlist,
+  reportClientConfig,
 } from './gitPostReceive.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -478,4 +479,41 @@ test('authorNote anota divergência entre quem empurrou e quem assinou o commit'
   assert.match(authorNote('w@collab.codes', ''), /autor do commit desconhecido/u);
   // Sem a variável do /git/ (push por ssh na lima) não há nada para comparar.
   assert.equal(authorNote('', 'qualquer@x.com'), '');
+});
+
+test('reportClientConfig avisa, grava jsonl e NÃO lança — release segue', () => {
+  const root = mkdtempSync(join(tmpdir(), 'client-config-hook-'));
+  try {
+    mkdirSync(join(root, 'mls-102039', 'l5'), { recursive: true });
+    writeFileSync(join(root, 'mls-102039', 'l5', 'config.json'), '{}\n');
+    const lines = [];
+    const result = reportClientConfig(root, '102039', {
+      write: (text) => lines.push(text),
+      now: () => '2026-09-06T00:00:00.000Z',
+    });
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((row) => row.includes('shellTemplates.spa is required')));
+    const printed = lines.join('');
+    assert.match(printed, /WARN \(does not block\)/);
+    assert.match(printed, /##clientConfig warn n=\d+##/);
+    const log = readFileSync(join(root, 'logs', 'git-push.jsonl'), 'utf8');
+    const row = JSON.parse(log.trim());
+    assert.equal(row.endpoint, 'clientConfig');
+    assert.equal(row.ok, false);
+    assert.equal(row.projectId, '102039');
+    assert.ok(row.errors.includes('shellTemplates.spa is required'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hook chama reportClientConfig no build do cliente, não no skip-build', () => {
+  const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
+  const skip = src.indexOf('if (skipBuild)');
+  const report = src.indexOf('reportClientConfig(root, id)');
+  const compile = src.indexOf("['scripts/runtime/buildProjectsObj.mjs', '--only', id, '--force']");
+  assert.ok(skip > 0 && report > skip, 'validate after skip-build return');
+  assert.ok(compile > report, 'validate before compile — warning even if build is red');
+  assert.match(src, /does not block/);
+  assert.doesNotMatch(src, /process\.exit\([^)]*result/);
 });
