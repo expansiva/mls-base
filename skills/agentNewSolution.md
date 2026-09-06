@@ -50,4 +50,9 @@ actor with distinct permissions belongs in the access matrix.
 confirmation) and is the fastest way to see where a run stopped. `/rebuild` wipes the module before
 regenerating — confirm the neighbouring module was untouched.
 
-*Written 31/08/2026.*
+`/fast` still chains to agentChangeBackend on E10 success. `/fast /nochain` keeps the skip-and-run
+path and suppresses only that handoff; the run summary records
+`handoff: suppressed by /nochain — next: @@agentChangeBackend /rebuild all <module>` as a fact, not
+a degradation. The flag is on the invocation, never inferred from CLI vs browser.
+
+*Written 31/08/2026; `/nochain` added 06/09/2026.*

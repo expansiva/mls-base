@@ -95,5 +95,9 @@ The trace lives under the layer (`trace/l1`) so a CF rebuild cannot delete it an
 Stale trace resurrects behaviour: three separate defects on 30/08 came from plans left in an old
 trace folder.
 
+`/fast` after a successful run dispatches agentChangeFrontend. `/fast /nochain` completes the
+backend run and records `handoff: suppressed by /nochain — next: @@agentChangeFrontend /rebuild all <module>`
+instead of dispatching. The flag is on the invocation, never inferred from CLI vs browser.
+
 *Written 31/08/2026; 5b (staleness = existence) added 02/09/2026; leftover-wipe abort added 02/09/2026;
-wipe-memory (`wipedThisRun`) added 02/09/2026.*
+wipe-memory (`wipedThisRun`) added 02/09/2026; `/nochain` added 06/09/2026.*
