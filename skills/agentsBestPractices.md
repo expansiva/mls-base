@@ -90,11 +90,12 @@ dramatically faster AND gives the user a live, pleasant progress UI. Defaults an
   rare roll where the fallback model produced the full output. Fan out one worker per item instead:
   each call is small, gets the full token budget, and never truncates — this raises quality, it does
   not lower it, because the per-item prompt/schema are unchanged (the worker just receives ONE item).
-  Canonical examples in `agentChangeBackend`: `cb-domain-fanout` (one worker per aggregate/event, 10
-  slots), `cb-usecase-fanout` (one per operation owner, 10 slots). The dispatcher lists the items from
-  the deterministic scan and passes their ids as the fan-out arg queue; `cb-gen-port` joins the domain
-  fan-out. A failed slot leaves its domain missing and a re-run (not `/rebuild`) regenerates only that
-  one via the worker's reuse check.
+  Canonical examples in `agentChangeBackend`: `cb-domain-fanout` (one worker per aggregate/event),
+  `cb-adapter-fanout` (one worker per aggregate/event), `cb-usecase-fanout` (one per operation owner).
+  Slot count is `CB_MAX_PARALLEL` at every call site. The dispatcher lists the items from the
+  deterministic scan and passes their ids as the fan-out arg queue; `cb-gen-port` joins the domain
+  fan-out and `cb-gen-usecase` joins the adapter fan-out. A failed slot leaves its artefact missing
+  and a re-run (not `/rebuild`) regenerates only that one via the worker's reuse check.
 
 ## 5. Prompts are data, not code
 

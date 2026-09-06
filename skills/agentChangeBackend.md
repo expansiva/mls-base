@@ -70,7 +70,7 @@ unique seeded value. Small, deterministic, no `Math.random`.
 orchestration realized by their member operations. If the number of workers is smaller than the
 number of pending operations, the scan is the suspect, not the LLM.
 
-`gen-domain` fans out per domain; `gen-port`/`gen-table`/`gen-adapter` are still whole-layer.
+`gen-domain` fans out per domain; `gen-adapter` fans out per aggregate/event (`cb-adapter-fanout`; `cb-gen-usecase` joins on the fan-out, never the dispatcher). `gen-port`/`gen-table` are still whole-layer.
 
 ## Vocabulary the l4 can send
 
@@ -100,4 +100,4 @@ backend run and records `handoff: suppressed by /nochain — next: @@agentChange
 instead of dispatching. The flag is on the invocation, never inferred from CLI vs browser.
 
 *Written 31/08/2026; 5b (staleness = existence) added 02/09/2026; leftover-wipe abort added 02/09/2026;
-wipe-memory (`wipedThisRun`) added 02/09/2026; `/nochain` added 06/09/2026.*
+wipe-memory (`wipedThisRun`) added 02/09/2026; `/nochain` added 06/09/2026; gen-adapter fan-out added 06/09/2026.*
