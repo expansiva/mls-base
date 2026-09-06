@@ -330,7 +330,7 @@ export async function resolveDeps({ root, targetId, orgName, levels, log, armClo
   if (undeclared.length > 0) {
     throw new Error(
       undeclared
-        .map(([depId, rel]) => `dependência não declarada: ${depId} (importada por ${rel}) — declare em mlsDep.json`)
+        .map(([depId, rel]) => `undeclared dependency: ${depId} (imported by ${rel}) — declare it in mlsDep.json`)
         .join('\n'),
     );
   }

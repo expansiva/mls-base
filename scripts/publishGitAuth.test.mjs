@@ -216,7 +216,7 @@ test('resolvePushToken: sem sessão nenhuma ⇒ ok:false, e nada de stack', asyn
   try {
     const resolved = await resolvePushToken({ home: mkdtempSync(join(tmpdir(), 'vazia-')), env });
     assert.equal(resolved.ok, false);
-    assert.match(resolved.reason, /nenhuma sessão/u);
+    assert.match(resolved.reason, /no stored session/u);
   } finally {
     server.close();
   }
@@ -236,7 +236,7 @@ test('resolvePushToken: sessão do gb50 (só `token`, sem refresh) é lida — m
     writeFileSync(join(home, '.collab', 'publishGit.json'), JSON.stringify({ token: staleJwt() }));
     const expirada = await resolvePushToken({ home, env });
     assert.equal(expirada.ok, false);
-    assert.match(expirada.reason, /colagem|refresh/u);
+    assert.match(expirada.reason, /legacy paste login|refresh/u);
   } finally {
     server.close();
   }

@@ -16,7 +16,7 @@
 // Each run deletes obj/ from disk and git and commits that, then pushes.
 //
 // --autocommit (opt-in): if the worktree is still dirty after that, git add -A
-// (honouring .gitignore) and commit `publish: <area> (n arquivos), …`.
+// (honouring .gitignore) and commit `publish: <area> (n files), …`.
 // Without the flag a dirty worktree is refused — the script does not commit.
 //
 // Usage (any cwd; ROOT is this file's mls-base):
@@ -67,36 +67,36 @@ const MARKER_ERR = /##gitBackend build=error\b/;
 const PUSH_DISCONNECT_RE =
   /RPC failed|curl 18|transfer closed with outstanding read data remaining|unexpected disconnect while reading sideband packet/i;
 export const MISSING_HOOK_MSG = [
-  '[publishGit] push aceito, mas a VM não cortou release: o hook gitPostReceive não rodou.',
-  'Os arquivos chegaram e a release ativa ficou a mesma. Sem o hook, um publish não publica.',
-  'Na VM, rode: node scripts/runtime/gitReposSetup.mjs --root /data/mls-base',
-  'Isso instala o hook nos repos git-managed. Depois rode o publish de novo.',
+  '[publishGit] push accepted, but the VM did not cut a release: gitPostReceive did not run.',
+  'The files arrived and the active release stayed the same. Without the hook, a publish does not publish.',
+  'On the VM, run: node scripts/runtime/gitReposSetup.mjs --root /data/mls-base',
+  'That installs the hook on git-managed repos. Then run publish again.',
 ].join('\n');
 const DIRTY_VM_RE =
   /working directory has unstaged changes|uncommitted changes|denyCurrentBranch|refusing to update/i;
 const OBJ_IGNORE = '/obj/';
-const OBJ_COMMIT_MSG = 'chore: remove obj/ (build é da VM)';
+const OBJ_COMMIT_MSG = 'chore: remove obj/ (build happens on the VM)';
 const BOOKKEEPING_IGNORES = ['.collab-fs.json', '.collab-fs-trash/'];
 const PUBLISH_SKILL = 'mls-base/skills/publishGitBackend.md';
 export const DIRTY_LOCAL_MSG =
-  'worktree local suja: commit antes de publicar (o script não commita por conta própria). ' +
-  `Use --autocommit para um commit determinístico, ou commite com mensagem coerente — ver ${PUBLISH_SKILL}.`;
+  'dirty local worktree: commit before publishing (the script does not commit on its own). ' +
+  `Use --autocommit for a deterministic commit, or commit with a coherent message — see ${PUBLISH_SKILL}.`;
 
 function usage() {
   return [
-    'usage: node scripts/publishGit.mjs <projetoId|mls-<id>> <local|remote> [--align] [--autocommit]',
+    'usage: node scripts/publishGit.mjs <projectId|mls-<id>> <local|remote> [--align] [--autocommit]',
     '       node scripts/publishGit.mjs login [--paste] [--install-helper]',
-    '       node scripts/publishGit.mjs <projetoId|mls-<id>> clone <local|remote>',
+    '       node scripts/publishGit.mjs <projectId|mls-<id>> clone <local|remote>',
     '       [--ssh-host=…] [--ssh-config=…] [--remote-base=…] [--ssh-cert=…] [--git-url=…]',
-    '  login  — abre o browser, autentica no collab-auth e grava a sessão em ~/.collab/publishGit.json',
-    '           --paste: cola o token na mão (fallback); --install-helper: registra o credential',
-    '           helper no git config global (para `git clone` cru). O access renova sozinho no push',
-    '  --git-url=https://<vm> — publica por https (JWT) em vez de ssh; sem isto nada muda',
+    '  login  — opens the browser, authenticates with collab-auth and stores the session in ~/.collab/publishGit.json',
+    '           --paste: paste the token by hand (fallback); --install-helper: register the credential',
+    '           helper in the global git config (for a raw `git clone`). Access renews on its own during push',
+    '  --git-url=https://<vm> — publish over https (JWT) instead of ssh; without this nothing changes',
     '  local  — PUBLISH_LOCAL_* from mls-base/.env',
     '  remote — CLI flags, else servers/remote.conf (copy from servers/remote.conf.example)',
     '  clone  — git clone from the VM; existing folder: connect remote `vm` and report state, never force',
     '  --align — first-time unrelated histories: --force-with-lease after a diff + confirm',
-    '  --autocommit — dirty worktree: git add -A and commit `publish: <área> (n arquivos), …` before push',
+    '  --autocommit — dirty worktree: git add -A and commit `publish: <area> (n files), …` before push',
     '  obj/ is disposable locally (the VM hook rebuilds it); publishGit deletes it from disk and git before push',
   ].join('\n');
 }
@@ -194,7 +194,7 @@ export function resolveProfileConf(profile, projectDir = ROOT, flagConf = {}) {
   const conf = profile === 'local' ? { ...loadLocalConf(), ...flagConf } : loadRemoteConf(projectDir, flagConf);
   if (conf.GIT_URL) return conf;
   if (conf.MULTIPASS_INSTANCE && !conf.SSH_HOST) {
-    fail('git publish precisa de SSH_HOST; Multipass sozinho não serve de remote git.');
+    fail('git publish needs SSH_HOST; Multipass alone is not a git remote.');
   }
   return conf;
 }
@@ -391,7 +391,7 @@ export function commitMessageFromNames(names) {
   if (keys.length === 0) return 'publish: local';
   const parts = keys.map((key) => {
     const n = counts.get(key);
-    const word = n === 1 ? 'arquivo' : 'arquivos';
+    const word = n === 1 ? 'file' : 'files';
     return `${key} (${n} ${word})`;
   });
   return `publish: ${parts.join(', ')}`;
@@ -417,7 +417,7 @@ function removeLocalObj(repo) {
   const onDisk = existsSync(join(repo, 'obj'));
   if (!tracked && !onDisk) return false;
 
-  process.stderr.write('[publishGit] removendo obj/ local (descartável; o build é da VM).\n');
+  process.stderr.write('[publishGit] removing local obj/ (disposable; the build happens on the VM).\n');
   const gitignoreChanged = ensureObjGitignore(repo);
   if (tracked) {
     const rm = gitSync(repo, ['rm', '-r', '--cached', '--ignore-unmatch', '--', 'obj']);
@@ -484,10 +484,10 @@ function printDiffSummary(repo, localSha, remoteSha) {
   const stat = gitSync(repo, ['diff', '--stat', remoteSha, localSha, ...excludeObj]).stdout.trim();
   const names = gitOut(repo, ['diff', '--name-only', remoteSha, localSha, ...excludeObj]);
   const count = names ? names.split(/\n/u).filter(Boolean).length : 0;
-  process.stderr.write('\n[publishGit] histórias ainda não alinhadas (HEAD local × main da VM)\n');
-  process.stderr.write(`  HEAD local: ${localLog}\n`);
-  process.stderr.write(`  main na VM: ${remoteLog}\n`);
-  process.stderr.write(`  arquivos diferentes: ${count}\n`);
+  process.stderr.write('\n[publishGit] histories not aligned yet (local HEAD × VM main)\n');
+  process.stderr.write(`  local HEAD: ${localLog}\n`);
+  process.stderr.write(`  main on the VM: ${remoteLog}\n`);
+  process.stderr.write(`  different files: ${count}\n`);
   if (stat) process.stderr.write(`${stat}\n`);
 }
 
@@ -495,7 +495,7 @@ async function confirmAlign() {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   const answer = await new Promise((resolveAnswer) => {
     rl.question(
-      'Isto substitui a main da VM pelo HEAD local (--force-with-lease). Continuar? [y/N] ',
+      'This replaces the VM main with local HEAD (--force-with-lease). Continue? [y/N] ',
       resolveAnswer,
     );
   });
@@ -518,9 +518,9 @@ async function runLogin({ installHelper, paste }) {
   const current = readSession();
   if (current.access) {
     process.stderr.write(
-      `[publishGit] sessão atual: ${current.email || '(sem e-mail)'} — ${current.state}`
-      + `${current.expiresAt ? ` (access até ${current.expiresAt})` : ''}`
-      + `${current.refresh ? '' : ' — sem refresh (login antigo)'}\n`,
+      `[publishGit] current session: ${current.email || '(no email)'} — ${current.state}`
+      + `${current.expiresAt ? ` (access until ${current.expiresAt})` : ''}`
+      + `${current.refresh ? '' : ' — no refresh (legacy login)'}\n`,
     );
   }
 
@@ -528,42 +528,42 @@ async function runLogin({ installHelper, paste }) {
     try {
       const saved = await runRedirectLogin({});
       process.stderr.write(
-        `[publishGit] sessão guardada em ${saved.path} (modo 600): ${saved.email || '(sem e-mail)'}\n`,
+        `[publishGit] session stored at ${saved.path} (mode 600): ${saved.email || '(no email)'}\n`,
       );
       if (saved.hasRefresh) {
-        process.stderr.write('[publishGit] o access renova sozinho no push; o refresh vale 30 dias.\n');
+        process.stderr.write('[publishGit] access renews on its own during push; refresh lasts 30 days.\n');
       } else {
         // Sem refresh o "login uma vez" não existe: melhor dizer agora que descobrir no push.
-        process.stderr.write('[publishGit] atenção: o collab-auth não devolveu refresh — vai pedir login de novo em 1h.\n');
+        process.stderr.write('[publishGit] warning: collab-auth did not return a refresh — it will ask for login again in 1h.\n');
       }
       reportHelperSetup(installHelper);
       return 0;
     } catch (error) {
-      process.stderr.write(`[publishGit] login por browser falhou: ${error.message}\n`);
-      process.stderr.write('[publishGit] tentando a colagem (mesmo resultado, um passo manual): use --paste para ir direto.\n');
+      process.stderr.write(`[publishGit] browser login failed: ${error.message}\n`);
+      process.stderr.write('[publishGit] falling back to paste (same result, one manual step): use --paste to skip the browser.\n');
     }
   }
 
   process.stderr.write(
-    '\nCole o access token do collab-auth (o mesmo do cookie `cauth` de uma sessão do runtime).\n'
-    + 'Como obter: abra o app publicado, faça login e copie o token de `GET /session/info`\n'
-    + '(ou do cookie cauth). Ele vale 1 hora — sem refresh, o login por browser é melhor.\n',
+    '\nPaste the collab-auth access token (the same `cauth` cookie from a runtime session).\n'
+    + 'How: open the published app, sign in and copy the token from `GET /session/info`\n'
+    + '(or from the cauth cookie). It lasts 1 hour — without refresh, browser login is better.\n',
   );
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   const answer = await new Promise((resolveAnswer) => rl.question('token: ', resolveAnswer));
   rl.close();
   const token = String(answer).trim();
-  if (!token) fail('[publishGit] nenhum token informado — nada gravado.', AUTH_EXIT);
+  if (!token) fail('[publishGit] no token provided — nothing stored.', AUTH_EXIT);
 
   const { state, email, expiresAt } = tokenState(token);
   if (state === 'invalid') {
-    fail('[publishGit] isto não parece um JWT do collab-auth (esperado header.payload.signature com exp).', AUTH_EXIT);
+    fail('[publishGit] this does not look like a collab-auth JWT (expected header.payload.signature with exp).', AUTH_EXIT);
   }
   if (state === 'expired') {
-    fail(`[publishGit] este token já expirou${expiresAt ? ` em ${expiresAt}` : ''} — pegue um novo.`, AUTH_EXIT);
+    fail(`[publishGit] this token already expired${expiresAt ? ` at ${expiresAt}` : ''} — get a new one.`, AUTH_EXIT);
   }
   const saved = writeToken(token);
-  process.stderr.write(`[publishGit] token guardado em ${saved.path} (modo 600): ${email || '(sem e-mail)'} até ${expiresAt}\n`);
+  process.stderr.write(`[publishGit] token stored at ${saved.path} (mode 600): ${email || '(no email)'} until ${expiresAt}\n`);
   reportHelperSetup(installHelper);
   return 0;
 }
@@ -573,15 +573,15 @@ function reportHelperSetup(installHelper) {
   if (installHelper) {
     // Mexe no git config GLOBAL do usuário — por isso só com a flag explícita.
     const set = gitSync(ROOT, ['config', '--global', 'credential.helper', credentialHelperValue(helperScript)]);
-    if (set.code !== 0) fail(`[publishGit] não consegui registrar o credential helper:\n${set.out.trim()}`);
-    process.stderr.write('[publishGit] credential helper registrado no git config global (`git clone` cru já funciona).\n');
+    if (set.code !== 0) fail(`[publishGit] could not register the credential helper:\n${set.out.trim()}`);
+    process.stderr.write('[publishGit] credential helper registered in the global git config (raw `git clone` now works).\n');
     return;
   }
   process.stderr.write(
-    '[publishGit] o publish por --git-url já usa a sessão sem mais nada.\n'
-    + '            Para um `git clone` cru funcionar sem digitar token, rode uma vez:\n'
+    '[publishGit] --git-url publish already uses the session with nothing extra.\n'
+    + '            For a raw `git clone` to work without typing a token, run once:\n'
     + `            git config --global credential.helper '${credentialHelperValue(helperScript)}'\n`
-    + '            (ou repita este login com --install-helper)\n',
+    + '            (or repeat this login with --install-helper)\n',
   );
 }
 
@@ -605,12 +605,12 @@ export function gitEnvFor(conf, root = ROOT) {
 function failAuth(text) {
   const { state, email, refresh } = readSession();
   const diagnosis = state === 'ok'
-    ? `o token de ${email || 'você'} foi recusado pela VM`
+    ? `the token for ${email || 'you'} was refused by the VM`
     : state === 'expired'
-      ? (refresh ? 'sua sessão expirou e o refresh também foi recusado' : 'seu token expirou')
-      : 'você não tem sessão guardada';
+      ? (refresh ? 'your session expired and the refresh was also refused' : 'your token expired')
+      : 'you have no stored session';
   fail(
-    `\n[publishGit] ${diagnosis}. Rode: pnpm publishGit login\n`
+    `\n[publishGit] ${diagnosis}. Run: pnpm publishGit login\n`
     + `${String(text ?? '').trim().split('\n').slice(-3).join('\n')}`,
     AUTH_EXIT,
   );
@@ -630,17 +630,17 @@ function relation(repo, localSha, remoteSha) {
 function describeCloneRelation(rel) {
   switch (rel) {
     case 'same':
-      return 'igual à main da VM. Nada a alinhar.';
+      return 'same as VM main. Nothing to align.';
     case 'ahead':
-      return 'à frente da VM. pnpm publish:git (lima) ou pnpm publish:remote publica.';
+      return 'ahead of the VM. pnpm publish:git (lima) or pnpm publish:remote publishes.';
     case 'behind':
-      return 'atrás da VM. A VM tem commits que você não tem — faça pull/rebase. Clone não sobrescreve.';
+      return 'behind the VM. The VM has commits you do not — pull/rebase. Clone does not overwrite.';
     case 'diverged':
-      return 'divergente. Clone não sobrescreve. pull/rebase, ou --align (confirmação humana).';
+      return 'diverged. Clone does not overwrite. pull/rebase, or --align (human confirmation).';
     case 'unrelated':
       return (
-        'histórias não relacionadas com a VM. ' +
-        'Para alinhar, rode publishGit com --align (confirmação humana; clone não executa force).'
+        'histories unrelated to the VM. ' +
+        'To align, run publishGit with --align (human confirmation; clone never force-pushes).'
       );
     default:
       return String(rel);
@@ -650,14 +650,14 @@ function describeCloneRelation(rel) {
 function alignHint(id, profile) {
   return (
     `  node scripts/publishGit.mjs ${id} ${profile} --align\n` +
-    '  (confirmação interativa; clone nunca faz force)\n'
+    '  (interactive confirmation; clone never force-pushes)\n'
   );
 }
 
 async function fetchVmHeads(repo, env) {
   const fetched = await runGitLive(repo, ['fetch', VM_REMOTE, '+refs/heads/*:refs/remotes/vm/*'], env);
   if (fetched.code !== 0) {
-    fail(`não consegui ler a VM:\n${fetched.out.trim()}`);
+    fail(`could not read the VM:\n${fetched.out.trim()}`);
   }
   return gitSync(repo, ['rev-parse', 'refs/remotes/vm/vm-baseline']).code === 0;
 }
@@ -668,7 +668,7 @@ async function fetchVmHeads(repo, env) {
  */
 export async function runClone({ dest, url, env = process.env, id, profile }) {
   if (existsSync(dest) && !statSync(dest).isDirectory()) {
-    fail(`destino não é uma pasta: ${dest}`);
+    fail(`destination is not a directory: ${dest}`);
   }
 
   if (!existsSync(dest)) {
@@ -676,13 +676,13 @@ export async function runClone({ dest, url, env = process.env, id, profile }) {
     const cloned = await runGitLive(dirname(dest), ['clone', '-o', VM_REMOTE, url, dest], env);
     if (cloned.code !== 0) {
       if (isAuthFailure(cloned.out)) failAuth(cloned.out);
-      fail(`git clone falhou (exit ${cloned.code}).`);
+      fail(`git clone failed (exit ${cloned.code}).`);
     }
     ensureVmRemote(dest, url);
     const hasBaseline = await fetchVmHeads(dest, env);
     process.stderr.write(`[publishGit] clone ok: ${dest}\n`);
     process.stderr.write(
-      `  branches: main${hasBaseline ? ' + vm-baseline' : ' (vm-baseline ausente; gitReposSetup incompleto?)'}\n`,
+      `  branches: main${hasBaseline ? ' + vm-baseline' : ' (vm-baseline missing; gitReposSetup incomplete?)'}\n`,
     );
     return { action: 'cloned', relation: 'same', hasBaseline };
   }
@@ -692,8 +692,8 @@ export async function runClone({ dest, url, env = process.env, id, profile }) {
     ensureVmRemote(dest, url);
     const hasBaseline = await fetchVmHeads(dest, env);
     process.stderr.write(
-      `[publishGit] ${`mls-${id}`} já existia sem git: repo inicializado, remote ${VM_REMOTE} → ${url}\n` +
-        '  histórias não relacionadas com a VM (esperado). Para alinhar, rode:\n' +
+      `[publishGit] ${`mls-${id}`} already existed without git: repo initialized, remote ${VM_REMOTE} → ${url}\n` +
+        '  histories unrelated to the VM (expected). To align, run:\n' +
         alignHint(id, profile),
     );
     return { action: 'inited', relation: 'unrelated', hasBaseline };
@@ -704,7 +704,7 @@ export async function runClone({ dest, url, env = process.env, id, profile }) {
   const hasBaseline = await fetchVmHeads(dest, env);
   const localShaAfter = gitSync(dest, ['rev-parse', 'HEAD']).stdout.trim();
   if (localShaBefore && localShaAfter && localShaBefore !== localShaAfter) {
-    fail('clone recusou continuar: HEAD local mudou durante o fetch (não deveria).');
+    fail('clone refused to continue: local HEAD changed during fetch (should not happen).');
   }
 
   const hasHead = Boolean(localShaAfter);
@@ -714,16 +714,16 @@ export async function runClone({ dest, url, env = process.env, id, profile }) {
     rel = relation(dest, localShaAfter, remoteRef.stdout.trim());
   }
 
-  process.stderr.write(`[publishGit] ${`mls-${id}`} já é um git. remote ${VM_REMOTE} → ${url}\n`);
-  process.stderr.write(`  estado: ${describeCloneRelation(rel)}\n`);
+  process.stderr.write(`[publishGit] ${`mls-${id}`} is already a git repo. remote ${VM_REMOTE} → ${url}\n`);
+  process.stderr.write(`  state: ${describeCloneRelation(rel)}\n`);
   if (rel === 'unrelated') process.stderr.write(alignHint(id, profile));
   return { action: 'connected', relation: rel, hasBaseline };
 }
 
 function explainDirtyVm(out) {
   process.stderr.write(
-    '\n[publishGit] a VM recusou o push (worktree suja — proteção updateInstead).\n' +
-      'Não force e não tente contornar: faça commit ou desfaça a alteração na pasta do projeto na VM.\n',
+    '\n[publishGit] the VM refused the push (dirty worktree — updateInstead protection).\n' +
+      'Do not force and do not work around it: commit or undo the change in the project folder on the VM.\n',
   );
   const excerpt = stripRemotePrefix(out)
     .split(/\n/u)
@@ -825,7 +825,7 @@ async function main() {
   const repo = join(ROOT, projectName);
 
   if (command !== 'clone' && !existsSync(join(repo, '.git'))) {
-    fail(`projeto não encontrado ou sem git: ${repo}`);
+    fail(`project not found or not a git repo: ${repo}`);
   }
 
   const conf = resolveProfileConf(profile, repo, flagConf);
@@ -837,9 +837,9 @@ async function main() {
     const resolved = await resolvePushToken({});
     if (!resolved.ok) failAuth(resolved.reason);
     const { email, expiresAt } = tokenState(resolved.token);
-    const origin = resolved.source === 'refreshed' ? ' (access renovado agora)'
-      : resolved.source.startsWith('service') ? ' (token de serviço)' : '';
-    process.stderr.write(`[publishGit] identidade: ${email || '(sem e-mail)'}${origin} — access até ${expiresAt}\n`);
+    const origin = resolved.source === 'refreshed' ? ' (access just renewed)'
+      : resolved.source.startsWith('service') ? ' (service token)' : '';
+    process.stderr.write(`[publishGit] identity: ${email || '(no email)'}${origin} — access until ${expiresAt}\n`);
   }
 
   if (command === 'clone') {
@@ -850,14 +850,14 @@ async function main() {
 
   const branch = gitOut(repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (branch !== 'main') {
-    fail(`publique a partir de main (branch atual: ${branch}).`);
+    fail(`publish from main (current branch: ${branch}).`);
   }
   removeLocalObj(repo);
   warnClientConfig(ROOT, id);
   if (isDirty(repo)) {
     if (!autocommit) fail(DIRTY_LOCAL_MSG);
     autocommitDirty(repo);
-    if (isDirty(repo)) fail('worktree local ainda suja após --autocommit.');
+    if (isDirty(repo)) fail('local worktree still dirty after --autocommit.');
   }
 
   ensureVmRemote(repo, url);
@@ -867,13 +867,13 @@ async function main() {
   if (fetch.code !== 0) {
     // O 401 aparece aqui primeiro, não no push: o fetch é a primeira conversa com a VM.
     if (isAuthFailure(fetch.out)) failAuth(fetch.out);
-    fail(`não consegui ler a main da VM:\n${fetch.out.trim()}`);
+    fail(`could not read VM main:\n${fetch.out.trim()}`);
   }
 
   const localSha = gitOut(repo, ['rev-parse', 'HEAD']);
   const remoteRef = gitSync(repo, ['rev-parse', 'refs/remotes/vm/main']);
   if (remoteRef.code !== 0) {
-    fail('a VM não tem branch main; rode gitReposSetup na VM antes.');
+    fail('the VM has no main branch; run gitReposSetup on the VM first.');
   }
   const remoteSha = remoteRef.stdout.trim();
   const rel = relation(repo, localSha, remoteSha);
@@ -888,7 +888,7 @@ async function main() {
 
   if (rel === 'same') {
     if (!needsRebuildCommit(rel, changedDeps, missingDeps)) {
-      process.stderr.write('[publishGit] já está na VM (HEAD = main remota) e nenhum dep mudou. Nada a publicar.\n');
+      process.stderr.write('[publishGit] already on the VM (HEAD = remote main) and no dep changed. Nothing to publish.\n');
       process.exit(0);
     }
     // gb69: a release é do projeto publicado. Commit-marca em main para o hook
@@ -897,12 +897,12 @@ async function main() {
     // o hook cujo resolveDeps clona e arma o alvo.
     const rebuildIds = [...new Set([...changedDeps, ...missingDeps])];
     process.stderr.write(
-      `[publishGit] app inalterado; deps alterados: ${rebuildIds.join(' ')} — commit-marca no projeto para cortar a release.\n`,
+      `[publishGit] app unchanged; deps changed: ${rebuildIds.join(' ')} — marker commit on the project to cut the release.\n`,
     );
     makeRebuildCommit(repo, rebuildIds);
   }
   if (rel === 'behind' || rel === 'diverged') {
-    fail('a VM tem commits que você não tem — faça pull/rebase.');
+    fail('the VM has commits you do not — pull/rebase.');
   }
 
   let forceLease = '';
@@ -910,13 +910,13 @@ async function main() {
     printDiffSummary(repo, localSha, remoteSha);
     if (!align) {
       fail(
-        '\n[publishGit] recusando force automático. Reexecute com --align e confirme o resumo acima.',
+        '\n[publishGit] refusing automatic force. Re-run with --align and confirm the summary above.',
       );
     }
     const ok = await confirmAlign();
-    if (!ok) fail('[publishGit] alinhamento cancelado.');
+    if (!ok) fail('[publishGit] alignment cancelled.');
     forceLease = remoteSha;
-    process.stderr.write('[publishGit] alinhando com --force-with-lease…\n');
+    process.stderr.write('[publishGit] aligning with --force-with-lease…\n');
   }
   const pushArgs = clientPushArgs({ remote: VM_REMOTE, changedDeps, forceLease });
 
@@ -933,7 +933,7 @@ async function main() {
       process.exit(1);
     }
     if (/non-fast-forward|failed to push some refs/i.test(text) && !isPushDisconnect(text)) {
-      fail('a VM tem commits que você não tem — faça pull/rebase.');
+      fail('the VM has commits you do not — pull/rebase.');
     }
   }
 
@@ -1005,20 +1005,20 @@ export function disconnectAppliedMessage(localSha) {
   const short = String(localSha || '').slice(0, 7);
   return (
     `[publishGit] publish aplicado na VM (main=${short}); ` +
-    'a conexão https caiu no pm2 reload — esperado, não é falha.'
+    'the https connection dropped on pm2 reload — expected, not a failure.'
   );
 }
 
 export function pushNotAppliedMessage({ code, kind, localSha = '', remoteShaAfter = '' }) {
   if (kind === 'disconnect-not-applied') {
     const local = String(localSha || '').slice(0, 7) || 'local';
-    const remote = String(remoteShaAfter || '').slice(0, 7) || 'desconhecida';
+    const remote = String(remoteShaAfter || '').slice(0, 7) || 'unknown';
     return (
-      `[publishGit] git push caiu (exit ${code}) e a main remota não avançou ` +
-      `(local ${local} ≠ remota ${remote}). Publish NÃO aplicado.`
+      `[publishGit] git push dropped (exit ${code}) and remote main did not move ` +
+      `(local ${local} ≠ remote ${remote}). Publish NOT applied.`
     );
   }
-  return `[publishGit] git push falhou (exit ${code}). Publish NÃO aplicado.`;
+  return `[publishGit] git push failed (exit ${code}). Publish NOT applied.`;
 }
 
 export function readRemoteMainSha(repo, env, { gitSyncFn = gitSync, attempts = 4, sleepFn } = {}) {
@@ -1063,7 +1063,7 @@ export function noteTsconfigPaths(root, write = (text) => process.stderr.write(t
 export function formatPublishClientConfigTail(text) {
   const warn = /##clientConfig warn n=(\d+)##/.exec(String(text ?? ''));
   if (!warn) return '';
-  return `[publishGit] clientConfig: ${warn[1]} aviso(s) (não bloqueia a release).`;
+  return `[publishGit] clientConfig: ${warn[1]} warning(s) (does not block the release).`;
 }
 
 /** Lê o marcador do hook no texto do push e sai com o código certo. */
@@ -1072,7 +1072,7 @@ function reportBuildMarker(text) {
   if (configTail) process.stderr.write(`${configTail}\n`);
   const okMatch = MARKER_OK.exec(text);
   if (okMatch) {
-    process.stderr.write(`release ${okMatch[1]} ativa na VM\n`);
+    process.stderr.write(`release ${okMatch[1]} active on the VM\n`);
     process.exit(0);
   }
   if (MARKER_ERR.test(text)) {

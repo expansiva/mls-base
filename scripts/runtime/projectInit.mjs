@@ -141,15 +141,15 @@ export function mayRecreate(state) {
  * in 4s with "Invalid agent agentNewSolution".
  */
 export function missingWorkspaceDependencies(configText) {
-  if (configText === '') return 'l5/config.json ausente';
+  if (configText === '') return 'l5/config.json missing';
   let parsed;
   try {
     parsed = JSON.parse(configText);
   } catch {
-    return 'l5/config.json inválido (JSON)';
+    return 'l5/config.json invalid (JSON)';
   }
   const list = parsed && typeof parsed === 'object' ? parsed.workspaceDependencies : null;
-  if (!Array.isArray(list) || list.length === 0) return 'l5/config.json sem workspaceDependencies';
+  if (!Array.isArray(list) || list.length === 0) return 'l5/config.json missing workspaceDependencies';
   return '';
 }
 
@@ -159,14 +159,14 @@ export function missingWorkspaceDependencies(configText) {
  * it is not a client.
  */
 export function missingShellTemplates(configText) {
-  if (configText === '') return 'l5/config.json ausente';
+  if (configText === '') return 'l5/config.json missing';
   let parsed;
   try {
     parsed = JSON.parse(configText);
   } catch {
-    return 'l5/config.json inválido (JSON)';
+    return 'l5/config.json invalid (JSON)';
   }
-  if (!parsed?.shellTemplates?.spa) return 'l5/config.json sem shellTemplates.spa';
+  if (!parsed?.shellTemplates?.spa) return 'l5/config.json missing shellTemplates.spa';
   return '';
 }
 

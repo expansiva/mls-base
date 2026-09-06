@@ -122,14 +122,14 @@ test('commitMessageFromNames groups l2 by module and other layers by lN', () => 
   }
   assert.equal(
     commitMessageFromNames(names),
-    'publish: l2/listaAssinatura2 (14 arquivos), l4 (3 arquivos), l5 (2 arquivos)',
+    'publish: l2/listaAssinatura2 (14 files), l4 (3 files), l5 (2 files)',
   );
 });
 
-test('commitMessageFromNames uses singular arquivo and sorts layers', () => {
+test('commitMessageFromNames uses singular file and sorts layers', () => {
   assert.equal(
     commitMessageFromNames(['l5/project.json', 'l1/mod/usecase.ts', '.gitignore']),
-    'publish: l1 (1 arquivo), l5 (1 arquivo), .gitignore (1 arquivo)',
+    'publish: l1 (1 file), l5 (1 file), .gitignore (1 file)',
   );
 });
 
@@ -165,7 +165,7 @@ test('autocommitDirty commits generated layers, ignores Studio bookkeeping, no e
     assert.equal(isDirty(dir), false);
 
     const subject = git(dir, ['log', '-1', '--pretty=%s']);
-    assert.equal(subject, 'publish: l2/listaAssinatura2 (1 arquivo), l4 (1 arquivo), l5 (1 arquivo)');
+    assert.equal(subject, 'publish: l2/listaAssinatura2 (1 file), l4 (1 file), l5 (1 file)');
 
     const tracked = git(dir, ['ls-files']);
     assert.match(tracked, /l2\/listaAssinatura2\/page\.ts/);
@@ -463,7 +463,7 @@ test('https: disconnect depois da ref avançar é sucesso (publish aplicado)', (
   });
   assert.equal(verdict.kind, 'disconnect-applied');
   assert.match(disconnectAppliedMessage('5da3322abcdef'), /publish aplicado/);
-  assert.match(disconnectAppliedMessage('5da3322abcdef'), /esperado, não é falha/);
+  assert.match(disconnectAppliedMessage('5da3322abcdef'), /expected, not a failure/);
   assert.doesNotMatch(disconnectAppliedMessage('5da3322abcdef'), /falhou/);
 });
 
@@ -482,8 +482,8 @@ test('https: disconnect sem a ref avançar continua falhando (publish NÃO aplic
     localSha: '5da3322abcdef',
     remoteShaAfter: 'aa11111oldref',
   });
-  assert.match(message, /NÃO aplicado/);
-  assert.match(message, /não avançou/);
+  assert.match(message, /NOT applied/);
+  assert.match(message, /did not move/);
 });
 
 test('https: disconnect sem conseguir ler a ref remota também é NÃO aplicado', () => {
@@ -518,7 +518,7 @@ test('ssh: disconnect não vira sucesso só porque a ref bateu', () => {
     remoteShaAfter: '5da3322abcdef',
   });
   assert.equal(verdict.kind, 'push-error');
-  assert.match(pushNotAppliedMessage({ code: 1, kind: 'push-error' }), /NÃO aplicado/);
+  assert.match(pushNotAppliedMessage({ code: 1, kind: 'push-error' }), /NOT applied/);
 });
 
 test('readRemoteMainSha injeta a leitura da ref e devolve a SHA', () => {
@@ -543,9 +543,9 @@ test('readRemoteMainSha vazio depois das tentativas continua sendo falha', () =>
 });
 
 test('MISSING_HOOK_MSG afirma o que ficou por fazer, não pergunta', () => {
-  assert.match(MISSING_HOOK_MSG, /não cortou release/);
+  assert.match(MISSING_HOOK_MSG, /did not cut a release/);
   assert.match(MISSING_HOOK_MSG, /gitReposSetup\.mjs/);
-  assert.match(MISSING_HOOK_MSG, /rode o publish de novo/);
+  assert.match(MISSING_HOOK_MSG, /run publish again/);
   assert.doesNotMatch(MISSING_HOOK_MSG, /\?/);
   assert.doesNotMatch(MISSING_HOOK_MSG, /ausente neste repo/);
 });
@@ -572,7 +572,7 @@ test('formatPublishClientConfigTail lê o marker do hook e não muda o MARKER_OK
     '##clientConfig warn n=1##',
     '##gitBackend build=ok release=20260906120000 project=mls-102039##',
   ].join('\n');
-  assert.match(formatPublishClientConfigTail(hook), /1 aviso\(s\) \(não bloqueia a release\)/);
+  assert.match(formatPublishClientConfigTail(hook), /1 warning\(s\) \(does not block the release\)/);
   const MARKER_OK = /##gitBackend build=ok release=(\d{14}) project=mls-\d+##/;
   assert.equal(MARKER_OK.exec(hook)[1], '20260906120000');
   assert.equal(formatPublishClientConfigTail('##gitBackend build=ok release=20260906120000 project=mls-102039##'), '');

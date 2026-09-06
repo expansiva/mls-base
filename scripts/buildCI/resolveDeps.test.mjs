@@ -116,7 +116,7 @@ test('import /_99999_/ outside the closure is one finding naming the file', asyn
         log: () => {},
       }),
       (error) => {
-        assert.match(error.message, /dependência não declarada: 99999 \(importada por l1\/todo\/createTicket\.ts\) — declare em mlsDep\.json/);
+        assert.match(error.message, /undeclared dependency: 99999 \(imported by l1\/todo\/createTicket\.ts\) — declare it in mlsDep\.json/);
         assert.equal(error.message.split('\n').length, 1);
         return true;
       },

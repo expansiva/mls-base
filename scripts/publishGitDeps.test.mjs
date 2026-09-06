@@ -201,8 +201,8 @@ test('rodar duas vezes seguidas é no-op de verdade', () => {
 });
 
 test('depsSummary é a linha que o dev lê', () => {
-  assert.equal(depsSummary(['102020', '102029'], 5), 'deps alterados: 102020 102029 | inalterados: 5');
-  assert.equal(depsSummary([], 7), 'deps alterados: nenhum | inalterados: 7');
+  assert.equal(depsSummary(['102020', '102029'], 5), 'deps changed: 102020 102029 | unchanged: 5');
+  assert.equal(depsSummary([], 7), 'deps changed: none | unchanged: 7');
 });
 
 test('isVmRepoMissing reconhece ssh e http 404, não auth', () => {
@@ -217,8 +217,8 @@ test('isVmRepoMissing reconhece ssh e http 404, não auth', () => {
 test('missingVmRepoMessage nomeia a dep e pede o 2º publish', () => {
   const msg = missingVmRepoMessage('mls-100555');
   assert.match(msg, /mls-100555/);
-  assert.match(msg, /build vai criá-la/);
-  assert.match(msg, /publique de novo/);
+  assert.match(msg, /build will create it/);
+  assert.match(msg, /publish again/);
 });
 
 test('alvo ausente na VM: planSnapshot diz missing, não error', () => {
@@ -257,7 +257,7 @@ test('fetch com erro que não é repo ausente continua error', () => {
       ensureRemote: () => {},
     });
     assert.equal(plan.status, 'error');
-    assert.match(plan.reason, /fetch falhou/);
+    assert.match(plan.reason, /fetch failed/);
     assert.match(plan.reason, /Permission denied/);
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -36,10 +36,10 @@ function log(message) {
 
 function usage() {
   return [
-    'usage: node scripts/vmInit.mjs <projetoId|mls-<id>> [--profile local|remote] [--force]',
-    '  --profile  destino (default local: PUBLISH_LOCAL_* do mls-base/.env)',
-    '  --force    recria o projeto na VM — só se main == vm-baseline (nunca apaga história)',
-    '  o projeto nasce de --from-model (mls-102039 no GitHub); não há template estático',
+    'usage: node scripts/vmInit.mjs <projectId|mls-<id>> [--profile local|remote] [--force]',
+    '  --profile  target (default local: PUBLISH_LOCAL_* from mls-base/.env)',
+    '  --force    recreate the project on the VM — only if main == vm-baseline (never deletes history)',
+    '  the project is born from --from-model (mls-102039 on GitHub); there is no static template',
   ].join('\n');
 }
 
@@ -56,7 +56,7 @@ export function parseArgs(argv) {
       fail('the static template is gone; the project is cloned from mls-102039 (--from-model).');
     }
     else if (arg === '--scaffold' || arg.startsWith('--scaffold=')) {
-      fail('--scaffold saiu: o projeto nasce de --from-model (mls-102039 no GitHub).');
+      fail('--scaffold is gone: the project is born from --from-model (mls-102039 on GitHub).');
     }
     else positional.push(arg);
   }
@@ -97,7 +97,7 @@ function ssh(conf, script) {
 
 function sshOrFail(conf, script, what) {
   const result = ssh(conf, script);
-  if (result.code !== 0) fail(`${what} falhou na VM:\n${result.out.trim()}`);
+  if (result.code !== 0) fail(`${what} failed on the VM:\n${result.out.trim()}`);
   return result.out.trim();
 }
 
@@ -109,7 +109,7 @@ function shQuote(value) {
 function ensureLima(instance) {
   const listed = run('limactl', ['list', '--format', 'json']);
   if (listed.code !== 0) {
-    fail(`limactl list falhou — a lima está instalada?\n${listed.out.trim()}`);
+    fail(`limactl list failed — is lima installed?\n${listed.out.trim()}`);
   }
   const rows = listed.out
     .split(/\n/u)
@@ -119,15 +119,15 @@ function ensureLima(instance) {
     .filter(Boolean);
   const found = rows.find((row) => row.name === instance);
   if (!found) {
-    fail(`instância lima "${instance}" não existe (limactl list). Ajuste PUBLISH_LOCAL_SSH_CONFIG ou PUBLISH_LOCAL_LIMA_INSTANCE.`);
+    fail(`lima instance "${instance}" does not exist (limactl list). Set PUBLISH_LOCAL_SSH_CONFIG or PUBLISH_LOCAL_LIMA_INSTANCE.`);
   }
   if (found.status === 'Running') {
-    log(`lima ${instance}: já rodando`);
+    log(`lima ${instance}: already running`);
     return;
   }
   log(`lima ${instance}: ${found.status} → limactl start`);
   const started = run('limactl', ['start', instance], { stdio: ['ignore', 'inherit', 'inherit'] });
-  if (started.code !== 0) fail(`limactl start ${instance} falhou (exit ${started.code}).`);
+  if (started.code !== 0) fail(`limactl start ${instance} failed (exit ${started.code}).`);
 }
 
 function waitForSsh(conf, seconds = SSH_WAIT_SECONDS) {
@@ -135,7 +135,7 @@ function waitForSsh(conf, seconds = SSH_WAIT_SECONDS) {
   for (;;) {
     if (ssh(conf, 'true').code === 0) return;
     if (Date.now() >= deadline) {
-      fail(`a VM não respondeu ssh em ${seconds}s (host ${conf.SSH_HOST}).`);
+      fail(`the VM did not answer ssh in ${seconds}s (host ${conf.SSH_HOST}).`);
     }
     run('sleep', ['2']);
   }
@@ -149,11 +149,11 @@ function ensurePlatform(conf, base) {
   const probe = ssh(conf, `test -f ${shQuote(initScript)} && echo init-ok`);
   if (!probe.out.includes('init-ok')) {
     fail(
-      `a plataforma não está montada na VM — falta:\n  ${initScript}\n` +
-        'Na VM, clone mls-base (collab-runtime passo 10) ou rode `node scripts/runtime/ensureMlsBaseCheckout.mjs` se a pasta já existir. Depois rode vm:init de novo.',
+      `the platform is not mounted on the VM — missing:\n  ${initScript}\n` +
+        'On the VM, clone mls-base (collab-runtime step 10) or run `node scripts/runtime/ensureMlsBaseCheckout.mjs` if the folder already exists. Then run vm:init again.',
     );
   }
-  log('plataforma na VM: ok (projectInit --from-model)');
+  log('platform on the VM: ok (projectInit --from-model)');
 }
 
 // ── step 3 ──────────────────────────────────────────────────────────────────
@@ -173,9 +173,9 @@ function initProjectOnVm(conf, base, id, force) {
   const command = projectInitCommand(base, id, force);
   const result = ssh(conf, command);
   process.stderr.write(result.out.endsWith('\n') || !result.out ? result.out : `${result.out}\n`);
-  if (result.code !== 0) fail(`projectInit falhou na VM (exit ${result.code}).`);
+  if (result.code !== 0) fail(`projectInit failed on the VM (exit ${result.code}).`);
   if (!/\b(created|unchanged)\b/u.test(result.out)) {
-    fail(`projectInit não confirmou o resultado na VM:\n${result.out.trim()}`);
+    fail(`projectInit did not confirm the result on the VM:\n${result.out.trim()}`);
   }
 }
 
@@ -185,7 +185,7 @@ function cloneOnMac(id, profile) {
     cwd: ROOT,
     stdio: ['ignore', 'inherit', 'inherit'],
   });
-  if (result.code !== 0) fail(`clone no Mac falhou (exit ${result.code}).`);
+  if (result.code !== 0) fail(`clone on the Mac failed (exit ${result.code}).`);
 }
 
 async function main() {
@@ -197,7 +197,7 @@ async function main() {
   if (profile === 'local') {
     const instance = limaInstanceOf(conf);
     if (instance) ensureLima(instance);
-    else log('perfil local sem instância lima identificável — assumo a VM já de pé');
+    else log('local profile with no identifiable lima instance — assuming the VM is already up');
   }
   waitForSsh(conf);
   ensurePlatform(conf, base);
@@ -205,9 +205,9 @@ async function main() {
   cloneOnMac(id, profile);
 
   process.stderr.write(
-    `\n[vmInit] mls-${id} pronto.\n` +
-      `  gerar:    collab-msg com projectId=${id}\n` +
-      `  publicar: node scripts/publishGit.mjs ${id} ${profile} --autocommit\n`,
+    `\n[vmInit] mls-${id} ready.\n` +
+      `  generate: collab-msg with projectId=${id}\n` +
+      `  publish:  node scripts/publishGit.mjs ${id} ${profile} --autocommit\n`,
   );
 }
 

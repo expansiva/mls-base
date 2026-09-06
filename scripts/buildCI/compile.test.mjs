@@ -96,7 +96,7 @@ test('declarations WARNING counts errors and does not dump that pass\'s tsc outp
     assert.equal(lines.includes(passMarker('declarations', 5)), true);
     const declWarn = lines.find((line) => /WARNING: tsc \(declarations\) reported type error/.test(line));
     assert.ok(declWarn, 'declarations WARNING line missing');
-    assert.match(declWarn, /\b5 erros suprimidos\b/);
+    assert.match(declWarn, /\b5 errors suppressed\b/);
     assert.match(declWarn, /tsc -p tsconfig\.d\.json/);
   });
 });

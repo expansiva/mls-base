@@ -404,9 +404,9 @@ export async function resolvePushToken({ home = homedir(), env = process.env, fe
       source: 'none',
       reason: session.access
         ? (session.fromEnv
-          ? 'COLLAB_PUBLISH_TOKEN expirou e não há refresh para renovar'
-          : 'sessão expirada e sem refresh token (login antigo, por colagem)')
-        : 'nenhuma sessão guardada',
+          ? 'COLLAB_PUBLISH_TOKEN expired and there is no refresh to renew'
+          : 'session expired and no refresh token (legacy paste login)')
+        : 'no stored session',
     };
   }
   const renewed = await refreshAccess(session.refresh, {

@@ -41,7 +41,7 @@ function runTsc(root, tsconfigPath, log, label, { tolerant = false, quietOutput 
     const prefix = `WARNING: tsc (${label}) reported type error(s) (exit ${result.status}) — ` +
       `best-effort, noEmitOnError:false ensures the file was still emitted`;
     const suffix = quietOutput
-      ? `. ${errors} erros suprimidos (ruído estrutural, decisão #25 — reproduzir com \`tsc -p ${tsconfigPath}\`)`
+      ? `. ${errors} errors suppressed (structural noise, decision #25 — reproduce with \`tsc -p ${tsconfigPath}\`)`
       : `:\n${output.trim()}`;
     log('compile', prefix + suffix);
   }

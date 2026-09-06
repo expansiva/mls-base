@@ -533,8 +533,8 @@ export async function buildWeb(clientConfig, ids) {
   const litCount = await emitLitRuntime({
     root: ROOT, outdir, config: litConfig, entries: litEntries, pkgDir: litPkgDir,
   });
-  log(`lit runtime -> ${litConfig.outDir} (${litCount} módulos, servidos em ${litConfig.baseUrl})`);
-  log(`web build -> dist/${WEB_DIST_DIR} (Lit + shells + css + l3; módulos do app vêm do zip)`);
+  log(`lit runtime -> ${litConfig.outDir} (${litCount} modules, served at ${litConfig.baseUrl})`);
+  log(`web build -> dist/${WEB_DIST_DIR} (Lit + shells + css + l3; app modules come from the zip)`);
 
   // copy l2 static resources (html/css/svg/json/md/assets) into dist/web
   let copied = 0;

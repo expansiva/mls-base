@@ -215,10 +215,10 @@ test('mayRecreate: --force falha FECHADO (ele guarda um rm -rf)', () => {
 
 test('missingWorkspaceDependencies: sem declarar, nenhum agente carrega', () => {
   assert.equal(missingWorkspaceDependencies('{"workspaceDependencies":["102044","102020"]}'), '');
-  assert.match(missingWorkspaceDependencies(''), /ausente/u);
-  assert.match(missingWorkspaceDependencies('{'), /inválido/u);
-  assert.match(missingWorkspaceDependencies('{}'), /sem workspaceDependencies/u);
-  assert.match(missingWorkspaceDependencies('{"workspaceDependencies":[]}'), /sem workspaceDependencies/u);
+  assert.match(missingWorkspaceDependencies(''), /missing/u);
+  assert.match(missingWorkspaceDependencies('{'), /invalid/u);
+  assert.match(missingWorkspaceDependencies('{}'), /missing workspaceDependencies/u);
+  assert.match(missingWorkspaceDependencies('{"workspaceDependencies":[]}'), /missing workspaceDependencies/u);
 });
 
 test('missingShellTemplates: a chave que deixou o 102043 zumbi', () => {

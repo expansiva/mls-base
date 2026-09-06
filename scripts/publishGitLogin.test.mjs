@@ -123,7 +123,7 @@ test('state trocado ⇒ o retorno é IGNORADO (é para isso que o state existe)'
     // enquanto o login espera.
     await assert.rejects(
       runRedirectLogin({ home, base, open: fakeBrowser({ tamperState: 'outro-state' }), log: () => {} }),
-      /state não confere/u,
+      /state mismatch/u,
     );
     assert.equal(existsSync(join(home, '.collab', 'publishGit.json')), false);
   } finally {
@@ -150,7 +150,7 @@ test('o browser que não volta ⇒ timeout com mensagem, sem pendurar o processo
   try {
     await assert.rejects(
       awaitLoopbackLogin({ base, timeoutMs: 300, open: fakeBrowser({ skipPost: true }), onUrl: () => {} }),
-      /o login não voltou/u,
+      /login did not return/u,
     );
   } finally {
     server.close();

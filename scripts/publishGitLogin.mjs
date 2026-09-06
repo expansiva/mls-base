@@ -127,17 +127,17 @@ export function awaitLoopbackLogin({
           }
           if (payload.state !== state) {
             // Alguma outra página no browser postou aqui. Não é erro do usuário: é o motivo do state.
-            finish(reject, new Error('state não confere — retorno de login ignorado'));
+            finish(reject, new Error('state mismatch — login return ignored'));
             return;
           }
           if (payload.error) {
-            finish(reject, new Error(`collab-auth recusou o login: ${payload.error}`));
+            finish(reject, new Error(`collab-auth refused the login: ${payload.error}`));
             return;
           }
           const access = String(payload.access_token ?? '');
           const refresh = String(payload.refresh_token ?? '');
           if (!access) {
-            finish(reject, new Error('o retorno não trouxe access_token'));
+            finish(reject, new Error('the return did not include access_token'));
             return;
           }
           finish(resolve, { access, refresh });
@@ -154,10 +154,10 @@ export function awaitLoopbackLogin({
       // collab-admin — o browser abre, o login funciona, e o loopback nunca recebe nada. Sem dizer
       // isto, o sintoma manda a pessoa procurar problema no navegador.
       finish(reject, new Error(
-        `o login não voltou em ${Math.round(timeoutMs / 1000)}s.\n`
-        + '  Se o browser abriu e o login funcionou, o collab-auth publicado ainda não aceita o\n'
-        + '  loopback: precisa da entrada `loopback` em COLLAB_AUTH_ALLOWED_RETURN_HOSTS (gb53 P-W1).\n'
-        + '  Enquanto isso: publishGit login --paste',
+        `login did not return in ${Math.round(timeoutMs / 1000)}s.\n`
+        + '  If the browser opened and login succeeded, the published collab-auth still does not accept\n'
+        + '  loopback: it needs the `loopback` entry in COLLAB_AUTH_ALLOWED_RETURN_HOSTS (gb53 P-W1).\n'
+        + '  Meanwhile: publishGit login --paste',
       ));
     }, timeoutMs);
     // Um timer aberto seguraria o processo mesmo depois de resolver.
@@ -189,12 +189,12 @@ export async function runRedirectLogin({
     timeoutMs,
     open,
     onUrl: (url, manual) => {
-      if (manual) log(`[publishGit] não consegui abrir o browser. Abra você: ${url}`);
-      else log(`[publishGit] abrindo o browser em ${base}/auth/login/google …`);
+      if (manual) log(`[publishGit] could not open the browser. Open it yourself: ${url}`);
+      else log(`[publishGit] opening the browser at ${base}/auth/login/google …`);
     },
   });
   const { state, email, expiresAt } = tokenState(access);
-  if (state === 'invalid') throw new Error('o collab-auth devolveu um token que não parece um JWT');
+  if (state === 'invalid') throw new Error('collab-auth returned a token that does not look like a JWT');
   const saved = writeSession({ access, refresh }, home ? { home } : {});
   return { ...saved, email, expiresAt, hasRefresh: Boolean(refresh) };
 }

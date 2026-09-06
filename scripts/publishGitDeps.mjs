@@ -135,7 +135,7 @@ export function isVmRepoMissing(output) {
 
 /** Aviso do 1º publish: nomeia a dep, diz que o build cria, e pede o 2º. */
 export function missingVmRepoMessage(depName) {
-  return `[publishGit] ${depName} ainda não existe na VM — o build vai criá-la; publique de novo para o retrato ir`;
+  return `[publishGit] ${depName} does not exist on the VM yet — the build will create it; publish again so the snapshot lands`;
 }
 
 /**
@@ -155,14 +155,14 @@ export function planSnapshot({ repo, remote, url, env, gitSync, ensureRemote }) 
   if (fetched.code !== 0) {
     const detail = String(fetched.out ?? fetched.stdout ?? '').trim();
     if (isVmRepoMissing(detail)) return { status: 'missing', reason: detail };
-    return { status: 'error', reason: `fetch falhou: ${detail}` };
+    return { status: 'error', reason: `fetch failed: ${detail}` };
   }
 
   const remoteSha = gitOut(repo, ['rev-parse', `refs/remotes/${remote}/main`], env);
-  if (!remoteSha) return { status: 'error', reason: 'a VM não tem main (rode gitReposSetup)' };
+  if (!remoteSha) return { status: 'error', reason: 'the VM has no main (run gitReposSetup)' };
 
   const snap = snapshotTree(repo, env);
-  if (!snap.ok) return { status: 'error', reason: `write-tree falhou: ${snap.reason}` };
+  if (!snap.ok) return { status: 'error', reason: `write-tree failed: ${snap.reason}` };
 
   // Compara ÁRVORES, não commits: dois retratos do mesmo disco dão a mesma
   // árvore mesmo com mensagens diferentes, então rodar duas vezes é no-op real.
@@ -187,10 +187,10 @@ export function sendSnapshot({ plan, remote, env, pushOptions = [], gitSync, run
   // Parent = o que a VM tem agora ⇒ o push é fast-forward, sempre. É isto que
   // dispensa `--align` para a plataforma: a VM recebe o disco, não a história.
   const commit = gitOut(repo, ['commit-tree', tree, '-p', remoteSha, '-m', message], env);
-  if (!commit) return { status: 'error', reason: 'commit-tree falhou' };
+  if (!commit) return { status: 'error', reason: 'commit-tree failed' };
 
   const updated = gitSync(repo, ['update-ref', SNAPSHOT_REF, commit], env);
-  if (updated.code !== 0) return { status: 'error', reason: `update-ref falhou: ${updated.out.trim()}` };
+  if (updated.code !== 0) return { status: 'error', reason: `update-ref failed: ${updated.out.trim()}` };
 
   const args = ['push'];
   for (const option of pushOptions) args.push('-o', option);
@@ -205,8 +205,8 @@ export function sendSnapshot({ plan, remote, env, pushOptions = [], gitSync, run
   return { status: 'pushed', reason: '', out: pushed.out ?? '' };
 }
 
-/** `deps alterados: 102020 102029 | inalterados: 5` */
+/** `deps changed: 102020 102029 | unchanged: 5` */
 export function depsSummary(changed, unchanged) {
-  const left = changed.length ? `deps alterados: ${changed.join(' ')}` : 'deps alterados: nenhum';
-  return `${left} | inalterados: ${unchanged}`;
+  const left = changed.length ? `deps changed: ${changed.join(' ')}` : 'deps changed: none';
+  return `${left} | unchanged: ${unchanged}`;
 }

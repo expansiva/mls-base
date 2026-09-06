@@ -96,7 +96,7 @@ test('injectImportMap troca só o bloco marcado', () => {
 test('shell sem os marcadores FALHA o build — nunca cai calado para o CDN', () => {
   assert.throws(
     () => injectImportMap('<head><script type="importmap">{}</script></head>', { imports: {} }),
-    /marcadores/u,
+    /missing markers/u,
   );
 });
 

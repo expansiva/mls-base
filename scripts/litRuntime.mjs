@@ -27,16 +27,16 @@ const IMPORTMAP_CLOSE = '<!-- /collab:lit-importmap -->';
 export function readLitRuntimeConfig(root) {
   const path = resolve(root, LIT_CONFIG_REL);
   if (!existsSync(path)) {
-    throw new Error(`litRuntime.json não encontrado em ${LIT_CONFIG_REL} — é ele que diz onde o Lit mora.`);
+    throw new Error(`litRuntime.json not found at ${LIT_CONFIG_REL} — that file says where Lit lives.`);
   }
   const config = JSON.parse(readFileSync(path, 'utf8'));
   for (const key of ['package', 'baseUrl', 'outDir']) {
     if (typeof config[key] !== 'string' || !config[key]) {
-      throw new Error(`${LIT_CONFIG_REL}: campo "${key}" ausente ou vazio.`);
+      throw new Error(`${LIT_CONFIG_REL}: field "${key}" missing or empty.`);
     }
   }
   if (!config.baseUrl.startsWith('/') || !config.baseUrl.endsWith('/')) {
-    throw new Error(`${LIT_CONFIG_REL}: "baseUrl" tem de ser absoluta e terminar em "/" (está "${config.baseUrl}").`);
+    throw new Error(`${LIT_CONFIG_REL}: "baseUrl" must be absolute and end with "/" (got "${config.baseUrl}").`);
   }
   return config;
 }
@@ -90,7 +90,7 @@ export function injectImportMap(html, importMap, { indent = '    ' } = {}) {
   const close = html.indexOf(IMPORTMAP_CLOSE);
   if (open < 0 || close < 0 || close < open) {
     throw new Error(
-      `shell sem os marcadores ${IMPORTMAP_OPEN} … ${IMPORTMAP_CLOSE} — o importmap do Lit é gerado, não escrito à mão.`,
+      `shell missing markers ${IMPORTMAP_OPEN} … ${IMPORTMAP_CLOSE} — the Lit importmap is generated, not hand-written.`,
     );
   }
   const body = JSON.stringify(importMap, null, 2)
@@ -138,7 +138,7 @@ export function litPackageDir(root, pkg) {
   const dir = resolve(root, 'node_modules', pkg);
   const pkgJsonPath = join(dir, 'package.json');
   if (!existsSync(pkgJsonPath)) {
-    throw new Error(`node_modules/${pkg} não encontrado a partir de ${root} — rode pnpm install.`);
+    throw new Error(`node_modules/${pkg} not found from ${root} — run pnpm install.`);
   }
   return { dir, pkgJson: JSON.parse(readFileSync(pkgJsonPath, 'utf8')) };
 }

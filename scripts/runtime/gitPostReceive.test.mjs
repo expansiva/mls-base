@@ -304,7 +304,7 @@ test('staleClusterWorkers: dois novos silenciam; um velho é nomeado', () => {
   const stale = staleClusterWorkers(mixed, { appName, reloadStartedAt: 1000, restartTimeBefore: before });
   assert.equal(stale.length, 1);
   assert.equal(stale[0].pm_id, 1);
-  assert.equal(formatStaleWorkerLog(appName, 1), 'app2043 worker 1 ainda na release anterior');
+  assert.equal(formatStaleWorkerLog(appName, 1), 'app2043 worker 1 still on the previous release');
 });
 
 test('detector: dois workers novos ⇒ silêncio; um velho ⇒ log + retry uma vez', async () => {
@@ -343,7 +343,7 @@ test('detector: dois workers novos ⇒ silêncio; um velho ⇒ log + retry uma v
       },
       jlistFn: async () => silentLists[Math.min(silentI++, silentLists.length - 1)],
     });
-    assert.equal(silentLogs.some((line) => line.includes('ainda na release anterior')), false);
+    assert.equal(silentLogs.some((line) => line.includes('still on the previous release')), false);
     assert.equal(silentRuns.filter((call) => call.args.includes('startOrReload')).length, 1);
 
     const staleLogs = [];
@@ -360,10 +360,10 @@ test('detector: dois workers novos ⇒ silêncio; um velho ⇒ log + retry uma v
       },
       jlistFn: async () => staleLists[Math.min(staleI++, staleLists.length - 1)],
     });
-    assert.ok(staleLogs.some((line) => line.includes('app2043 worker 1 ainda na release anterior')));
-    assert.ok(staleLogs.some((line) => line.includes('retry pm2 reload (workers desiguais)')));
+    assert.ok(staleLogs.some((line) => line.includes('app2043 worker 1 still on the previous release')));
+    assert.ok(staleLogs.some((line) => line.includes('retry pm2 reload (uneven workers)')));
     assert.equal(staleRuns.filter((call) => call.args.includes('startOrReload')).length, 2);
-    assert.equal(staleLogs.filter((line) => line.includes('ainda na release anterior')).length, 1);
+    assert.equal(staleLogs.filter((line) => line.includes('still on the previous release')).length, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -458,7 +458,7 @@ test('projeto do fecho ausente na VM só registra, não entra no --only', async 
     const run = async () => ({ code: 0, out: '[buildProjectsObj] summary: built [-] | up-to-date [900001] | failed [-]' });
     await compileFecho(root, '900001', { run, write: (text) => notes.push(text) });
     assert.ok(notes.some((line) => line.includes(fechoMissingMessage('900002'))));
-    assert.equal(fechoMissingMessage('900002'), 'gitPostReceive: mls-900002 não existe na VM — ignorado');
+    assert.equal(fechoMissingMessage('900002'), 'gitPostReceive: mls-900002 does not exist on the VM — ignored');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -224,7 +224,7 @@ export function formatOkMarker(project, ts, declWarn) {
  * próprio para o terminal do dev não confundir com um build=ok que não houve.
  */
 export function formatSkippedMarker(project) {
-  return `##gitBackend build=skipped project=${project}## retrato recebido; compila no push do cliente`;
+  return `##gitBackend build=skipped project=${project}## snapshot received; compiles on the client push`;
 }
 
 export function firstTscExcerpt(text, n = TSC_ERROR_LINES) {
@@ -274,12 +274,12 @@ export function restoreWorktree(root, projectName) {
   const still = trackedDirtyPaths(git(repo, ['status', '--porcelain']).out);
   if (restored.code !== 0 || still.length > 0) {
     process.stderr.write(
-      `worktree ainda suja em ${projectName} (${still.join(' ') || 'erro no checkout'}) — ` +
-        'o próximo push pode ser recusado pelo updateInstead\n',
+      `worktree still dirty in ${projectName} (${still.join(' ') || 'checkout error'}) — ` +
+        'the next push may be refused by updateInstead\n',
     );
     return;
   }
-  process.stderr.write(`worktree restaurada: ${dirty.join(' ')} (recomposto pelo build, já está na release)\n`);
+  process.stderr.write(`worktree restored: ${dirty.join(' ')} (rewritten by the build, already in the release)\n`);
 }
 
 /**
@@ -326,7 +326,7 @@ export function reportClientConfig(root, projectId, {
       })}\n`,
     );
   } catch (error) {
-    write(`gitPostReceive: log de clientConfig não escrito (${error.message})\n`);
+    write(`gitPostReceive: clientConfig log not written (${error.message})\n`);
   }
   return result;
 }
@@ -354,7 +354,7 @@ function notePushActor(root, projectName) {
       })}\n`,
     );
   } catch (error) {
-    process.stderr.write(`gitPostReceive: log de push não escrito (${error.message})\n`);
+    process.stderr.write(`gitPostReceive: push log not written (${error.message})\n`);
   }
 }
 
@@ -410,7 +410,7 @@ export function readFechoIds(root, clientId) {
 }
 
 export function fechoMissingMessage(id) {
-  return `gitPostReceive: mls-${id} não existe na VM — ignorado`;
+  return `gitPostReceive: mls-${id} does not exist on the VM — ignored`;
 }
 
 /**
@@ -568,7 +568,7 @@ export function restartTimesById(jlist, appName) {
 }
 
 export function formatStaleWorkerLog(appName, pmId) {
-  return `${appName} worker ${pmId} ainda na release anterior`;
+  return `${appName} worker ${pmId} still on the previous release`;
 }
 
 /**
@@ -616,8 +616,8 @@ export function scheduleDetachedPm2Reload(root, { spawnFn = spawn, delaySec = 2,
   try { closeSync(fd); } catch { /* inherited */ }
   if (typeof child?.unref === 'function') child.unref();
   process.stderr.write(
-    `gitPostReceive: pm2 reload em ${delaySec}s fora da árvore do hook (${pm2Config}) — ` +
-      'no https o reload mata o processo que serve o /git/\n',
+    `gitPostReceive: pm2 reload in ${delaySec}s outside the hook tree (${pm2Config}) — ` +
+      'on https the reload kills the process that serves /git/\n',
   );
   return { pm2Config, delaySec, appName, logPath };
 }
@@ -650,7 +650,7 @@ export async function reloadPm2Now(root, {
     }
   }
   if (last.code !== 0) {
-    write(`gitPostReceive: pm2 reload falhou (exit ${last.code}) — a release já está em current\n`);
+    write(`gitPostReceive: pm2 reload failed (exit ${last.code}) — the release is already in current\n`);
   }
 
   if (appName) {
@@ -658,7 +658,7 @@ export async function reloadPm2Now(root, {
     const stale = staleClusterWorkers(after, { appName, reloadStartedAt, restartTimeBefore });
     for (const proc of stale) write(`${formatStaleWorkerLog(appName, proc.pm_id)}\n`);
     if (stale.length > 0) {
-      write('gitPostReceive: retry pm2 reload (workers desiguais)\n');
+      write('gitPostReceive: retry pm2 reload (uneven workers)\n');
       last = await run('pm2', ['startOrReload', pm2Config, '--update-env'], { cwd: root, env });
       const again = await loadPm2Jlist({ jlistFn, root, env });
       const still = staleClusterWorkers(again, { appName, reloadStartedAt, restartTimeBefore });
@@ -697,10 +697,10 @@ async function main() {
     if (depId === id) continue;
     const depName = `mls-${depId}`;
     if (!existsSync(join(root, depName))) {
-      process.stderr.write(`gitPostReceive: dep ${depName} não existe na VM — ignorado\n`);
+      process.stderr.write(`gitPostReceive: dep ${depName} does not exist on the VM — ignored\n`);
       continue;
     }
-    process.stderr.write(`gitPostReceive: compilando dep ${depName}\n`);
+    process.stderr.write(`gitPostReceive: compiling dep ${depName}\n`);
     const depBuild = await runLive(
       'node',
       ['scripts/runtime/buildProjectsObj.mjs', '--only', depId, '--force'],
@@ -756,8 +756,8 @@ async function main() {
     process.stderr.write(`gitPostReceive: app ${app.appName} (porta ${app.port}) → ${releaseAliasOf(clientId)}\n`);
     if (app.replacedLegacy) {
       process.stderr.write(
-        'gitPostReceive: pm2.config.js legado (app único no `current`) trocado pelo agregador — '
-        + 'remova o app antigo uma vez com `pm2 delete app`, senão ele segue servindo a release de quem empurrou por último.\n',
+        'gitPostReceive: legacy pm2.config.js (single app on `current`) replaced by the aggregator — '
+        + 'delete the old app once with `pm2 delete app`, or it keeps serving whoever pushed last.\n',
       );
     }
   }
