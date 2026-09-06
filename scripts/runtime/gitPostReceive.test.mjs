@@ -19,6 +19,7 @@ import {
   planFechoCompile,
   trackedDirtyPaths, authorNote,
   restoreWorktree, shouldDeferPm2Reload, scheduleDetachedPm2Reload, pm2ConfigRel,
+  reloadPm2Now, staleClusterWorkers, formatStaleWorkerLog, parsePm2Jlist,
 } from './gitPostReceive.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -240,13 +241,16 @@ test('restoreWorktree devolve l5/config.json recomposto para o HEAD (gb85)', () 
   }
 });
 
-test('shouldDeferPm2Reload só no transporte https (COLLAB_GIT_HTTP)', () => {
-  assert.equal(shouldDeferPm2Reload({ COLLAB_GIT_HTTP: '1' }), true);
+test('shouldDeferPm2Reload: CGI env defers without COLLAB_GIT_HTTP; ssh does not', () => {
+  assert.equal(shouldDeferPm2Reload({ GIT_PROJECT_ROOT: '/data/mls-base', REQUEST_METHOD: 'POST' }), true);
   assert.equal(shouldDeferPm2Reload({}), false);
   assert.equal(shouldDeferPm2Reload({ COLLAB_PUSH_ACTOR_EMAIL: 'a@b' }), false);
+  assert.equal(shouldDeferPm2Reload({ GIT_PROJECT_ROOT: '/data/mls-base' }), false);
+  assert.equal(shouldDeferPm2Reload({ REQUEST_METHOD: 'POST' }), false);
+  assert.equal(shouldDeferPm2Reload({ COLLAB_GIT_HTTP: '1' }), true);
 });
 
-test('scheduleDetachedPm2Reload dispara setsid-like (detached) e não espera o pm2', () => {
+test('scheduleDetachedPm2Reload dispara o mesmo script --reload-pm2 (detached) e não espera o pm2', () => {
   const root = mkdtempSync(join(tmpdir(), 'gb85-sched-'));
   try {
     writeFileSync(join(root, 'pm2.config.js'), 'module.exports = [];\n');
@@ -255,15 +259,110 @@ test('scheduleDetachedPm2Reload dispara setsid-like (detached) e não espera o p
       calls.push({ cmd, args, opts });
       return { unref() {}, pid: 4242 };
     };
-    const planned = scheduleDetachedPm2Reload(root, { spawnFn, delaySec: 2 });
+    const planned = scheduleDetachedPm2Reload(root, { spawnFn, delaySec: 2, appName: 'app2043' });
     assert.equal(planned.pm2Config, 'pm2.config.js');
     assert.equal(planned.delaySec, 2);
+    assert.equal(planned.appName, 'app2043');
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].cmd, 'bash');
+    assert.equal(calls[0].cmd, process.execPath);
     assert.equal(calls[0].opts.detached, true);
-    assert.equal(calls[0].opts.stdio, 'ignore');
-    assert.ok(calls[0].args.includes('pm2.config.js'));
-    assert.ok(calls[0].args.some((a) => String(a).includes('startOrReload')));
+    assert.equal(calls[0].opts.stdio[0], 'ignore');
+    assert.ok(calls[0].args.includes('--reload-pm2'));
+    assert.ok(calls[0].args.includes('--app'));
+    assert.ok(calls[0].args.includes('app2043'));
+    assert.ok(calls[0].args.includes(root));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function worker(appName, pmId, { uptime, restart }) {
+  return { name: appName, pm_id: pmId, pm2_env: { pm_uptime: uptime, restart_time: restart } };
+}
+
+test('parsePm2Jlist ignora ruído e devolve o array', () => {
+  assert.deepEqual(parsePm2Jlist(''), []);
+  assert.deepEqual(parsePm2Jlist('not json'), []);
+  const listed = parsePm2Jlist('noise\n[{"name":"app2043","pm_id":0}]\n');
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].name, 'app2043');
+});
+
+test('staleClusterWorkers: dois novos silenciam; um velho é nomeado', () => {
+  const appName = 'app2043';
+  const before = { 0: 1, 1: 1 };
+  const fresh = [
+    worker(appName, 0, { uptime: 5000, restart: 2 }),
+    worker(appName, 1, { uptime: 5100, restart: 2 }),
+  ];
+  assert.deepEqual(staleClusterWorkers(fresh, { appName, reloadStartedAt: 1000, restartTimeBefore: before }), []);
+  const mixed = [
+    worker(appName, 0, { uptime: 5000, restart: 2 }),
+    worker(appName, 1, { uptime: 100, restart: 1 }),
+  ];
+  const stale = staleClusterWorkers(mixed, { appName, reloadStartedAt: 1000, restartTimeBefore: before });
+  assert.equal(stale.length, 1);
+  assert.equal(stale[0].pm_id, 1);
+  assert.equal(formatStaleWorkerLog(appName, 1), 'app2043 worker 1 ainda na release anterior');
+});
+
+test('detector: dois workers novos ⇒ silêncio; um velho ⇒ log + retry uma vez', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb94-detect-'));
+  try {
+    writeFileSync(join(root, 'pm2.config.js'), 'module.exports = [];\n');
+    const appName = 'app2043';
+    const before = [
+      worker(appName, 0, { uptime: 100, restart: 1 }),
+      worker(appName, 1, { uptime: 100, restart: 1 }),
+    ];
+    const fresh = [
+      worker(appName, 0, { uptime: 5000, restart: 2 }),
+      worker(appName, 1, { uptime: 5100, restart: 2 }),
+    ];
+    const mixed = [
+      worker(appName, 0, { uptime: 5000, restart: 2 }),
+      worker(appName, 1, { uptime: 100, restart: 1 }),
+    ];
+    const afterRetry = [
+      worker(appName, 0, { uptime: 6000, restart: 3 }),
+      worker(appName, 1, { uptime: 6100, restart: 2 }),
+    ];
+
+    const silentLogs = [];
+    const silentRuns = [];
+    const silentLists = [before, fresh];
+    let silentI = 0;
+    await reloadPm2Now(root, {
+      appName,
+      now: () => 1000,
+      write: (text) => silentLogs.push(text),
+      run: async (cmd, args) => {
+        silentRuns.push({ cmd, args });
+        return { code: 0, out: '' };
+      },
+      jlistFn: async () => silentLists[Math.min(silentI++, silentLists.length - 1)],
+    });
+    assert.equal(silentLogs.some((line) => line.includes('ainda na release anterior')), false);
+    assert.equal(silentRuns.filter((call) => call.args.includes('startOrReload')).length, 1);
+
+    const staleLogs = [];
+    const staleRuns = [];
+    const staleLists = [before, mixed, afterRetry];
+    let staleI = 0;
+    await reloadPm2Now(root, {
+      appName,
+      now: () => 1000,
+      write: (text) => staleLogs.push(text),
+      run: async (cmd, args) => {
+        staleRuns.push({ cmd, args });
+        return { code: 0, out: '' };
+      },
+      jlistFn: async () => staleLists[Math.min(staleI++, staleLists.length - 1)],
+    });
+    assert.ok(staleLogs.some((line) => line.includes('app2043 worker 1 ainda na release anterior')));
+    assert.ok(staleLogs.some((line) => line.includes('retry pm2 reload (workers desiguais)')));
+    assert.equal(staleRuns.filter((call) => call.args.includes('startOrReload')).length, 2);
+    assert.equal(staleLogs.filter((line) => line.includes('ainda na release anterior')).length, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -28,12 +28,17 @@ Each repo gets `main` + an immutable `vm-baseline` snapshot and
 silently overwriting. The hook only swaps the release when the compile passes, and prints
 `##gitBackend build=ok|error##`; `publishGit`'s exit code follows the BUILD.
 
-**https and `pm2 reload` (gb85, 05/09/2026).** `/git/` is served by the app itself. A `pm2 reload`
+**https and `pm2 reload` (gb85, 05/09/2026; gb94, 06/09/2026).** `/git/` is served by the app itself. A `pm2 reload`
 inside the hook used to kill git-http-backend — `restoreWorktree` never ran (`l5/config.json` dirty
 → next push refused) and the client saw `RPC failed; curl 18` / exit 1 after a release that had
 already landed. The hook now calls `addNewVersion --skip-pm2`, restores the worktree, prints the
-marker, then reloads: in-process on ssh/SSM, detached (`sleep 2` + new session) when
-`COLLAB_GIT_HTTP=1`. `publishGit` on https treats that disconnect as success only when `vm/main`
+marker, then reloads: in-process on ssh/SSM, detached (`sleep 2` + this same script `--reload-pm2`)
+when the hook sees CGI env (`GIT_PROJECT_ROOT` + `REQUEST_METHOD`) or `COLLAB_GIT_HTTP=1`. CGI vars
+are mounted by any 102034 that already serves `/git/` (gb50), so the first https publish after a
+`platform-update` already detaches — it does not wait for a new app version. After reload, `pm2 jlist`
+must show every `app<porta>` worker with `pm_uptime` newer than the reload start and an advanced
+`restart_time`; a worker still on the previous release is named in the log and the reload is tried
+once more. `publishGit` on https treats that disconnect as success only when `vm/main`
 equals local HEAD; if the ref did not move, it still exits 1 and says **Publish NÃO aplicado**.
 
 ## One rule that is not obvious
@@ -572,4 +577,6 @@ pre-gb77 clone on the VM (origin, no vm-baseline) is armed by setupRepo at VM_RO
 added 04/09/2026;
 step 10 runs `pnpm install` after clone/pull so a fresh VM is buildable (gb54) added 04/09/2026;
 https pm2 reload no longer kills the hook: `--skip-pm2`, restoreWorktree, then detached reload;
-publishGit confirms the remote ref on disconnect (gb85) added 05/09/2026.*
+publishGit confirms the remote ref on disconnect (gb85) added 05/09/2026;
+detached reload triggers on CGI env (not the app's `COLLAB_GIT_HTTP`), and the hook detects a
+split cluster after reload (gb94) added 06/09/2026.*

@@ -15,12 +15,12 @@
 // format.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTypeCheckMarkers } from '../typeCheckPolicy.mjs';
 import { ensureProjectApp } from './vmApps.mjs';
-import { releaseAliasOf } from './projectPorts.mjs';
+import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 
 const TSC_ERROR_LINES = 40;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -487,54 +487,149 @@ function printError(project, verdict) {
   process.stderr.write(formatErrorOutput(project, verdict));
 }
 
-/** True when this hook runs under git-http-backend (the app serves /git/). */
+/**
+ * True when this hook runs under git-http-backend (the app serves /git/).
+ *
+ * CGI vars (`GIT_PROJECT_ROOT` + `REQUEST_METHOD`) are mounted by any parent that
+ * can serve a push — including a 102034 that predates `COLLAB_GIT_HTTP`. The flag
+ * stays as a cheap extra signal; it is not the decision.
+ */
 export function shouldDeferPm2Reload(env = process.env) {
-  return env.COLLAB_GIT_HTTP === '1';
+  if (env.COLLAB_GIT_HTTP === '1') return true;
+  return Boolean(env.GIT_PROJECT_ROOT) && Boolean(env.REQUEST_METHOD);
 }
 
 export function pm2ConfigRel(root) {
   return existsSync(join(root, 'pm2.config.js')) ? 'pm2.config.js' : 'servers/pm2.config.js';
 }
 
+export function parsePm2Jlist(text) {
+  const raw = String(text ?? '');
+  const start = raw.indexOf('[');
+  const end = raw.lastIndexOf(']');
+  if (start < 0 || end <= start) return [];
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function clusterWorkers(jlist, appName) {
+  if (!appName || !Array.isArray(jlist)) return [];
+  return jlist.filter((proc) => proc?.name === appName);
+}
+
+export function restartTimesById(jlist, appName) {
+  const out = {};
+  for (const proc of clusterWorkers(jlist, appName)) {
+    out[String(proc.pm_id)] = Number(proc?.pm2_env?.restart_time ?? 0);
+  }
+  return out;
+}
+
+export function formatStaleWorkerLog(appName, pmId) {
+  return `${appName} worker ${pmId} ainda na release anterior`;
+}
+
+/**
+ * Workers of `appName` that did not come up after `reloadStartedAt`.
+ * Stale = `pm_uptime` not newer than the reload start, or `restart_time` did
+ * not advance for a pm_id we saw before the reload.
+ */
+export function staleClusterWorkers(jlist, { appName, reloadStartedAt, restartTimeBefore = {} } = {}) {
+  return clusterWorkers(jlist, appName).filter((proc) => {
+    const uptime = Number(proc?.pm2_env?.pm_uptime ?? 0);
+    const restart = Number(proc?.pm2_env?.restart_time ?? 0);
+    const before = restartTimeBefore[String(proc.pm_id)];
+    const uptimeFresh = uptime > reloadStartedAt;
+    const restartAdvanced = before === undefined ? true : restart > before;
+    return !(uptimeFresh && restartAdvanced);
+  });
+}
+
+async function loadPm2Jlist({ jlistFn, root, env }) {
+  if (jlistFn) {
+    const raw = await jlistFn();
+    return Array.isArray(raw) ? raw : parsePm2Jlist(raw);
+  }
+  const listed = spawnSync('pm2', ['jlist'], { cwd: root, env, encoding: 'utf8' });
+  return parsePm2Jlist(`${listed.stdout ?? ''}${listed.stderr ?? ''}`);
+}
+
 /**
  * Reload in a new session after a delay, so git-http-backend can finish writing
  * the hook output before pm2 kills the app that owns the TCP connection.
+ * The child is this same script with `--reload-pm2` (reload + worker detector).
  */
-export function scheduleDetachedPm2Reload(root, { spawnFn = spawn, delaySec = 2 } = {}) {
+export function scheduleDetachedPm2Reload(root, { spawnFn = spawn, delaySec = 2, appName = '' } = {}) {
   const pm2Config = pm2ConfigRel(root);
-  const child = spawnFn(
-    'bash',
-    ['-c', 'sleep "$1"; pm2 startOrReload "$2" --update-env; pm2 save || true', 'pm2-reload', String(delaySec), pm2Config],
-    { cwd: root, detached: true, stdio: 'ignore' },
-  );
+  mkdirSync(join(root, 'logs'), { recursive: true });
+  const logPath = join(root, 'logs', 'gitPostReceive-pm2-reload.log');
+  const args = [fileURLToPath(import.meta.url), '--reload-pm2', '--root', root, '--delay', String(delaySec)];
+  if (appName) args.push('--app', appName);
+  const fd = openSync(logPath, 'a');
+  const child = spawnFn(process.execPath, args, {
+    cwd: root,
+    detached: true,
+    stdio: ['ignore', fd, fd],
+  });
+  try { closeSync(fd); } catch { /* inherited */ }
   if (typeof child?.unref === 'function') child.unref();
   process.stderr.write(
     `gitPostReceive: pm2 reload em ${delaySec}s fora da árvore do hook (${pm2Config}) — ` +
       'no https o reload mata o processo que serve o /git/\n',
   );
-  return { pm2Config, delaySec };
+  return { pm2Config, delaySec, appName, logPath };
 }
 
-async function reloadPm2Now(root) {
+export async function reloadPm2Now(root, {
+  appName = '',
+  run = runLive,
+  jlistFn,
+  now = Date.now,
+  write = (text) => process.stderr.write(text),
+  env = process.env,
+} = {}) {
   const pm2Config = pm2ConfigRel(root);
   mkdirSync(join(root, 'logs'), { recursive: true });
-  process.stderr.write(`--- pm2 reload (${pm2Config})\n`);
+  write(`--- pm2 reload (${pm2Config})\n`);
+
+  const listed = appName
+    ? await loadPm2Jlist({ jlistFn, root, env })
+    : [];
+  const restartTimeBefore = appName ? restartTimesById(listed, appName) : {};
+  const reloadStartedAt = now();
+
   let last = { code: 1, out: '' };
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    last = await runLive('pm2', ['startOrReload', pm2Config, '--update-env'], { cwd: root, env: process.env });
+    last = await run('pm2', ['startOrReload', pm2Config, '--update-env'], { cwd: root, env });
     if (last.code === 0) break;
     if (attempt < 3) {
-      process.stderr.write(`--- retry ${attempt}/2 after failure\n`);
+      write(`--- retry ${attempt}/2 after failure\n`);
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }
   }
   if (last.code !== 0) {
-    process.stderr.write(
-      `gitPostReceive: pm2 reload falhou (exit ${last.code}) — a release já está em current\n`,
-    );
+    write(`gitPostReceive: pm2 reload falhou (exit ${last.code}) — a release já está em current\n`);
   }
+
+  if (appName) {
+    const after = await loadPm2Jlist({ jlistFn, root, env });
+    const stale = staleClusterWorkers(after, { appName, reloadStartedAt, restartTimeBefore });
+    for (const proc of stale) write(`${formatStaleWorkerLog(appName, proc.pm_id)}\n`);
+    if (stale.length > 0) {
+      write('gitPostReceive: retry pm2 reload (workers desiguais)\n');
+      last = await run('pm2', ['startOrReload', pm2Config, '--update-env'], { cwd: root, env });
+      const again = await loadPm2Jlist({ jlistFn, root, env });
+      const still = staleClusterWorkers(again, { appName, reloadStartedAt, restartTimeBefore });
+      for (const proc of still) write(`${formatStaleWorkerLog(appName, proc.pm_id)}\n`);
+    }
+  }
+
   try {
-    await runLive('pm2', ['save'], { cwd: root, env: process.env });
+    await run('pm2', ['save'], { cwd: root, env });
   } catch {
     /* non-fatal */
   }
@@ -613,8 +708,10 @@ async function main() {
   // config antes do release porque o alias current-<id> que o app aponta é
   // criado no mesmo passo, antes do reload (que agora corre depois).
   const releaseEnv = { ...process.env, CBE_BUILD_OBJS: 'false' };
+  let appName = clientId ? appNameOf(projectIdToPort(clientId)) : '';
   if (ownClient) {
     const app = ensureProjectApp({ root, projectId: clientId });
+    appName = app.appName;
     releaseEnv.COLLAB_RELEASE_ALIAS = releaseAliasOf(clientId);
     process.stderr.write(`gitPostReceive: app ${app.appName} (porta ${app.port}) → ${releaseAliasOf(clientId)}\n`);
     if (app.replacedLegacy) {
@@ -668,9 +765,9 @@ async function main() {
   // Marker already flushed. Reload last: ssh/SSM in-process; https detached so
   // this hook (and the TCP connection that carries its output) can finish.
   if (shouldDeferPm2Reload(process.env)) {
-    scheduleDetachedPm2Reload(root);
+    scheduleDetachedPm2Reload(root, { appName });
   } else {
-    await reloadPm2Now(root);
+    await reloadPm2Now(root, { appName });
   }
 }
 
@@ -684,11 +781,44 @@ function invokedAsMain() {
   }
 }
 
+function parseReloadArgs(argv) {
+  let root = DEFAULT_ROOT;
+  let appName = '';
+  let delaySec = 2;
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--root' && argv[i + 1]) {
+      root = resolve(argv[i + 1]);
+      i += 1;
+    } else if (argv[i] === '--app' && argv[i + 1]) {
+      appName = argv[i + 1];
+      i += 1;
+    } else if (argv[i] === '--delay' && argv[i + 1]) {
+      delaySec = Number(argv[i + 1]);
+      if (!Number.isFinite(delaySec) || delaySec < 0) delaySec = 0;
+      i += 1;
+    }
+  }
+  return { root, appName, delaySec };
+}
+
 if (invokedAsMain()) {
-  main().catch((error) => {
-    const project = parseArgs(process.argv.slice(2)).project || 'unknown';
-    const name = projectIdOf(project) ? `mls-${projectIdOf(project)}` : project;
-    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-    process.stderr.write(`##gitBackend build=error project=${name}##\n`);
-  });
+  if (process.argv.includes('--reload-pm2')) {
+    const { root, appName, delaySec } = parseReloadArgs(process.argv.slice(2));
+    Promise.resolve()
+      .then(async () => {
+        if (delaySec > 0) await new Promise((resolve) => setTimeout(resolve, delaySec * 1000));
+        await reloadPm2Now(root, { appName });
+      })
+      .catch((error) => {
+        process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+        process.exitCode = 1;
+      });
+  } else {
+    main().catch((error) => {
+      const project = parseArgs(process.argv.slice(2)).project || 'unknown';
+      const name = projectIdOf(project) ? `mls-${projectIdOf(project)}` : project;
+      process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+      process.stderr.write(`##gitBackend build=error project=${name}##\n`);
+    });
+  }
 }
