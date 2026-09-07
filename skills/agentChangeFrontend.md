@@ -71,4 +71,20 @@ fallback disappears.
 
 `/rebuild all <module>` clears **only** `trace/l2` of that module — never the CB's `trace/l1`.
 
-*Written 31/08/2026; stor-index orphans as scanWarnings added 07/09/2026.*
+## Compile gate by capability
+
+The closing module compile (`compileModuleClosure` in `agentCfeCreateFinalize.ts`) branches on
+**capability**, never on host (`typeof Deno` is forbidden):
+
+| capability | path | what the run records |
+|---|---|---|
+| `mls.l2.typescript.compile` + the `mls.editor` surface `getGeneratedModel` uses | `monaco` | Studio path, unchanged. `tscGate` omitted from `runNN_changefrontend.json`. |
+| `stor.diskPath` (called as a method) + `node:child_process` via `import()` of a variable | `project-tsc` | one `npx tsc -p tsconfig.frontend.json --noEmit`. `tscGate: 'ran'`. Diagnostics outside `l2/<module>/` are counted in `rawDiagnostics` and dropped from `afterFilter`. |
+| neither | `unavailable` | state, not an error, not a finding, not a worse verdict. `tscGate: 'unavailable'`. An empty error list here is **not** a clean compile. |
+
+`compileAndGetErrors` / `compileMlsPathAndGetErrors` return `null` when Monaco is absent (`[]` still
+means compiled and clean). The materialize-phase `typecheck` field may be `'unavailable'`; consumers
+must not treat `typecheck !== 'passed'` as a failure. Per-file `tsc` is not run in materialize (one
+project `tsc` at the module gate is the host compile).
+
+*Written 31/08/2026; stor-index orphans as scanWarnings added 07/09/2026; compile gate by capability added 07/09/2026.*

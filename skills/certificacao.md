@@ -35,7 +35,9 @@ Baseline reds, measured 31/08/2026:
 | `mls-102021` | l2 | green |
 | `mls-102020` | l2 | `aura/molecules/agentSyncMoleculeCatalog/helpers/syMigrateIndexTs.test.ts` (L88, L107, L149) + `aura/molecules/shared/localDocRefs.test.ts` (2 `todo/` paths in `agentNewMoleculeVariant/steps/v4-index/CHANGELOG.md:36` and `molecules/skills/canonicalFallbacks.ts:16`, since 04/09) — **4 failures**. `agentGenerateHeader.test.ts` no longer fails (re-measured 06/09/2026) |
 
-`tsc` baseline (06/09/2026): frontend — 1 error, `mls-102051/l5/runtimeConfig.ts` (generated app);
+`tsc` baseline (07/09/2026): frontend — `mls-102051/l5/runtimeConfig.ts` (generated app) +
+`mls-102047/l2/controleEstoque4/web/desktop/page31/stockMovementCatalogue.ts` TS2367 (evidence of the
+CF compile-gate-by-capability gap; **leaves this baseline when that module is regenerated**);
 backend — 5 in `mls-102047/l1/controleChamados` + the same `mls-102051` (generated apps). Zero in
 `mls-102020`/`mls-102021`. The old `l2/aura/agentManageHeader` (4 errors) is gone.
 
@@ -82,4 +84,5 @@ Syntax errors (TS1xxx), broken imports (`TS2307`) and emit/tsc crashes **always*
 
 Do not add a follow-up task to tighten this. Tightening is a decision, not a schedule.
 
-*Written 31/08/2026; typeCheck status (gb74) added 04/09/2026; baselines re-measured 06/09/2026.*
+*Written 31/08/2026; typeCheck status (gb74) added 04/09/2026; baselines re-measured 06/09/2026;
+frontend baseline gained the page31 TS2367 (07/09/2026, leaves on regenerate).*

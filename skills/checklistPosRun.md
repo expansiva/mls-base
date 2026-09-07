@@ -38,6 +38,8 @@ python3 -c "import json;d=json.load(open('mls-$P/l4/$M/pipeline/trace/l1/cb-heal
 - [ ] No impossible finding burning the repair budget (e.g. a pure arithmetic loop accused of N+1).
 - [ ] `seeds.ts` carries **all** waves of the `*-agent-cb-seeds.json` dumps, not only the first.
 - [ ] `l4/$M/pipeline/runNN_changebackend.json` exists — including when the run failed.
+- [ ] `tscGate` on that summary (and on `cb-health-report.json`) is `ran` or `unavailable`. `unavailable`
+      is a host state, not a degradation. Family counts only compare **within the same host**.
 - [ ] The task closes as `completed`.
 
 ## agentChangeFrontend (l2)
@@ -58,6 +60,9 @@ grep -oE '"organism": "[^"]+"' mls-$P/l2/$M/web/desktop/page*/*.defs.ts | sort |
 - [ ] No NEIGHBOUR module lost a page.
 - [ ] `runNN_changefrontend.json` exists, `verdict` matches reality, `degradations[]` lists what
       degraded — and if it failed, WHICH module caused it.
+- [ ] `tscGate` on that summary (and `cf-run.json` › `gate.path`) is read the same way as the CB:
+      `ran` = project `tsc` ran; `unavailable` = no compiler on this host (not a failure); omitted
+      when the Studio Monaco path ran. Do **not** compare error counts across hosts.
 
 ## agentNewSolution (l4/l5)
 
@@ -72,4 +77,5 @@ grep -oE '"organism": "[^"]+"' mls-$P/l2/$M/web/desktop/page*/*.defs.ts | sort |
 - [ ] After `/rebuild all`: the target module was wiped and the **neighbour is intact** — count the
       neighbour's files before and after.
 
-*Written 31/08/2026. Trace paths follow the per-layer layout (`pipeline/trace/l1`, `pipeline/trace/l2`).*
+*Written 31/08/2026. Trace paths follow the per-layer layout (`pipeline/trace/l1`, `pipeline/trace/l2`).
+`tscGate` reading (CB + CF, same field) added 07/09/2026.*
