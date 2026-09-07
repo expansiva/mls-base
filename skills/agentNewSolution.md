@@ -39,10 +39,15 @@ never a genome, a template or a component. The CF decides presentation.
 **5. On-demand entities are projections**: `kind: "projection"`, `ownership: "derived"`,
 `storage.target: "derived"`. No table is created for them; the CB reaches them through its
 `derivedRefs` channel. New E4 runs also declare `derivation` (`from`, `filter`, `aggregate`) —
-who declares the projection declares the account. Absent on L4 written before that field.
+who declares the projection declares the account. Absent on L4 written before that field. A core
+`moduleDatabase` entity that journeys read and never write is recorded as `NS4_E4_CORE_READ_ONLY`
+(warning + systemDecision `keepCore` / `projection` / `masterData`) and does not block the run.
 
 **6. A persona is not an actor.** Demographics and personas describe who uses the product; only an
-actor with distinct permissions belongs in the access matrix.
+actor with distinct permissions belongs in the access matrix. **A confirmation is not a decision.**
+Confirming a form, validating captured data or applying a system rule is an `act` with `useRules`;
+a `decide` step exists only when the request names a human choice between alternative outcomes.
+The record-owner handle is `party: person` + E3 `dataScope.mode: own`, never a field name.
 
 **7. `mutability: appendOnly` ⇒ no update/delete.** E4 may declare `mutability: 'editable' |
 'appendOnly'` on an entity; E8 then emits no catalogue `update`/`delete`/`inactivate`/`reactivate`
@@ -52,12 +57,18 @@ compiling — nothing is migrated.
 ## Running it
 
 `pipeline.json` records each step's status (`approved`, plus `autoReason` when `/fast` skipped a
-confirmation) and is the fastest way to see where a run stopped. `/rebuild` wipes the module before
-regenerating — confirm the neighbouring module was untouched.
+confirmation) and is the fastest way to see where a run stopped. `presentation.phrases` on
+`module.defs.ts` and `pipeline.json` is the planner's translation of the English catalogue
+(`helpers/ns4Text.ts`, including E1–E6 widget chrome `widget.<name>.*`); a missing key falls back to
+English. Clarification widgets receive that object at mount (`bindNs4ClarificationWidget`). A derivation-binding repair is a
+`task.json` step titled `Bind ontology derivations` (with ` · R1` on the bounded retry). `/fast` writes into `skippedDefaults`
+only the product languages the original prompt cites (never the planner's proposed list); a discard
+lands on `i18nWarnings` and on the run's `languages-provenance` degradation. `/rebuild` wipes the
+module before regenerating — confirm the neighbouring module was untouched.
 
 `/fast` still chains to agentChangeBackend on E10 success. `/fast /nochain` keeps the skip-and-run
 path and suppresses only that handoff; the run summary records
 `handoff: suppressed by /nochain — next: @@agentChangeBackend /rebuild all <module>` as a fact, not
 a degradation. The flag is on the invocation, never inferred from CLI vs browser.
 
-*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026.*
+*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026.*

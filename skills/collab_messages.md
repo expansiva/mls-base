@@ -42,6 +42,10 @@ Import alias: `/_102027_/l2/x.js` → `mls-102027/l2/x.ts`, `/_102025_/...` → 
   (`step.interaction.payload[0]`). Validate/persist, then return intents (add-step, update-status).
 - `beforeClarificationStep(agent, ctx, parentStep, step, hookSequential, json)` — returns the
   `HTMLElement` widget for a pending `clarification` step. Distinguish widgets by `planning.planId`.
+  NS E1–E6 widgets (`widgetNs4Intake` … `widgetNs4Composition`) take `value` (the review) and
+  `presentation` (planner `phrases`) via `bindNs4ClarificationWidget`. Chrome is `ns4Text` under
+  `widget.<name>.*`; `Ns4ClarificationWidgetApi` is still only feedback/submit. Missing phrases
+  fall back to English.
 - `openStepView(agent, ctx, step)` — re-openable read-only view of a finished step (optional).
 
 ## Intents — `mls.msg.AgentIntent` (types in `types/mls.d.ts`, applied in `applyIntents.ts`)
@@ -241,4 +245,4 @@ Each organization instance reads AWS region/bucket from `appconfig.json`. Creden
 
 `GET /ready` and alias `GET /msg/ready` return 503 with the AWS error code when the startup probe (`ListTables` limit 1, retried every 5 min, `storageHealth.ts` / `storageHealthAws.ts`) fails. The process stays up. The 102034 proxy forwards `/msg/*` without rewriting (`msgProxy.ts:27`), so callers on the app domain must use `/msg/health` and `/msg/ready`.
 
-*Written 06/09/2026.*
+*Written 06/09/2026; NS widget `presentation` 07/09/2026.*
