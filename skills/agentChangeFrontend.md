@@ -33,6 +33,12 @@ Without a module: do **not** filter pages, record a warning plus a degradation
 (`missing-run-module`), and write no `todoFrontend`. A silent no-op is the failure mode this house
 rejects.
 
+Stor index entries of modules absent from l4 — parsable or not — are warnings
+(`ignored orphan todoFrontend` / `ignored unparsable todoFrontend`), never a run failure. Same
+rule as the CB (`cbScope.ts` `module outside this run, ignored`). An unreadable `todoFrontend` of
+the module that **is** in l4 of this run stays fatal. Warnings land on
+`runNN_changefrontend.json` as `scanWarnings[]` and on the scan step status.
+
 ## Writing status
 
 `todoFrontend` writes are scoped to the run's module. Owner ids repeat across modules; a
@@ -65,4 +71,4 @@ fallback disappears.
 
 `/rebuild all <module>` clears **only** `trace/l2` of that module — never the CB's `trace/l1`.
 
-*Written 31/08/2026.*
+*Written 31/08/2026; stor-index orphans as scanWarnings added 07/09/2026.*
