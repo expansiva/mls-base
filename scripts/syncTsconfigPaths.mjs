@@ -3,10 +3,13 @@
 // l5/config.json. A missing entry makes every `/_<id>_/` import a TS2307
 // that looks like an agent generation error. This is a setup problem.
 //
-// VM compile does not use this file: addNewVersion writes tsconfig.vm.json
-// from the projects on disk and never touches the versioned tsconfig.json
-// (gb63). This script is the Mac side: clone/vm:init adds the mapping;
-// --check fails loud if a configured project on disk is still missing.
+// VM compile (addNewVersion) still writes tsconfig.vm.json from the projects
+// on disk and never touches this file (gb63). The typeCheck gate is different:
+// typeCheckRun.mjs:67 writeLayerTsconfig extends ./tsconfig.backend.json,
+// which extends this versioned tsconfig.json. Without `/_<id>_/*` here, the
+// gate reports TS2307 on every import and blocks the release. The VM needs
+// the entry as much as the Mac. Mac (publishGit) and VM (projectInit, and
+// gitPostReceive before compile) both call addMissingTsconfigPaths.
 //
 // Usage:
 //   node scripts/syncTsconfigPaths.mjs            # add missing entries

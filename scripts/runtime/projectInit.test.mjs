@@ -9,6 +9,7 @@ import {
   GIT_MANAGED_MARKER,
   MODEL_ID,
   MODEL_REPO_URL,
+  ensureProjectTsconfigPath,
   gitManagedMarkerBody,
   isMacMetadata,
   mayRecreate,
@@ -19,6 +20,7 @@ import {
   remainingModelIds,
   renumberModel,
 } from './projectInit.mjs';
+import { pathIdsOf } from '../syncTsconfigPaths.mjs';
 
 const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MODEL_ON_DISK = join(MLS_BASE, `mls-${MODEL_ID}`);
@@ -144,6 +146,15 @@ function makeModelRepo(parent) {
   return model;
 }
 
+const FAKE_TSCONFIG = `{
+    "compilerOptions": {
+        "paths": {
+            "/_102039_/*": ["./mls-102039/*"]
+        }
+    }
+}
+`;
+
 /** Um mls-base de mentira: scripts + um repo git local no papel do modelo (sem rede). */
 function withFakeRoot(fn) {
   const root = mkdtempSync(join(tmpdir(), 'projinit-root-'));
@@ -152,6 +163,11 @@ function withFakeRoot(fn) {
     for (const name of ['projectInit.mjs', 'gitReposSetup.mjs']) {
       writeFileSync(join(root, 'scripts', 'runtime', name), readFileSync(join(MLS_BASE, 'scripts', 'runtime', name)));
     }
+    writeFileSync(
+      join(root, 'scripts', 'syncTsconfigPaths.mjs'),
+      readFileSync(join(MLS_BASE, 'scripts', 'syncTsconfigPaths.mjs')),
+    );
+    writeFileSync(join(root, 'tsconfig.json'), FAKE_TSCONFIG);
     const model = makeModelRepo(root);
     return fn(root, model);
   } finally {
@@ -376,6 +392,11 @@ test('ponta a ponta: nasce com main + vm-baseline, sem git do modelo, zero 10203
     assert.deepEqual(leftover.hits, []);
     assert.deepEqual(leftover.underscored, []);
 
+    assert.ok(
+      pathIdsOf(readFileSync(join(root, 'tsconfig.json'), 'utf8')).includes('102044'),
+      'projeto novo tem de entrar em tsconfig.json paths — senão o typeCheck do gate é TS2307',
+    );
+
     assert.equal(existsSync(join(dir, '.github')), false);
     assert.equal(existsSync(join(dir, 'obj')), false);
     assert.match(readFileSync(join(dir, 'l2', 'project.less'), 'utf8'), /project-102044/u);
@@ -491,6 +512,52 @@ test('um modelo sem l5/config.json é RECUSADO — senão o run morre no primeir
     assert.equal(result.code, 1);
     assert.match(result.out, /will not be able to load an agent/u);
     assert.match(result.out, /workspaceDependencies/u);
+  });
+});
+
+test('ensureProjectTsconfigPath escreve a entrada e é idempotente', () => {
+  withDir((root) => {
+    writeFileSync(join(root, 'tsconfig.json'), FAKE_TSCONFIG);
+    mkdirSync(join(root, 'mls-102077', 'l5'), { recursive: true });
+    writeFileSync(join(root, 'mls-102077', 'l5', 'config.json'), '{}\n');
+    assert.equal(ensureProjectTsconfigPath(root, '102077'), '');
+    assert.ok(pathIdsOf(readFileSync(join(root, 'tsconfig.json'), 'utf8')).includes('102077'));
+    assert.equal(ensureProjectTsconfigPath(root, '102077'), '');
+  });
+});
+
+test('ensureProjectTsconfigPath nomeia o tsconfig quando não há bloco paths', () => {
+  withDir((root) => {
+    writeFileSync(join(root, 'tsconfig.json'), '{ "compilerOptions": { "strict": true } }\n');
+    mkdirSync(join(root, 'mls-102077', 'l5'), { recursive: true });
+    writeFileSync(join(root, 'mls-102077', 'l5', 'config.json'), '{}\n');
+    const problem = ensureProjectTsconfigPath(root, '102077');
+    assert.match(problem, /tsconfig\.json/);
+    assert.match(problem, /Could not find a "paths" block/);
+  });
+});
+
+test('tsconfig.json sem bloco paths aborta a criação e nomeia o arquivo', () => {
+  withFakeRoot((root, model) => {
+    writeFileSync(join(root, 'tsconfig.json'), '{ "compilerOptions": { "strict": true } }\n');
+    const result = runInit(root, fromModelArgs('102044', model));
+    assert.equal(result.code, 1);
+    assert.match(result.out, /tsconfig\.json/);
+    assert.match(result.out, /\/_102044_\//);
+    assert.match(result.out, /typeCheck gate/);
+    assert.equal(existsSync(join(root, 'mls-102044')), false);
+  });
+});
+
+test('projeto existente sem paths: a segunda execução acrescenta a entrada', () => {
+  withFakeRoot((root, model) => {
+    assert.equal(runInit(root, fromModelArgs('102044', model)).code, 0);
+    writeFileSync(join(root, 'tsconfig.json'), FAKE_TSCONFIG);
+    assert.equal(pathIdsOf(readFileSync(join(root, 'tsconfig.json'), 'utf8')).includes('102044'), false);
+    const again = runInit(root, fromModelArgs('102044', model));
+    assert.equal(again.code, 0, again.out);
+    assert.match(again.stdout, /unchanged/u);
+    assert.ok(pathIdsOf(readFileSync(join(root, 'tsconfig.json'), 'utf8')).includes('102044'));
   });
 });
 

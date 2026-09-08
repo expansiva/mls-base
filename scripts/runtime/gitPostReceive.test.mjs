@@ -21,6 +21,7 @@ import {
   restoreWorktree, shouldDeferPm2Reload, scheduleDetachedPm2Reload, pm2ConfigRel,
   reloadPm2Now, staleClusterWorkers, formatStaleWorkerLog, parsePm2Jlist,
   reportClientConfig,
+  ensureTsconfigPaths,
 } from './gitPostReceive.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -144,6 +145,53 @@ test('typeCheck marker + blocking import is build=error even when permissive', (
   const verdict = evaluateBuild(0, marker);
   assert.equal(verdict.ok, false);
   assert.equal(verdict.gate, 'typeCheck');
+  assert.deepEqual(verdict.blocked, ['102025']);
+  const printed = formatErrorOutput('mls-102025', verdict);
+  assert.match(printed, /gate=typeCheck blocked projects=102025/);
+  assert.doesNotMatch(printed, /status=permissive/);
+  assert.match(printed, /##gitBackend build=error project=mls-102025##/);
+});
+
+test('typeCheck blocking names every blocked project, never status=permissive', () => {
+  const out = [
+    '##typeCheck project=102056 status=permissive l1.type=0 l1.blocking=1 l2.type=0 l2.blocking=0##',
+    '##typeCheck project=102025 status=permissive l1.type=0 l1.blocking=0 l2.type=0 l2.blocking=1##',
+  ].join('\n');
+  const verdict = evaluateBuild(0, out);
+  assert.equal(verdict.ok, false);
+  assert.deepEqual(verdict.blocked, ['102056', '102025']);
+  assert.match(gateMessage(verdict), /blocked projects=102056,102025/);
+  assert.doesNotMatch(gateMessage(verdict), /status=permissive/);
+});
+
+test('ensureTsconfigPaths acrescenta o mapeamento antes do typeCheck herdar o tsconfig', () => {
+  const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
+  assert.match(
+    src,
+    /reportClientConfig\(root, id\);\s*ensureTsconfigPaths\(root\);/,
+    'paths sync runs in main() after clientConfig and before the compile loop',
+  );
+
+  const root = mkdtempSync(join(tmpdir(), 'hook-paths-'));
+  try {
+    writeFileSync(join(root, 'tsconfig.json'), `{
+    "compilerOptions": {
+        "paths": {
+            "/_102039_/*": ["./mls-102039/*"]
+        }
+    }
+}
+`);
+    mkdirSync(join(root, 'mls-102056', 'l5'), { recursive: true });
+    writeFileSync(join(root, 'mls-102056', 'l5', 'config.json'), '{}\n');
+    const lines = [];
+    assert.deepEqual(ensureTsconfigPaths(root, (text) => lines.push(text)), ['102056']);
+    assert.match(lines.join(''), /setup mapping, not an agent error/);
+    assert.match(readFileSync(join(root, 'tsconfig.json'), 'utf8'), /"\/_102056_\/\*"/);
+    assert.deepEqual(ensureTsconfigPaths(root, (text) => lines.push(text)), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('up-to-date obj (no pass=code dump) still gates from the typeCheck marker', () => {

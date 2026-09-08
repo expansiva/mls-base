@@ -120,6 +120,15 @@ test('--check no CLI sai 1 com a mensagem de setup; default escreve', () => {
   });
 });
 
+test('cabeçalho: typeCheck do gate herda o tsconfig versionado; a VM precisa do paths', () => {
+  const src = readFileSync(SCRIPT, 'utf8');
+  assert.doesNotMatch(src, /This script is the Mac side/);
+  assert.doesNotMatch(src, /VM compile does not use this file/);
+  assert.match(src, /typeCheckRun\.mjs:67/);
+  assert.match(src, /tsconfig\.backend\.json/);
+  assert.match(src, /tsconfig\.json/);
+});
+
 test('parseSyncArgs: --check e --root', () => {
   assert.deepEqual(parseSyncArgs(['--check'], '/base'), { root: resolve('/base'), check: true });
   assert.equal(parseSyncArgs(['--root', '/tmp/x']).root, resolve('/tmp/x'));

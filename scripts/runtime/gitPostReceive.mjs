@@ -20,6 +20,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTypeCheckMarkers } from '../typeCheckPolicy.mjs';
+import { addMissingTsconfigPaths } from '../syncTsconfigPaths.mjs';
 import {
   clientConfigMarker,
   formatClientConfigWarn,
@@ -207,6 +208,10 @@ export function gateMessage(verdict) {
     return 'gitPostReceive: gate=exit (build.code!=0)';
   }
   if (verdict.gate === 'typeCheck') {
+    const blocked = Array.isArray(verdict.blocked) ? verdict.blocked.filter(Boolean) : [];
+    if (blocked.length > 0) {
+      return `gitPostReceive: gate=typeCheck blocked projects=${blocked.join(',')}`;
+    }
     return `gitPostReceive: gate=typeCheck status=${verdict.typeCheckStatus ?? 'permissive'}`;
   }
   return 'gitPostReceive: gate=pass=code';
@@ -297,6 +302,18 @@ export function authorNote(actorEmail, commitEmail) {
   if (!commitEmail) return `push por ${actorEmail} (autor do commit desconhecido)`;
   if (actorEmail.trim().toLowerCase() === commitEmail.trim().toLowerCase()) return '';
   return `push por ${actorEmail}, commit assinado por ${commitEmail} — identidades divergentes`;
+}
+
+/** Sync `/_<id>_/*` in the versioned tsconfig.json before typeCheck inherits it. */
+export function ensureTsconfigPaths(root, write = (text) => process.stderr.write(text)) {
+  const added = addMissingTsconfigPaths(root);
+  if (added.length) {
+    write(
+      `gitPostReceive: tsconfig.json paths: added ${added.map((id) => `"/_${id}_/*"`).join(', ')}` +
+        ' — setup mapping, not an agent error.\n',
+    );
+  }
+  return added;
 }
 
 /**
@@ -692,6 +709,7 @@ async function main() {
   }
 
   reportClientConfig(root, id);
+  ensureTsconfigPaths(root);
 
   for (const depId of deps) {
     if (depId === id) continue;

@@ -20,10 +20,12 @@
 //      anyone with disk access on the VM may wipe;
 //   5. gitReposSetup gives it `main` + `vm-baseline` + the push hook;
 //   6. the result is checked, not assumed: no model id left, `main` exists, the project
-//      DECLARES its dependencies, and `shellTemplates.spa` is present (without that the
-//      app becomes a zombie: pm2 green, nothing listening — measured on 102043).
+//      DECLARES its dependencies, `shellTemplates.spa` is present (without that the
+//      app becomes a zombie: pm2 green, nothing listening — measured on 102043), and
+//      `/_<id>_/*` is in the versioned tsconfig.json paths (the typeCheck gate inherits
+//      that file; missing it is forty TS2307 that look like a generation error).
 //
-// Idempotent: a second run finds the folder and does nothing. `--force` recreates, and it
+// Idempotent: a second run finds the folder and does not rewrite it. `--force` recreates, and it
 // FAILS CLOSED — only a repo that positively proves it has nothing beyond the baseline may
 // be deleted (mayRecreate).
 //
@@ -38,6 +40,7 @@ import {
 } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { addMissingTsconfigPaths, pathIdsOf } from '../syncTsconfigPaths.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = resolve(SCRIPT_DIR, '..', '..');
@@ -168,6 +171,32 @@ export function missingShellTemplates(configText) {
   }
   if (!parsed?.shellTemplates?.spa) return 'l5/config.json missing shellTemplates.spa';
   return '';
+}
+
+/**
+ * Register `/_<id>_/*` in the versioned tsconfig.json (the typeCheck gate
+ * extends tsconfig.backend.json → this file). Reuses addMissingTsconfigPaths;
+ * returns the tsconfig path (and why) when the id is still absent.
+ */
+export function ensureProjectTsconfigPath(root, id) {
+  const file = join(root, 'tsconfig.json');
+  try {
+    const added = addMissingTsconfigPaths(root);
+    if (added.length) {
+      log(`tsconfig.json paths: added ${added.map((item) => `"/_${item}_/*"`).join(', ')} — setup mapping, not an agent error`);
+    }
+  } catch (error) {
+    return `${file} (${error instanceof Error ? error.message : String(error)})`;
+  }
+  if (!existsSync(file)) return file;
+  return pathIdsOf(readFileSync(file, 'utf8')).includes(String(id)) ? '' : file;
+}
+
+function tsconfigPathFailMessage(id, file) {
+  return (
+    `mls-${id} is missing from ${file} paths ("/_${id}_/*"). ` +
+    'The typeCheck gate extends tsconfig.backend.json → this file; without the mapping every `/_<id>_/` import is TS2307.'
+  );
 }
 
 function git(dir, args) {
@@ -354,6 +383,8 @@ function main() {
     // receber push, e era o estado de toda VM criada antes da correção do `isRepo` (03/09). O
     // `gitReposSetup` é idempotente — quando já está pronto, ele não faz nada.
     runGitReposSetup(root, id);
+    const pathProblem = ensureProjectTsconfigPath(root, id);
+    if (pathProblem) fail(tsconfigPathFailMessage(id, pathProblem));
     process.stdout.write('unchanged\n');
     return;
   }
@@ -394,6 +425,9 @@ function main() {
   }
 
   log(`mls-${id}: cloned model @ ${commit.slice(0, 7)}, ${rewritten} file(s) renumbered, ${GIT_MANAGED_MARKER} written`);
+
+  const pathProblem = ensureProjectTsconfigPath(root, id);
+  if (pathProblem) abortCreate(state.dir, tsconfigPathFailMessage(id, pathProblem));
 
   runGitReposSetup(root, id);
 
