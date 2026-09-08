@@ -8,7 +8,7 @@ to change **before** you open the code. Everything here is developer-facing docu
 | path | what it is | changing it changes |
 |---|---|---|
 | `mls-base/skills/*.md` | **developer documentation** (this folder) | nothing at runtime |
-| `mls-102020/l2/agentNewSolution/skills/*.md`, `agentChangeFrontend/.../skills`, any `<agent>/skills/` | **text injected into generation prompts** | the apps the agents generate |
+| `mls-102035/l2/agentNewSolution/skills/*.md`, `mls-102020/l2/agentChangeFrontend/.../skills`, any `<agent>/skills/` | **text injected into generation prompts** | the apps the agents generate |
 
 Editing an agent's `skills/` file is a **product change**, not documentation. It ships in the next
 generated app. Never edit one to "improve the docs".
@@ -17,7 +17,7 @@ generated app. Never edit one to "improve the docs".
 
 | agent | project | writes | skill |
 |---|---|---|---|
-| `agentNewSolution` (NS) | `mls-102020` | `l4` (product contracts) + `l5` (delivery contracts) | [`agentNewSolution.md`](agentNewSolution.md) |
+| `agentNewSolution` (NS) | `mls-102035` | `l4` (product contracts) + `l5` (delivery contracts) | [`agentNewSolution.md`](agentNewSolution.md) |
 | `agentChangeBackend` (CB) | `mls-102021` | `l1` (backend) | [`agentChangeBackend.md`](agentChangeBackend.md) |
 | `agentChangeFrontend` (CF) | `mls-102020` | `l2` (frontend) | [`agentChangeFrontend.md`](agentChangeFrontend.md) |
 | runtime / publish | `mls-102033`, `mls-102034`, `mls-base/scripts` | the running app | [`runtimeEnvironment.md`](runtimeEnvironment.md) + [`publishGitBackend.md`](publishGitBackend.md) |

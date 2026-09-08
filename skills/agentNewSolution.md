@@ -1,7 +1,7 @@
 # Skill: agentNewSolution (NS) — producing `l4` and `l5`
 
-Cross-cutting notes for anyone touching the NS (`mls-102020/l2/agentNewSolution`) or consuming what
-it writes. The agent's own contract lives in `mls-102020/l2/agentNewSolution/README.md` and
+Cross-cutting notes for anyone touching the NS (`mls-102035/l2/agentNewSolution`) or consuming what
+it writes. The agent's own contract lives in `mls-102035/l2/agentNewSolution/README.md` and
 `docs/flow.json` (steps, gates, `canonicalReferences`); this file carries what the downstream agents
 depend on.
 
@@ -53,6 +53,20 @@ The record-owner handle is `party: person` + E3 `dataScope.mode: own`, never a f
 'appendOnly'` on an entity; E8 then emits no catalogue `update`/`delete`/`inactivate`/`reactivate`
 and the `recordForm` keeps only create. Absent = editable. L4 written before the field keeps
 compiling — nothing is migrated.
+
+**8. Structure only where a machine reads it; intent stays prose, whole.** (Wagner, 08/09/2026 — after two
+lived failures: rules once had ~200 fields and never closed, and became `id + description`; page definitions
+were cut down to three fixed labels and screens lost their voice.) A structured field exists only when a
+downstream step reads it **without an LLM** (id, reference, `kind`, closed enum, hash, status) or a
+deterministic gate needs it. Everything that is intent — what, for whom, why, how it should feel — travels
+as prose, **uncut**, to the LLM that decides: `journey.goal`, `outcome.statement` + `evidence`,
+`steps[].description`, `sections[].intent`, `landingIntent`, `rules[].description`. Never summarize prose into
+labels; never add a field to a human-facing artifact (journey `business`, rule, grant, entity) to steer a
+model — steer with prose and check with a gate. When several downstream readers need the same fact, the
+owning step's LLM extracts it from prose **once** and writes a reference (a projection, `affects[]`,
+`mdmSubtype`), then the rest is deterministic. Guardrail text grows only per dated incident and prefers
+becoming a gate (compiler, lint, ratchet). Structure wins on DATA; prose wins on BEHAVIOR and VISUAL.
+Design record: `todo/gerarApp/design/familias/T_estrutura_vs_prosa.md` (not committed; the rule is this line).
 
 ## Running it
 
