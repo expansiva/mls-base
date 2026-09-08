@@ -245,4 +245,12 @@ Each organization instance reads AWS region/bucket from `appconfig.json`. Creden
 
 `GET /ready` and alias `GET /msg/ready` return 503 with the AWS error code when the startup probe (`ListTables` limit 1, retried every 5 min, `storageHealth.ts` / `storageHealthAws.ts`) fails. The process stays up. The 102034 proxy forwards `/msg/*` without rewriting (`msgProxy.ts:27`), so callers on the app domain must use `/msg/health` and `/msg/ready`.
 
-*Written 06/09/2026; NS widget `presentation` 07/09/2026.*
+## Host CLI index (`collab-msg`)
+
+The host SQLite index (`collab-mls.sqlite`) is filled by `scanMlsBase` / `desktop.boot()` walking `mls-base/mls-*` (`collab-msg/collab-mls/src/stor.ts`). As of 08/09/2026 the scan also **purges** memory + sqlite rows whose files no longer exist on disk (`deleteFileKey` + `delete files[key]`, same pair as `setContent(null)`). It does **not** leave `status: 'deleted'` — a resident deleted row breaks CB.
+
+Manual folder removal + `deno task cli -- host` clears the index. Do not edit the sqlite by hand. The ns10 module-removal agent no longer needs a separate "sync deletions" step for the host index (that part of ns10 question 2 / design is done here).
+
+Incident (08/09/2026): n02 moved `agentNewSolution` from `mls-102020` to `mls-102035`; the additive scan left the `102020` row as `nochange`; `getInstanceByName` (102027) walked `workspaceDependencies` (`102020` before `102035`) and loaded the ghost. Purge removes the class, not only that name.
+
+*Written 06/09/2026; NS widget `presentation` 07/09/2026; host scan purge 08/09/2026.*
