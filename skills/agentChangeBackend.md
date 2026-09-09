@@ -136,6 +136,14 @@ from a field suffix or from grant prose.
   `layer_1_external/auth/profileAuthorities.ts`. Empty session scope stays permissive (platform
   pending). Anonymous session acceptance is not a CB change.
 
+## N writes, one transaction (n10, 2026-09-09)
+
+When the l4 operation `writes` lists N entities, gen-usecase emits **one**
+`ctx.data.runInTransaction` that covers every local table in that list and every `mdmWrites`
+entry. Never one transaction per entity. Catalogue operations that still write a single
+`entityRef` are unchanged.
+
 *Written 31/08/2026; 5b (staleness = existence) added 02/09/2026; leftover-wipe abort added 02/09/2026;
 wipe-memory (`wipedThisRun`) added 02/09/2026; `/nochain` added 06/09/2026; gen-adapter fan-out added 06/09/2026;
-`derivedRefs.derivation.aggregate[].signBy` added 06/09/2026; authority/anchor (n09) added 09/09/2026.*
+`derivedRefs.derivation.aggregate[].signBy` added 06/09/2026; authority/anchor (n09) added 09/09/2026;
+N-write transaction (n10) added 09/09/2026.*

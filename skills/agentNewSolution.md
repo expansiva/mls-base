@@ -70,6 +70,13 @@ owning step's LLM extracts it from prose **once** and writes a reference (a proj
 becoming a gate (compiler, lint, ratchet). Structure wins on DATA; prose wins on BEHAVIOR and VISUAL.
 Design record: `todo/gerarApp/design/familias/T_estrutura_vs_prosa.md` (not committed; the rule is this line).
 
+**9. Multi-entity effect (`affects` → `writes`).** An `act` step that also changes another business
+object lists it in `affects[]` (PascalCase ids, no fields). E2 demotion unions `entity ∪ affects`.
+E7 persists usecase `writes[]` (entities + optional fieldRefs) and requires
+`writes ⊇ affects ∪ {step entity} ∪ transition entities`; extras are a visible
+`writesBeyondIntent` system decision. E9 copies `writes` onto the classic operation
+(`reads = entityRefs − writes`). The CB then emits one transaction for those N writes.
+
 ## Running it
 
 `pipeline.json` records each step's status (`approved`, plus `autoReason` when `/fast` skipped a
@@ -87,4 +94,4 @@ path and suppresses only that handoff; the run summary records
 `handoff: suppressed by /nochain — next: @@agentChangeBackend /rebuild all <module>` as a fact, not
 a degradation. The flag is on the invocation, never inferred from CLI vs browser.
 
-*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026.*
+*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026; `affects`/`writes` (n10) 09/09/2026.*
