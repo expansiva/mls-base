@@ -116,6 +116,26 @@ trace folder.
 backend run and records `handoff: suppressed by /nochain — next: @@agentChangeFrontend /rebuild all <module>`
 instead of dispatching. The flag is on the invocation, never inferred from CLI vs browser.
 
+## Authority and person-scope (n09, 2026-09-09)
+
+The l4 V4 matrix (`operationAuthorityRefs`) and `access/access-bindings.defs.ts` are the only source
+of who may run an operation and which rows they see. The CB transcribes; it does not infer a filter
+from a field suffix or from grant prose.
+
+- **Scan.** `cbAccess.readAccessMatrixV4` + `readAccessBindings`. A V4 module whose operation has no
+  `authorityRefs` is `CB_SCAN_AUTHORITY_REQUIRED` (blocking, never a permissive fallback). Pre-n07
+  l4 without V4 is unchanged until regeneration. `custom` scope is recorded on the run
+  (`custom scope (prose): <operationId>`).
+- **Usecase.** For `own` / `assigned` / `related`, gen-http emits
+  `layer_2_application/scope/sessionScope.ts` from the declared anchor (join by the hop `fieldId`s
+  until `Person.platformUserId = ctx.sessionContext.actorId`, last hop via `ctx.mdm`). The LLM
+  receives `scopeFilter.alreadyApplied` and must not re-derive. `organization` / `public`: no
+  person filter. `custom`: `// scope: custom (prose) — <description>` for the model.
+- **Controller.** Besides `actorScope ∩ actors`, each handler carries `authorityRefs` and, when the
+  covering grant is `public`, `public: true`. Claims `<moduleId>:<actorId>` map through
+  `layer_1_external/auth/profileAuthorities.ts`. Empty session scope stays permissive (platform
+  pending). Anonymous session acceptance is not a CB change.
+
 *Written 31/08/2026; 5b (staleness = existence) added 02/09/2026; leftover-wipe abort added 02/09/2026;
 wipe-memory (`wipedThisRun`) added 02/09/2026; `/nochain` added 06/09/2026; gen-adapter fan-out added 06/09/2026;
-`derivedRefs.derivation.aggregate[].signBy` added 06/09/2026.*
+`derivedRefs.derivation.aggregate[].signBy` added 06/09/2026; authority/anchor (n09) added 09/09/2026.*
