@@ -77,6 +77,16 @@ E7 persists usecase `writes[]` (entities + optional fieldRefs) and requires
 `writesBeyondIntent` system decision. E9 copies `writes` onto the classic operation
 (`reads = entityRefs − writes`). The CB then emits one transaction for those N writes.
 
+**10. Landing is exclusive → first journey → rank.** E8 `buildLandings` (`steps/e8/tiers.ts`)
+assigns one workspace per E3 profile with no LLM and without reading `landingIntent` (that prose
+stays for the human and the CF). Order: a non-journey whose `profileRefs` is exactly `[profile]`
+(by `tierRank` then id); else the `tier: journey` workspace that hosts the first step of that
+profile's first journey (`hostedStepRefs`, `journeys/index` order); else the previous rank
+fallback (first non-journey that includes the profile). `landings[].reason` is the closed token
+`exclusive | firstJourney | rank`. A profile that has a workspace and no landing fails
+`NS4_E8_PROFILE_WITHOUT_LANDING`. E9 still copies `siteMap.landings` per actor and fills
+`reason` with the workspace purpose (existing); the machine token lives on the E8 model.
+
 ## Running it
 
 `pipeline.json` records each step's status (`approved`, plus `autoReason` when `/fast` skipped a
@@ -94,4 +104,4 @@ path and suppresses only that handoff; the run summary records
 `handoff: suppressed by /nochain — next: @@agentChangeBackend /rebuild all <module>` as a fact, not
 a degradation. The flag is on the invocation, never inferred from CLI vs browser.
 
-*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026; `affects`/`writes` (n10) 09/09/2026.*
+*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026; `affects`/`writes` (n10) 09/09/2026; landing exclusive→firstJourney→rank (n11) 09/09/2026.*
