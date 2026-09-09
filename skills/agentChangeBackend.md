@@ -72,6 +72,21 @@ number of pending operations, the scan is the suspect, not the LLM.
 
 `gen-domain` fans out per domain; `gen-adapter` fans out per aggregate/event (`cb-adapter-fanout`; `cb-gen-usecase` joins on the fan-out, never the dispatcher). `gen-port`/`gen-table` are still whole-layer.
 
+## MDM: create-or-attach, no name inference (n05, 2026-09-08)
+
+The l4 is the only source of MDM meaning. The CB transcribes `mdmSubtype`, `role`, `displayField`,
+`storage.idField` and `relationships[]` from ontology v7 (`cbDefsSource.readOntologyEntity`). It
+does **not** infer subtype from an English substring, country from language, or a foreign key from
+an `Id` suffix. v6 modules keep the suffix fallback until they are regenerated.
+
+`mdmWrites` on a usecase item is `{ mdmType: role, subtype, idField, baseFields, namespaceFields }`.
+A create of a Person/Company role is **create-or-attach**: `ctx.mdm.entity.create` (the engine
+dedups by document and returns `alreadyExists`), then `update` to add the role tag and write
+`details[ctx.moduleId]`. `countryCode` is `ctx.organization?.countryCode` when n06 exposes it;
+until then the level-1 identification default is `'US'` (`origin: level1-subtype-default`).
+
+`findByDocument` / `findByContact` / `attachRole` are not on the facade yet (n06).
+
 ## Vocabulary the l4 can send
 
 - `mdmRefs` — master-data entities, reached through `ctx.mdm`, never a local table.

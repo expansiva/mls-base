@@ -64,5 +64,10 @@ Cross-cutting:
    `createAgent()` graph — see the am1–am8 wave.
 6. **No `todo/` paths in committed code.** `todo/` is disposable and gitignored; code keeps the
    motivation, never the pointer. Guard: `mls-102020/l2/aura/molecules/shared/localDocRefs.test.ts`.
+7. **The l4 is the only source of business meaning. CB and CF transcribe; they do not infer.**
+   An inference by name (suffix `Id`, substring, vocabulary) in the CB or the CF is a defect with
+   two possible owners: the l4 did not declare it, or it declared it and the consumer did not read
+   it. Never fixed by improving the heuristic. Guard: `cbInferenceRatchet.test.ts` /
+   `cfeInferenceRatchet.test.ts` (n05, 2026-09-08).
 
-*Written 31/08/2026; rule 5 (multi-host) added 01/09/2026.*
+*Written 31/08/2026; rule 5 (multi-host) added 01/09/2026; rule 7 (l4 is meaning) added 08/09/2026.*
