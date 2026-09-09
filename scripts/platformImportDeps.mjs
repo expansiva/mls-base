@@ -1,7 +1,9 @@
 // Guard: a platform project that imports `/_<id>_/` must declare that id.
 // Same specifier scan as buildCI/resolveDeps — comments, JSDoc and runtime
-// URL strings are not imports. Generated apps are not in the list: their
-// mlsDep.json is produced by buildMlsDepWorkspaceIds and they come and go.
+// URL strings are not imports. `import(\`/_${CONST}_/…\`)` where CONST is a
+// numeric project id in the same project IS an import (studioHeader).
+// Generated apps are not in the list: their mlsDep.json is produced by
+// buildMlsDepWorkspaceIds and they come and go.
 
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { readManifestDeps, resolveDeps, scanImportRefs, stripTemplateLiterals } from './resolveDeps.mjs';
+import { readManifestDeps, resolveDeps, scanDynamicProjectRefs, scanImportRefs, stripTemplateLiterals } from './resolveDeps.mjs';
 
 const GIT_ENV = {
   ...process.env,
@@ -122,6 +122,62 @@ test('import /_99999_/ outside the closure is one finding naming the file', asyn
       },
     );
   });
+});
+
+test('scanDynamicProjectRefs conta import(`/_${CONST}_/`) e ignora citação em comentário', () => {
+  const hits = scanDynamicProjectRefs([
+    {
+      rel: 'l2/cbe/studioHeader.ts',
+      content: [
+        '// The components live in mls-102041 and load as `/_102041_/l2/collab-page.js`',
+        '/** e.g. `/_102048_/l2/designSystem.js` */',
+        'export const STUDIO_PROJECT = 102041;',
+        'const NAV1_HEIGHT_PX = 30;',
+        'await Promise.all(STUDIO_MODULES.map((name) => import(`/_${STUDIO_PROJECT}_/l2/${name}.js`)));',
+      ].join('\n'),
+    },
+    {
+      rel: 'l2/cbe/studioStructure.ts',
+      content: [
+        "import { STUDIO_PROJECT } from '/_102033_/l2/cbe/studioHeader.js';",
+        'await Promise.all(STUDIO_MODULES.map((name) => import(`/_${STUDIO_PROJECT}_/l2/${name}.js`)));',
+      ].join('\n'),
+    },
+    {
+      rel: 'l2/libModel.ts',
+      content: "let url = '/_100554_/l2/enhancementStyle.js';\nconst lazy = await import(url);\n",
+    },
+  ]);
+  assert.deepEqual([...hits.entries()], [['102041', 'l2/cbe/studioHeader.ts']]);
+  assert.equal(hits.has('102048'), false, 'JSDoc não é uso');
+  assert.equal(hits.has('100554'), false, 'URL montada em runtime não é o padrão');
+});
+
+test('scanImportRefs inclui o import dinâmico de STUDIO_PROJECT', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'scan-dyn-'));
+  try {
+    const project = join(root, 'mls-102033');
+    mkdirSync(join(project, 'l2', 'cbe'), { recursive: true });
+    writeFileSync(join(project, 'l2', 'cbe', 'studioHeader.ts'), [
+      '// citation: `_102041_/l2/collab-css-base.less`',
+      'export const STUDIO_PROJECT = 102041;',
+      'await import(`/_${STUDIO_PROJECT}_/l2/collab-page.js`);',
+    ].join('\n'), 'utf8');
+    writeFileSync(join(project, 'l2', 'cbe', 'studioStructure.ts'), [
+      "import { STUDIO_PROJECT } from '/_102033_/l2/cbe/studioHeader.js';",
+      'await import(`/_${STUDIO_PROJECT}_/l2/collab-spliter.js`);',
+    ].join('\n'), 'utf8');
+
+    const hits = await scanImportRefs(project, ['l2']);
+    assert.ok(hits.has('102041'), 'import dinâmico de STUDIO_PROJECT entra no scan');
+    assert.ok(
+      ['l2/cbe/studioHeader.ts', 'l2/cbe/studioStructure.ts'].includes(hits.get('102041')),
+      hits.get('102041'),
+    );
+    assert.equal(hits.has('102033'), true, 'import estático do próprio 102033');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('scanImportRefs conta especificador de módulo, não comentário nem URL de runtime', async () => {

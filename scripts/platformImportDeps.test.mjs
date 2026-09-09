@@ -74,6 +74,48 @@ test('ignora só o que o buildCI ignora: teste, id inexistente, o próprio id e 
   });
 });
 
+test('import dinâmico `/_${STUDIO_PROJECT}_/` conta; citação em comentário não', async () => {
+  await withRoot(async (root) => {
+    stubProject(root, '102033', {
+      'package.json': JSON.stringify({
+        actionDependencies: {
+          'mls-102029': 'git+https://github.com/expansiva/mls-102029.git',
+        },
+      }),
+      'l2/cbe/studioHeader.ts': [
+        '// The components live in mls-102041 — `/_102041_/l2/collab-page.js`',
+        'export const STUDIO_PROJECT = 102041;',
+        'await import(`/_${STUDIO_PROJECT}_/l2/collab-page.js`);',
+      ].join('\n'),
+    });
+    stubProject(root, '102041');
+    stubProject(root, '102029');
+    const findings = await findUndeclaredPlatformImports(root, ['102033']);
+    assert.deepEqual(findings, [
+      { projectId: '102033', missingId: '102041', file: 'l2/cbe/studioHeader.ts' },
+    ]);
+  });
+});
+
+test('import dinâmico declarado some do achado', async () => {
+  await withRoot(async (root) => {
+    stubProject(root, '102033', {
+      'package.json': JSON.stringify({
+        actionDependencies: {
+          'mls-102041': 'git+https://github.com/expansiva/mls-102041.git',
+        },
+      }),
+      'l2/cbe/studioHeader.ts': [
+        'export const STUDIO_PROJECT = 102041;',
+        'await import(`/_${STUDIO_PROJECT}_/l2/collab-page.js`);',
+      ].join('\n'),
+    });
+    stubProject(root, '102041');
+    const findings = await findUndeclaredPlatformImports(root, ['102033']);
+    assert.deepEqual(findings, []);
+  });
+});
+
 test('comentário e URL de runtime não contam como import', async () => {
   await withRoot(async (root) => {
     stubProject(root, '102029', {

@@ -168,7 +168,9 @@ function isExcludedFromCompile(relPath) {
 //
 // Este scan só ALIMENTA a checagem de dep não declarada; o fecho que se clona e
 // se compila vem do manifesto. Estreitá-lo remove falso positivo sem encolher
-// nada.
+// nada. O único extra além do especificador estático é
+// `import(\`/_${CONST}_/…\`)` com CONST = id numérico no projeto — uso, não
+// citação.
 const IMPORT_SPECIFIER_RES = [
   /\bfrom\s*['"`]\/_(\d+)_\//gu,          // import x from '/_102020_/…'
   /\bimport\s*\(\s*['"`]\/_(\d+)_\//gu,   // import('/_102020_/…')
@@ -176,8 +178,16 @@ const IMPORT_SPECIFIER_RES = [
   /\brequire\s*\(\s*['"`]\/_(\d+)_\//gu,
 ];
 
-export async function scanImportRefs(projectDir, levels) {
-  const firstHit = new Map();
+// Dynamic project URL: import(`/_${CONST}_/…`) where CONST is a numeric
+// literal in this project (same file or another). Comments and JSDoc that
+// cite `/_<id>_/` as text are not this pattern — they have no import() of
+// an interpolated constant. A runtime string (`let url = '/_100554_/…'`)
+// is also not this pattern.
+const DYNAMIC_IMPORT_CONST_RE = /\bimport\s*\(\s*`\/_\$\{([A-Za-z_$][\w$]*)\}_\//gu;
+const NUMERIC_CONST_RE = /(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(\d{5,})\b/gu;
+
+async function listCompileTsFiles(projectDir, levels) {
+  const files = [];
   for (const level of levels) {
     const dir = join(projectDir, level);
     if (!existsSync(dir)) continue;
@@ -186,15 +196,56 @@ export async function scanImportRefs(projectDir, levels) {
       const abs = join(entry.parentPath ?? entry.path, entry.name);
       const rel = abs.slice(projectDir.length + 1).split('\\').join('/');
       if (isExcludedFromCompile(rel)) continue;
-      const content = stripTemplateLiterals(await readFile(abs, 'utf8'));
-      for (const re of IMPORT_SPECIFIER_RES) {
-        re.lastIndex = 0;
-        let match;
-        while ((match = re.exec(content))) {
-          if (!firstHit.has(match[1])) firstHit.set(match[1], rel);
-        }
+      files.push({ rel, abs });
+    }
+  }
+  return files;
+}
+
+// CONST = NNNNN used in import(`/_${CONST}_/…`). First hit per id, same as
+// the static specifier scan. Cross-file: studioStructure imports
+// STUDIO_PROJECT from studioHeader.
+export function scanDynamicProjectRefs(sourceFiles) {
+  const constants = new Map();
+  const usages = [];
+  for (const { rel, content } of sourceFiles) {
+    NUMERIC_CONST_RE.lastIndex = 0;
+    let match;
+    while ((match = NUMERIC_CONST_RE.exec(content))) {
+      if (!constants.has(match[1])) constants.set(match[1], { id: match[2], file: rel });
+    }
+    DYNAMIC_IMPORT_CONST_RE.lastIndex = 0;
+    while ((match = DYNAMIC_IMPORT_CONST_RE.exec(content))) {
+      usages.push({ name: match[1], file: rel });
+    }
+  }
+  const firstHit = new Map();
+  for (const usage of usages) {
+    const found = constants.get(usage.name);
+    if (!found) continue;
+    if (!firstHit.has(found.id)) firstHit.set(found.id, usage.file);
+  }
+  return firstHit;
+}
+
+export async function scanImportRefs(projectDir, levels) {
+  const firstHit = new Map();
+  const listed = await listCompileTsFiles(projectDir, levels);
+  const sourceFiles = [];
+  for (const { rel, abs } of listed) {
+    const content = await readFile(abs, 'utf8');
+    sourceFiles.push({ rel, content });
+    const stripped = stripTemplateLiterals(content);
+    for (const re of IMPORT_SPECIFIER_RES) {
+      re.lastIndex = 0;
+      let match;
+      while ((match = re.exec(stripped))) {
+        if (!firstHit.has(match[1])) firstHit.set(match[1], rel);
       }
     }
+  }
+  for (const [depId, file] of scanDynamicProjectRefs(sourceFiles)) {
+    if (!firstHit.has(depId)) firstHit.set(depId, file);
   }
   return firstHit;
 }
