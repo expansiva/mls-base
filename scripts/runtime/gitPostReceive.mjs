@@ -20,12 +20,13 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTypeCheckMarkers } from '../typeCheckPolicy.mjs';
-import { addMissingTsconfigPaths } from '../syncTsconfigPaths.mjs';
+import { pathIdsOf } from '../syncTsconfigPaths.mjs';
 import {
   clientConfigMarker,
   formatClientConfigWarn,
   validateClientConfigFile,
 } from '../validateClientConfig.mjs';
+import { VM_TSCONFIG, writeVmTsconfig } from './addNewVersion.mjs';
 import { ensureProjectApp } from './vmApps.mjs';
 import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 
@@ -304,12 +305,27 @@ export function authorNote(actorEmail, commitEmail) {
   return `push por ${actorEmail}, commit assinado por ${commitEmail} — identidades divergentes`;
 }
 
-/** Sync `/_<id>_/*` in the versioned tsconfig.json before typeCheck inherits it. */
+/**
+ * VM: refresh tsconfig.vm.json from the mls-* folders on disk. Never write
+ * the versioned tsconfig.json — a dirty tree blocks `git pull --ff-only`
+ * (Atualizar plataforma).
+ *
+ * Mac: addMissingTsconfigPaths (publishGit / projectInit) stays the writer
+ * of the versioned file. There the repo is the source and the entry is
+ * committed with the project.
+ */
 export function ensureTsconfigPaths(root, write = (text) => process.stderr.write(text)) {
-  const added = addMissingTsconfigPaths(root);
+  const previousFile = existsSync(join(root, VM_TSCONFIG))
+    ? join(root, VM_TSCONFIG)
+    : join(root, 'tsconfig.json');
+  const before = existsSync(previousFile)
+    ? new Set(pathIdsOf(readFileSync(previousFile, 'utf8')))
+    : new Set();
+  const ids = writeVmTsconfig(root);
+  const added = ids.filter((id) => !before.has(id));
   if (added.length) {
     write(
-      `gitPostReceive: tsconfig.json paths: added ${added.map((id) => `"/_${id}_/*"`).join(', ')}` +
+      `gitPostReceive: ${VM_TSCONFIG} paths: added ${added.map((id) => `"/_${id}_/*"`).join(', ')}` +
         ' — setup mapping, not an agent error.\n',
     );
   }

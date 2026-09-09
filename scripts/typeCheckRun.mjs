@@ -7,7 +7,7 @@
 // (l1 = tsconfig.backend.json, l2 = tsconfig.frontend.json) per project.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
   excerptLines,
@@ -18,6 +18,8 @@ import {
   summarizeTscOutput,
   verdictFor,
 } from './typeCheckPolicy.mjs';
+import { vmTsconfigRel } from './runtime/addNewVersion.mjs';
+import { pathIdsOf } from './syncTsconfigPaths.mjs';
 
 const LAYER_TSCONFIG = {
   l1: './tsconfig.backend.json',
@@ -64,6 +66,17 @@ function layerHasSources(root, projectId, layer) {
   return existsSync(dir);
 }
 
+/** `paths` from vmTsconfigRel (generated file when it exists, versioned otherwise). */
+function compilerPathsFromRoot(root) {
+  const file = join(root, vmTsconfigRel(root));
+  if (!existsSync(file)) return undefined;
+  const ids = pathIdsOf(readFileSync(file, 'utf8'));
+  if (!ids.length) return undefined;
+  const paths = {};
+  for (const id of ids) paths[`/_${id}_/*`] = [`./mls-${id}/*`];
+  return paths;
+}
+
 function writeLayerTsconfig(root, projectId, layer) {
   const configName = `.tsconfig.typecheck.${projectId}.${layer}.json`;
   const configPath = resolve(root, configName);
@@ -73,9 +86,16 @@ function writeLayerTsconfig(root, projectId, layer) {
     './types/*.d.ts',
   ];
   if (layer === 'l1') include.push(`./mls-${projectId}/nodejs*/**/*.ts`);
+  // Child `paths` override inherited ones, so the gate sees the machine's
+  // aliases without dirtying the versioned tsconfig.json. Do not set
+  // `baseUrl`: it is commented out in tsconfig.json, and paths resolve
+  // relative to this file, which lives at the repo root.
+  const compilerOptions = { noEmit: true };
+  const paths = compilerPathsFromRoot(root);
+  if (paths) compilerOptions.paths = paths;
   writeFileSync(configPath, `${JSON.stringify({
     extends: LAYER_TSCONFIG[layer],
-    compilerOptions: { noEmit: true },
+    compilerOptions,
     include,
   }, null, 2)}\n`, 'utf8');
   return configPath;

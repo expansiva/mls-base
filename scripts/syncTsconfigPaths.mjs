@@ -3,13 +3,16 @@
 // l5/config.json. A missing entry makes every `/_<id>_/` import a TS2307
 // that looks like an agent generation error. This is a setup problem.
 //
-// VM compile (addNewVersion) still writes tsconfig.vm.json from the projects
-// on disk and never touches this file (gb63). The typeCheck gate is different:
-// typeCheckRun.mjs:67 writeLayerTsconfig extends ./tsconfig.backend.json,
-// which extends this versioned tsconfig.json. Without `/_<id>_/*` here, the
-// gate reports TS2307 on every import and blocks the release. The VM needs
-// the entry as much as the Mac. Mac (publishGit) and VM (projectInit, and
-// gitPostReceive before compile) both call addMissingTsconfigPaths.
+// Mac (publishGit, projectInit): this script writes the versioned
+// tsconfig.json. There the repo is the source and the entry is committed
+// with the project.
+//
+// VM compile (addNewVersion) writes tsconfig.vm.json from the projects on
+// disk and never touches this file (gb63). The typeCheck gate
+// (typeCheckRun writeLayerTsconfig) copies `paths` from vmTsconfigRel —
+// the generated file when it exists, this versioned file when it does not.
+// gitPostReceive refreshes tsconfig.vm.json and does not call this writer
+// (a dirty versioned tree blocks pull --ff-only).
 //
 // Usage:
 //   node scripts/syncTsconfigPaths.mjs            # add missing entries
@@ -85,7 +88,14 @@ export function insertPathEntries(text, idsToAdd) {
   return text.replace(PATHS_BLOCK, () => block);
 }
 
-/** Append missing `/_<id>_/*` entries. Does not remove paths whose folder is gone. */
+/**
+ * Append missing `/_<id>_/*` entries. Does not remove paths whose folder is gone.
+ *
+ * Mac writer of the versioned tsconfig.json: there the repo is the source and
+ * the entry is committed with the project. The VM hook must not call this —
+ * the VM is a checkout that has to stay clean for `git pull --ff-only`
+ * (Atualizar plataforma).
+ */
 export function addMissingTsconfigPaths(root) {
   const missing = missingTsconfigPathIds(root);
   if (missing.length === 0) return [];

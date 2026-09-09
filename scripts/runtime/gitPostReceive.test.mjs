@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -164,31 +164,58 @@ test('typeCheck blocking names every blocked project, never status=permissive', 
   assert.doesNotMatch(gateMessage(verdict), /status=permissive/);
 });
 
-test('ensureTsconfigPaths acrescenta o mapeamento antes do typeCheck herdar o tsconfig', () => {
+test('ensureTsconfigPaths gera tsconfig.vm.json e não suja o versionado (T1 T5)', () => {
   const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
   assert.match(
     src,
     /reportClientConfig\(root, id\);\s*ensureTsconfigPaths\(root\);/,
     'paths sync runs in main() after clientConfig and before the compile loop',
   );
+  assert.doesNotMatch(src, /addMissingTsconfigPaths\(/);
+  assert.match(src, /writeVmTsconfig/);
+  assert.match(
+    readFileSync(join(HERE, '..', '..', '.gitignore'), 'utf8'),
+    /^tsconfig\.vm\.json$/m,
+  );
 
   const root = mkdtempSync(join(tmpdir(), 'hook-paths-'));
+  const git = (args, extra = {}) => {
+    const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8', ...extra });
+    return { code: result.status ?? 1, out: `${result.stdout ?? ''}${result.stderr ?? ''}`.trim() };
+  };
   try {
-    writeFileSync(join(root, 'tsconfig.json'), `{
+    const versioned = `{
     "compilerOptions": {
         "paths": {
             "/_102039_/*": ["./mls-102039/*"]
         }
     }
 }
-`);
+`;
+    writeFileSync(join(root, 'tsconfig.json'), versioned);
+    writeFileSync(join(root, '.gitignore'), 'tsconfig.vm.json\nmls-*\n');
     mkdirSync(join(root, 'mls-102056', 'l5'), { recursive: true });
     writeFileSync(join(root, 'mls-102056', 'l5', 'config.json'), '{}\n');
+    git(['init', '-q']);
+    git(['add', 'tsconfig.json', '.gitignore']);
+    const committed = spawnSync(
+      'git',
+      ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(committed.status, 0, `${committed.stdout ?? ''}${committed.stderr ?? ''}`);
+
     const lines = [];
     assert.deepEqual(ensureTsconfigPaths(root, (text) => lines.push(text)), ['102056']);
+    assert.match(lines.join(''), /tsconfig\.vm\.json/);
     assert.match(lines.join(''), /setup mapping, not an agent error/);
-    assert.match(readFileSync(join(root, 'tsconfig.json'), 'utf8'), /"\/_102056_\/\*"/);
+    assert.equal(readFileSync(join(root, 'tsconfig.json'), 'utf8'), versioned);
+    assert.match(readFileSync(join(root, 'tsconfig.vm.json'), 'utf8'), /"\/_102056_\/\*"/);
+    assert.equal(git(['status', '--short']).out, '');
+    assert.equal(git(['ls-files', 'tsconfig.vm.json']).out, '');
+    assert.equal(existsSync(join(root, 'tsconfig.vm.json')), true);
     assert.deepEqual(ensureTsconfigPaths(root, (text) => lines.push(text)), []);
+    assert.equal(git(['status', '--short']).out, '');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

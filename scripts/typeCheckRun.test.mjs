@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluateBuild } from './runtime/gitPostReceive.mjs';
 import { typeCheckProject } from './typeCheckRun.mjs';
+
+const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const TYPE_ERR = 'mls-900074/l2/bad.ts(1,1): error TS2345: \'"LoadMonaco"\' is not assignable to \'TypeEvent\'.';
 const IMPORT_ERR = 'mls-900074/l2/bad.ts(2,1): error TS2307: Cannot find module \'foo\'.';
@@ -137,6 +140,163 @@ test('broken import blocks even when status is permissive', () => {
     assert.equal(gate.ok, false);
     assert.equal(dist.summary.l2.blocking, 1);
   });
+});
+
+function captureLayerConfigs(root, projectId) {
+  const captured = [];
+  typeCheckProject({
+    root,
+    projectId,
+    spawnTsc: (_root, tsconfigPath) => {
+      captured.push({
+        path: tsconfigPath,
+        config: JSON.parse(readFileSync(tsconfigPath, 'utf8')),
+      });
+      return { status: 0, fatal: false, output: '' };
+    },
+  });
+  return captured;
+}
+
+function writeTypecheckFixture(root, { versionedIds, vmIds, projectId }) {
+  const pathBlock = (ids) => ids.map((id, i) => {
+    const comma = i < ids.length - 1 ? ',' : '';
+    return `            "/_${id}_/*": ["./mls-${id}/*"]${comma}`;
+  }).join('\n');
+  writeFileSync(join(root, 'tsconfig.json'), `{
+    "compilerOptions": {
+        "paths": {
+${pathBlock(versionedIds)}
+        }
+    }
+}
+`);
+  if (vmIds) {
+    writeFileSync(join(root, 'tsconfig.vm.json'), `{
+    "compilerOptions": {
+        "paths": {
+${pathBlock(vmIds)}
+        }
+    }
+}
+`);
+  }
+  const projectDir = join(root, `mls-${projectId}`);
+  mkdirSync(join(projectDir, 'l5'), { recursive: true });
+  mkdirSync(join(projectDir, 'l2'), { recursive: true });
+  mkdirSync(join(projectDir, 'l1'), { recursive: true });
+  writeFileSync(join(projectDir, 'l1', 'ok.ts'), 'export const n = 1;\n');
+  writeFileSync(join(projectDir, 'l2', 'ok.ts'), 'export const n = 1;\n');
+  writeFileSync(join(projectDir, 'l5', 'project.json'), JSON.stringify({ appEnv: 'presentation' }));
+}
+
+test('T2: o tsconfig do gate traz paths de todos os mls-* do disco, inclusive o que falta no versionado', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb-not11-t2-'));
+  try {
+    writeTypecheckFixture(root, {
+      versionedIds: ['102039'],
+      vmIds: ['102039', '102056'],
+      projectId: '102056',
+    });
+    const captured = captureLayerConfigs(root, '102056');
+    assert.ok(captured.length >= 1);
+    for (const { config } of captured) {
+      assert.deepEqual(
+        Object.keys(config.compilerOptions.paths).sort(),
+        ['/_102039_/*', '/_102056_/*'],
+      );
+      assert.equal(config.compilerOptions.baseUrl, undefined);
+      assert.equal(config.compilerOptions.noEmit, true);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('T3: paths do gate não incluem projeto que não existe no disco; tsc acusa TS2307', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb-not11-t3-'));
+  try {
+    writeTypecheckFixture(root, {
+      versionedIds: ['102039', '999999'],
+      vmIds: ['102039', '102056'],
+      projectId: '102056',
+    });
+    writeFileSync(
+      join(root, 'mls-102056', 'l2', 'ok.ts'),
+      "import x from '/_999999_/missing.js';\nexport const n = x;\n",
+    );
+    const captured = captureLayerConfigs(root, '102056');
+    for (const { config } of captured) {
+      assert.equal(config.compilerOptions.paths['/_999999_/*'], undefined);
+      assert.ok(config.compilerOptions.paths['/_102056_/*']);
+    }
+
+    const tscBin = join(MLS_BASE, 'node_modules', 'typescript', 'bin', 'tsc');
+    if (!existsSync(tscBin)) return;
+    writeFileSync(join(root, 'tsconfig.json'), `{
+    "compilerOptions": {
+        "target": "es2020",
+        "module": "preserve",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "skipLibCheck": true,
+        "noEmit": true,
+        "paths": {
+            "/_102039_/*": ["./mls-102039/*"]
+        }
+    }
+}
+`);
+    writeFileSync(join(root, 'tsconfig.frontend.json'), `${JSON.stringify({
+      extends: './tsconfig.json',
+      compilerOptions: { module: 'esnext', moduleResolution: 'bundler', noEmit: true, skipLibCheck: true },
+    }, null, 2)}\n`);
+    writeFileSync(join(root, 'tsconfig.backend.json'), `${JSON.stringify({
+      extends: './tsconfig.json',
+      compilerOptions: { module: 'esnext', moduleResolution: 'bundler', noEmit: true, skipLibCheck: true },
+    }, null, 2)}\n`);
+    const result = typeCheckProject({
+      root,
+      projectId: '102056',
+      spawnTsc: (_ignoredRoot, tsconfigPath) => {
+        const spawned = spawnSync(process.execPath, [tscBin, '-p', tsconfigPath, '--noEmit', '--pretty', 'false'], {
+          cwd: root,
+          encoding: 'utf8',
+        });
+        const output = `${spawned.stdout ?? ''}\n${spawned.stderr ?? ''}`;
+        return { status: spawned.status ?? 1, fatal: false, output };
+      },
+    });
+    const reported = `${result.excerpt.join('\n')}\n${result.marker}`;
+    // bundler reports TS2792 (hint: add paths); other resolutions report TS2307.
+    // Either way the imported project is not on disk and does not resolve.
+    assert.match(reported, /TS2307|TS2792/);
+    assert.match(reported, /Cannot find module '\/_999999_\/missing\.js'/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('T4: sem tsconfig.vm.json o gate lê o versionado (Mac) e não inventa alias', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb-not11-t4-'));
+  try {
+    writeTypecheckFixture(root, {
+      versionedIds: ['100554', '102039'],
+      vmIds: null,
+      projectId: '102039',
+    });
+    const captured = captureLayerConfigs(root, '102039');
+    assert.ok(captured.length >= 1);
+    for (const { config } of captured) {
+      assert.deepEqual(
+        Object.keys(config.compilerOptions.paths).sort(),
+        ['/_100554_/*', '/_102039_/*'],
+      );
+      assert.equal(config.compilerOptions.baseUrl, undefined);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('both paths import the shared runner — the verdict cannot fork', () => {

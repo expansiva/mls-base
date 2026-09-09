@@ -120,13 +120,14 @@ test('--check no CLI sai 1 com a mensagem de setup; default escreve', () => {
   });
 });
 
-test('cabeçalho: typeCheck do gate herda o tsconfig versionado; a VM precisa do paths', () => {
+test('cabeçalho: Mac escreve o versionado; o gate da VM lê o gerado', () => {
   const src = readFileSync(SCRIPT, 'utf8');
-  assert.doesNotMatch(src, /This script is the Mac side/);
-  assert.doesNotMatch(src, /VM compile does not use this file/);
-  assert.match(src, /typeCheckRun\.mjs:67/);
-  assert.match(src, /tsconfig\.backend\.json/);
-  assert.match(src, /tsconfig\.json/);
+  assert.match(src, /publishGit, projectInit/);
+  assert.match(src, /vmTsconfigRel/);
+  assert.match(src, /gitPostReceive refreshes tsconfig\.vm\.json/);
+  assert.match(src, /does not call this writer/);
+  assert.match(src, /Mac writer of the versioned tsconfig\.json/);
+  assert.match(src, /git pull --ff-only/);
 });
 
 test('parseSyncArgs: --check e --root', () => {
