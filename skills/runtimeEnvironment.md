@@ -103,7 +103,13 @@ lowercased module id (`mls102047_listaassinatura3_petition_signature`); regenera
 already exists therefore creates empty tables under the new name — a migration step before a real
 customer (the old unprefixed table is left behind). Lookup (`getTable('petition_signature')`,
 `seedFor`) still uses the unprefixed logical name. The **mdm tables are common to all projects** — treat them as
-shared state; project-scoped work must never assume exclusive ownership of mdm data. The Lima VM runs
+shared state; project-scoped work must never assume exclusive ownership of mdm data.
+MDM `details` are **keys open, content closed** (`mls-102034/l1/mdm/README.md`): a facade
+read returns identification + base + `general` + the caller’s `<ctx.moduleId>`, and
+`namespaces[]` names the other module keys without their content. Writes of a
+foreign module key raise `MDM_FOREIGN_NAMESPACE`. `ctx.organization.countryCode`
+is the installation country (env `ORGANIZATION_COUNTRY_CODE` / `COUNTRY_CODE`,
+default `US`) — never derived from UI language. The Lima VM runs
 `APP_ENV=production` + `RUNTIME_MODE=postgres`, i.e. the local VM is a true production rehearsal.
 
 Operations UI: `/monitor` (overview, process health, postgres/dynamo inspection, abends, traces,
