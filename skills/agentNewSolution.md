@@ -64,7 +64,9 @@ as prose, **uncut**, to the LLM that decides: `journey.goal`, `outcome.statement
 labels; never add a field to a human-facing artifact (journey `business`, rule, grant, entity) to steer a
 model — steer with prose and check with a gate. When several downstream readers need the same fact, the
 owning step's LLM extracts it from prose **once** and writes a reference (a projection, `affects[]`,
-`mdmSubtype`), then the rest is deterministic. Guardrail text grows only per dated incident and prefers
+`mdmSubtype`), then the rest is deterministic. External grants with `fieldsOnly` / `summaryOnly` /
+`aggregateOnly` are that extraction in E4B: a `<Entity><Profile>View` projection linked by
+`projectionRef`, not a new field on the human grant. Guardrail text grows only per dated incident and prefers
 becoming a gate (compiler, lint, ratchet). Structure wins on DATA; prose wins on BEHAVIOR and VISUAL.
 Design record: `todo/gerarApp/design/familias/T_estrutura_vs_prosa.md` (not committed; the rule is this line).
 
