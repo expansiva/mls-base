@@ -95,6 +95,16 @@ computed on read from the named rule and never enters an E7 workflow. Actor/comm
 reachable transition fails E7 (`NS4_E7_STATE_UNREACHABLE`) and E10 A8. MDM entities still have
 no `lifecycleStates`. An appendOnly fact has none.
 
+**12. `textPaths` and export.** Each E1–E8 / E4B / E9 contract declares `TEXT_PATHS_<schemaVersion>`
+(`steps/e5/contracts.ts` for rules, `helpers/ns4TextPaths.ts` for the registry). Those paths are
+metadata per schema version, not a field on the artifact: they name the human prose an importer may
+rewrite (`title`, `goal`, `description`, `landingIntent`, `sections[].intent`, …). `@@exportSolution
+<module…>` (`mls-102035/l2/agentExportSolution`) packs `l4/<mod>/**` without `pipeline/`, strips
+recomputable `*Hash` fields, normalizes `_<id>_/l4/` headers to `_{project}_/l4/`, copies prose into
+`i18n/<mod>/<lang>.json`, and asks the LLM only for `catalog.description`. Guard:
+`textPathsCoverage.test.ts` (every non-ASCII string in the `es` fixture sits under a textPath).
+Import is a later agent.
+
 ## Running it
 
 `pipeline.json` records each step's status (`approved`, plus `autoReason` when `/fast` skipped a
@@ -112,4 +122,4 @@ path and suppresses only that handoff; the run summary records
 `handoff: suppressed by /nochain — next: @@agentChangeBackend /rebuild all <module>` as a fact, not
 a degradation. The flag is on the invocation, never inferred from CLI vs browser.
 
-*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026; `affects`/`writes` (n10) 09/09/2026; landing exclusive→firstJourney→rank (n11) 09/09/2026; actor origin named|inferred (n12) 09/09/2026; `reachedBy` time-on-read (n13) 09/09/2026.*
+*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026; `affects`/`writes` (n10) 09/09/2026; landing exclusive→firstJourney→rank (n11) 09/09/2026; actor origin named|inferred (n12) 09/09/2026; `reachedBy` time-on-read (n13) 09/09/2026; textPaths/export (n14) 09/09/2026.*
