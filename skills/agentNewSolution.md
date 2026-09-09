@@ -89,6 +89,12 @@ fallback (first non-journey that includes the profile). `landings[].reason` is t
 `NS4_E8_PROFILE_WITHOUT_LANDING`. E9 still copies `siteMap.landings` per actor and fills
 `reason` with the workspace purpose (existing); the machine token lives on the E8 model.
 
+**11. Status does not require a transition.** E4 `lifecycleStates[]` is
+`{ state, reachedBy: actor|command|time, ruleRef? }` (a bare string is `actor`). `time` is
+computed on read from the named rule and never enters an E7 workflow. Actor/command without a
+reachable transition fails E7 (`NS4_E7_STATE_UNREACHABLE`) and E10 A8. MDM entities still have
+no `lifecycleStates`. An appendOnly fact has none.
+
 ## Running it
 
 `pipeline.json` records each step's status (`approved`, plus `autoReason` when `/fast` skipped a
@@ -106,4 +112,4 @@ path and suppresses only that handoff; the run summary records
 `handoff: suppressed by /nochain — next: @@agentChangeBackend /rebuild all <module>` as a fact, not
 a degradation. The flag is on the invocation, never inferred from CLI vs browser.
 
-*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026; `affects`/`writes` (n10) 09/09/2026; landing exclusive→firstJourney→rank (n11) 09/09/2026; actor origin named|inferred (n12) 09/09/2026.*
+*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026; `affects`/`writes` (n10) 09/09/2026; landing exclusive→firstJourney→rank (n11) 09/09/2026; actor origin named|inferred (n12) 09/09/2026; `reachedBy` time-on-read (n13) 09/09/2026.*
