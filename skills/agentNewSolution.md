@@ -43,8 +43,10 @@ who declares the projection declares the account. Absent on L4 written before th
 `moduleDatabase` entity that journeys read and never write is recorded as `NS4_E4_CORE_READ_ONLY`
 (warning + systemDecision `keepCore` / `projection` / `masterData`) and does not block the run.
 
-**6. A persona is not an actor.** Demographics and personas describe who uses the product; only an
-actor with distinct permissions belongs in the access matrix. **A confirmation is not a decision.**
+**6. A persona is not an actor.** E1 `actors[].origin` is `named` only when the request names the
+profile. E2 drops an inferred external actor without exclusive steps (`dropInferredActor`); a
+`kind: system` actor is kept (`systemActorKept`). E8 fails `NS4_E8_PROFILE_WITHOUT_WORKSPACE` when a
+profile has no workspace. **A confirmation is not a decision.**
 Confirming a form, validating captured data or applying a system rule is an `act` with `useRules`;
 a `decide` step exists only when the request names a human choice between alternative outcomes.
 The record-owner handle is `party: person` + E3 `dataScope.mode: own`, never a field name.
@@ -104,4 +106,4 @@ path and suppresses only that handoff; the run summary records
 `handoff: suppressed by /nochain — next: @@agentChangeBackend /rebuild all <module>` as a fact, not
 a degradation. The flag is on the invocation, never inferred from CLI vs browser.
 
-*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026; `affects`/`writes` (n10) 09/09/2026; landing exclusive→firstJourney→rank (n11) 09/09/2026.*
+*Written 31/08/2026; `/nochain` added 06/09/2026; `mutability` added 06/09/2026; `/fast` language provenance 06/09/2026; confirmation vs decision 06/09/2026; E4 derivation-binding repair 06/09/2026; E4 CORE_READ_ONLY registrar 07/09/2026; owner handle by party+own 07/09/2026; `presentation.phrases` 07/09/2026; widget chrome from the same catalogue 07/09/2026; `affects`/`writes` (n10) 09/09/2026; landing exclusive→firstJourney→rank (n11) 09/09/2026; actor origin named|inferred (n12) 09/09/2026.*
