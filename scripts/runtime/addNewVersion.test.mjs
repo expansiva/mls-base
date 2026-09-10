@@ -16,6 +16,7 @@ import {
   extrasOutsideFecho,
   fechoProjectIds,
   pm2ConfigRel,
+  parseReleaseAliases,
   skipPm2,
   updateTsconfigPaths,
   vmTsconfigRel,
@@ -143,6 +144,22 @@ test('release worktree: nenhum arquivo rastreado do mls-base fica sujo (gb73 E2)
     const hookSrc = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
     assert.match(hookSrc, /join\(root, 'logs'\)/);
   });
+});
+
+test('T3: COLLAB_RELEASE_ALIAS inválido continua recusado; vários current-<id> passam', () => {
+  assert.throws(() => parseReleaseAliases('current'), /Invalid COLLAB_RELEASE_ALIAS: current/);
+  assert.throws(() => parseReleaseAliases('foo'), /Invalid COLLAB_RELEASE_ALIAS: foo/);
+  assert.throws(() => parseReleaseAliases('current-abc'), /Invalid COLLAB_RELEASE_ALIAS: current-abc/);
+  assert.throws(
+    () => parseReleaseAliases('current-102056,nope'),
+    /Invalid COLLAB_RELEASE_ALIAS: nope/,
+  );
+  assert.deepEqual(parseReleaseAliases(''), []);
+  assert.deepEqual(parseReleaseAliases('current-102056'), ['current-102056']);
+  assert.deepEqual(
+    parseReleaseAliases('current-102043, current-102056'),
+    ['current-102043', 'current-102056'],
+  );
 });
 
 test('--skip-pm2 é o que o hook passa para não se matar no reload (gb85)', () => {

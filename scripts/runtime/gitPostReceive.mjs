@@ -27,7 +27,7 @@ import {
   validateClientConfigFile,
 } from '../validateClientConfig.mjs';
 import { VM_TSCONFIG, writeVmTsconfig } from './addNewVersion.mjs';
-import { ensureProjectApp } from './vmApps.mjs';
+import { ensureProjectApp, hostedProjectIds } from './vmApps.mjs';
 import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 
 const TSC_ERROR_LINES = 40;
@@ -419,12 +419,68 @@ function clientOf(path, expectedId = '') {
  * EMPURRADO, não o config.json do root — numa VM com N projetos o root é do
  * último publish e empurrar B recompilava A calado. Só se o projeto empurrado
  * não for um cliente (push de plataforma) é que se cai no root.
- * Devolve `{ clientId, ownClient }`; `ownClient` liga o alias por projeto.
+ * Devolve `{ clientId, ownClient }`. `ownClient` = o empurrado É o app
+ * cliente (ensureProjectApp, fecho daquele cliente). O alias por projeto
+ * não depende só disto: ver `releaseAliasesToFlip`.
  */
 export function clientIdForRelease(root, pushedId = '') {
   const own = pushedId ? clientOf(join(root, `mls-${pushedId}`, 'l5', 'config.json'), pushedId) : '';
   if (own) return { clientId: own, ownClient: true };
   return { clientId: clientOf(join(root, 'config.json')), ownClient: false };
+}
+
+/**
+ * Quais aliases `current-<id>` esta release deve virar.
+ *
+ * Push do próprio app (`ownClient`): só o alias daquele cliente — o vizinho
+ * fica na release que já serve.
+ * Push de biblioteca: a release é um snapshot da árvore inteira e o asset
+ * static é servido do cwd do processo (`current-<id>`). Vira o alias de
+ * TODOS os clientes em `pm2.apps.d/`. Sem o scan, o defeito só muda
+ * de lugar: some para o `clientId` do root/config.json, fica para o outro
+ * app da VM.
+ * `pm2.apps.d/` vazio + `clientId` resolvido: vira esse um (primeiro app,
+ * ou lima sem aggregator ainda).
+ */
+export function releaseAliasesToFlip({ root, clientId, ownClient }) {
+  if (ownClient && clientId) return [releaseAliasOf(clientId)];
+  const hosted = hostedProjectIds(root);
+  if (hosted.length > 0) return hosted.map((id) => releaseAliasOf(id));
+  if (clientId) return [releaseAliasOf(clientId)];
+  return [];
+}
+
+export function formatReleaseAliasLines(aliases) {
+  return aliases.map((alias) => {
+    const id = String(alias).replace(/^current-/u, '');
+    const port = projectIdToPort(id);
+    return `gitPostReceive: app ${appNameOf(port)} (porta ${port}) → ${alias}`;
+  });
+}
+
+export function formatReleaseAliasFlip(aliases, releaseId) {
+  if (!aliases.length || !releaseId) return '';
+  return `gitPostReceive: ${aliases.join(', ')} → releases/${releaseId}`;
+}
+
+/**
+ * Env do `addNewVersion` + side-effect de `ensureProjectApp` no push do app.
+ * Push de biblioteca NÃO cria app pm2 — só preenche `COLLAB_RELEASE_ALIAS`.
+ */
+export function prepareReleaseEnv({ root, clientId, ownClient, env = process.env }) {
+  const releaseEnv = { ...env, CBE_BUILD_OBJS: 'false' };
+  let appName = clientId ? appNameOf(projectIdToPort(clientId)) : '';
+  let replacedLegacy = false;
+  if (ownClient && clientId) {
+    const app = ensureProjectApp({ root, projectId: clientId });
+    appName = app.appName;
+    replacedLegacy = app.replacedLegacy;
+  }
+  const aliases = releaseAliasesToFlip({ root, clientId, ownClient });
+  if (aliases.length > 0) {
+    releaseEnv.COLLAB_RELEASE_ALIAS = aliases.join(',');
+  }
+  return { releaseEnv, aliases, appName, replacedLegacy };
 }
 
 /** Ids in `config.projects` — the release fecho the browser will load from obj/compiled.zip. */
@@ -778,22 +834,21 @@ async function main() {
   // before those steps (dirty worktree → next push refused).
   releaseArgs.push('--skip-pm2');
 
-  // Multiprojeto: o app do projeto tem porta e alias PRÓPRIOS. Escrever a
-  // config antes do release porque o alias current-<id> que o app aponta é
-  // criado no mesmo passo, antes do reload (que agora corre depois).
-  const releaseEnv = { ...process.env, CBE_BUILD_OBJS: 'false' };
-  let appName = clientId ? appNameOf(projectIdToPort(clientId)) : '';
-  if (ownClient) {
-    const app = ensureProjectApp({ root, projectId: clientId });
-    appName = app.appName;
-    releaseEnv.COLLAB_RELEASE_ALIAS = releaseAliasOf(clientId);
-    process.stderr.write(`gitPostReceive: app ${app.appName} (porta ${app.port}) → ${releaseAliasOf(clientId)}\n`);
-    if (app.replacedLegacy) {
-      process.stderr.write(
-        'gitPostReceive: legacy pm2.config.js (single app on `current`) replaced by the aggregator — '
-        + 'delete the old app once with `pm2 delete app`, or it keeps serving whoever pushed last.\n',
-      );
-    }
+  // Multiprojeto: cada app tem porta e alias próprios. Push do app
+  // (ownClient) garante o arquivo em pm2.apps.d/ e vira só o alias daquele
+  // cliente. Push de biblioteca vira o alias de TODOS os apps em
+  // pm2.apps.d/ — o asset static é servido do cwd (current-<id>), não do zip.
+  const { releaseEnv, aliases, appName, replacedLegacy } = prepareReleaseEnv({
+    root, clientId, ownClient,
+  });
+  for (const line of formatReleaseAliasLines(aliases)) {
+    process.stderr.write(`${line}\n`);
+  }
+  if (replacedLegacy) {
+    process.stderr.write(
+      'gitPostReceive: legacy pm2.config.js (single app on `current`) replaced by the aggregator — '
+      + 'delete the old app once with `pm2 delete app`, or it keeps serving whoever pushed last.\n',
+    );
   }
 
   const release = await runLive(
@@ -821,8 +876,9 @@ async function main() {
 
   const fromLog = /(?:release |releases\/)(\d{14})/u.exec(release.out);
   // Multiprojeto: a release do PROJETO é o alias dele; o `current` global é do
-  // último push, seja de quem for.
-  const alias = ownClient ? releaseAliasOf(clientId) : 'current';
+  // último push, seja de quem for. Em biblioteca o alias também vira, então
+  // o timestamp sai de current-<id>, não só do `current` global.
+  const alias = aliases[0] || 'current';
   const ts = currentReleaseId(root, alias) || currentReleaseId(root) || fromLog?.[1] || '';
   process.stderr.write(`${gateMessage(verdict)}\n`);
   process.stderr.write(`${formatOkMarker(projectName, ts, verdict.declWarn)}\n`);
@@ -834,6 +890,8 @@ async function main() {
       `typeCheck: ${verdict.typeWarn} type errors (status=${verdict.typeCheckStatus ?? 'permissive'}, does not block)\n`,
     );
   }
+  const flip = formatReleaseAliasFlip(aliases, ts);
+  if (flip) process.stderr.write(`${flip}\n`);
   process.stderr.write(`release ${ts} ativa\n`);
 
   // Marker already flushed. Reload last: ssh/SSM in-process; https detached so

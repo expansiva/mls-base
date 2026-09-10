@@ -157,6 +157,24 @@ export function pm2ConfigRel(root) {
   return existsSync(join(root, 'pm2.config.js')) ? 'pm2.config.js' : 'servers/pm2.config.js';
 }
 
+/**
+ * Aliases `current-<id>` that this release should flip. Empty string → none
+ * (the global `current` still flips in activateCurrent). Comma-separated so
+ * a library push can move every hosted app in one env. collab-sites still
+ * passes a single `current-<id>`; that remains valid.
+ */
+export function parseReleaseAliases(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return [];
+  const aliases = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  for (const alias of aliases) {
+    if (!/^current-\d+$/.test(alias)) {
+      throw new Error(`Invalid COLLAB_RELEASE_ALIAS: ${alias}`);
+    }
+  }
+  return aliases;
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const skipInstall = argv.includes('--skip-install');
@@ -235,11 +253,8 @@ function main() {
   activateCurrent(ROOT, releaseDir, fechoProjectIds(releaseConfig));
   console.log(`--- current -> releases/${releaseId}`);
 
-  const releaseAlias = process.env.COLLAB_RELEASE_ALIAS || '';
-  if (releaseAlias) {
-    if (!/^current-\d+$/.test(releaseAlias)) {
-      throw new Error(`Invalid COLLAB_RELEASE_ALIAS: ${releaseAlias}`);
-    }
+  const aliases = parseReleaseAliases(process.env.COLLAB_RELEASE_ALIAS || '');
+  for (const releaseAlias of aliases) {
     run(`ln -sfn '${releaseDir}' '${join(ROOT, releaseAlias)}'`);
     console.log(`--- ${releaseAlias} -> releases/${releaseId}`);
   }

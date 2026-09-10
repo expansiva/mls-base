@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appNameOf, ProjectPortError, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
-import { ensureProjectApp, isAggregator, msgProxyTargetFromPm2Config, pm2AggregatorConfig, pm2AppConfig } from './vmApps.mjs';
+import { ensureProjectApp, hostedProjectIds, isAggregator, msgProxyTargetFromPm2Config, pm2AggregatorConfig, pm2AppConfig } from './vmApps.mjs';
 
 // ── porta: a MESMA regra do collab-sites (sites.ts, `projectIdToPort`) ──────
 //
@@ -151,6 +151,7 @@ test('dois projetos = dois arquivos e duas portas, sem tocar um no outro', () =>
     assert.equal(second.port, 2047);
     assert.equal(readFileSync(join(root, 'pm2.apps.d', 'app2043.config.js'), 'utf8'), before);
     assert.ok(readFileSync(join(root, 'pm2.apps.d', 'app2047.config.js'), 'utf8').includes('current-102047'));
+    assert.deepEqual(hostedProjectIds(root), ['102043', '102047']);
   });
 });
 

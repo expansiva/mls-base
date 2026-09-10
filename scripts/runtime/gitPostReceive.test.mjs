@@ -14,15 +14,20 @@ import {
   firstTscExcerpt,
   formatErrorOutput,
   formatOkMarker,
+  formatReleaseAliasFlip,
+  formatReleaseAliasLines,
   gateMessage,
   parseBuildObjSummary,
   planFechoCompile,
+  prepareReleaseEnv,
+  releaseAliasesToFlip,
   trackedDirtyPaths, authorNote,
   restoreWorktree, shouldDeferPm2Reload, scheduleDetachedPm2Reload, pm2ConfigRel,
   reloadPm2Now, staleClusterWorkers, formatStaleWorkerLog, parsePm2Jlist,
   reportClientConfig,
   ensureTsconfigPaths,
 } from './gitPostReceive.mjs';
+import { ensureProjectApp } from './vmApps.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -287,6 +292,64 @@ test('l5/config.json que declara OUTRO cliente não sequestra a release', () => 
     // o l5 do 102047 aponta 102043 como client (config copiado) — não vale como "sou eu"
     writeConfig(['mls-102047', 'l5', 'config.json'], '102043');
     assert.deepEqual(clientIdForRelease(root, '102047'), { clientId: '102043', ownClient: false });
+  });
+});
+
+// ── push de biblioteca vira current-<id>; biblioteca compartilhada vira todos ──
+
+test('T1: push de biblioteca preenche COLLAB_RELEASE_ALIAS do cliente afetado', () => {
+  withVm((root, writeConfig) => {
+    writeConfig(['config.json'], '102056');
+    const { clientId, ownClient } = clientIdForRelease(root, '102025');
+    assert.equal(ownClient, false);
+    assert.equal(clientId, '102056');
+    const { releaseEnv, aliases } = prepareReleaseEnv({
+      root, clientId, ownClient, env: {},
+    });
+    assert.deepEqual(aliases, ['current-102056']);
+    assert.equal(releaseEnv.COLLAB_RELEASE_ALIAS, 'current-102056');
+    assert.equal(releaseEnv.CBE_BUILD_OBJS, 'false');
+    assert.match(
+      formatReleaseAliasLines(aliases).join('\n'),
+      /gitPostReceive: app app2056 \(porta 2056\) → current-102056/,
+    );
+  });
+});
+
+test('T2: push do próprio app vira só o alias dele, mesmo com vizinho em pm2.apps.d/', () => {
+  withVm((root, writeConfig) => {
+    writeConfig(['config.json'], '102043');
+    writeConfig(['mls-102047', 'l5', 'config.json'], '102047');
+    ensureProjectApp({ root, projectId: '102043', remoteBase: root });
+    ensureProjectApp({ root, projectId: '102047', remoteBase: root });
+    const { clientId, ownClient } = clientIdForRelease(root, '102047');
+    assert.deepEqual({ clientId, ownClient }, { clientId: '102047', ownClient: true });
+    const { releaseEnv, aliases } = prepareReleaseEnv({
+      root, clientId, ownClient, env: {},
+    });
+    assert.deepEqual(aliases, ['current-102047']);
+    assert.equal(releaseEnv.COLLAB_RELEASE_ALIAS, 'current-102047');
+    assert.equal(aliases.includes('current-102043'), false);
+  });
+});
+
+test('T4: biblioteca compartilhada vira o alias de TODOS os clientes em pm2.apps.d/', () => {
+  withVm((root, writeConfig) => {
+    writeConfig(['config.json'], '102056');
+    ensureProjectApp({ root, projectId: '102043', remoteBase: root });
+    ensureProjectApp({ root, projectId: '102056', remoteBase: root });
+    const { clientId, ownClient } = clientIdForRelease(root, '102034');
+    assert.equal(ownClient, false);
+    assert.equal(clientId, '102056');
+    // não só o clientId do root/config.json — os dois apps da VM.
+    const aliases = releaseAliasesToFlip({ root, clientId, ownClient });
+    assert.deepEqual(aliases, ['current-102043', 'current-102056']);
+    const { releaseEnv } = prepareReleaseEnv({ root, clientId, ownClient, env: {} });
+    assert.equal(releaseEnv.COLLAB_RELEASE_ALIAS, 'current-102043,current-102056');
+    assert.equal(
+      formatReleaseAliasFlip(aliases, '20260910135009'),
+      'gitPostReceive: current-102043, current-102056 → releases/20260910135009',
+    );
   });
 });
 

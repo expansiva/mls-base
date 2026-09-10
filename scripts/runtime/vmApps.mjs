@@ -18,7 +18,7 @@
 // src/layer_3_usecases/publish.ts) para que publicar pelo sites e empurrar pelo
 // git não fiquem trocando o arquivo um do outro.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 
@@ -122,4 +122,21 @@ export function ensureProjectApp({ root, projectId, remoteBase = root, msgProxyT
   }
 
   return { port, appName, wrote, replacedLegacy };
+}
+
+/**
+ * Project ids already hosted on this VM, from `pm2.apps.d/*.config.js`.
+ * Empty when the aggregator has not been written yet (first release).
+ */
+export function hostedProjectIds(root) {
+  const appsDir = join(root, APPS_DIR);
+  if (!existsSync(appsDir)) return [];
+  const ids = [];
+  for (const name of readdirSync(appsDir)) {
+    if (!name.endsWith('.config.js')) continue;
+    const text = readFileSync(join(appsDir, name), 'utf8');
+    const match = text.match(/COLLAB_PROJECT_ID:\s*"(\d+)"/u);
+    if (match) ids.push(match[1]);
+  }
+  return [...new Set(ids)].sort();
 }
