@@ -46,8 +46,15 @@ const LOCAL_DIST = resolve(DIST, 'local');
 const WEB_DIST_DIR = 'web';
 const TSC_BIN = resolve(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
 const TS_SEGMENTS = ['core', 'l1', 'l2'];
-const RES_SEGMENTS = ['core', 'l1', 'l2', 'l5'];
-const RES_EXT = new Set(['.html', '.css', '.less', '.json', '.svg', '.md', '.sql']);
+export const RES_SEGMENTS = ['core', 'l1', 'l2', 'l3', 'l5'];
+export const RES_EXT = new Set([
+  '.html', '.css', '.less', '.json', '.svg', '.md', '.sql',
+  // Servable binary assets. `cp` copies bytes (not utf8); a text copy would
+  // corrupt .wav/.png and the browser would get a 200 with garbage.
+  '.wav', '.mp3', '.ogg',
+  '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico',
+  '.woff2',
+]);
 const TSC_EMIT_BATCH_SIZE = Number.parseInt(process.env.COLLAB_TSC_EMIT_BATCH_SIZE ?? '40', 10);
 // Matches absolute project specifiers in emitted JS: from '/_102034_/l1/...'
 // Matches every form of project specifier in emitted JS:
@@ -288,25 +295,24 @@ async function walkFiles(root) {
 }
 
 /**
- * Copy every project's l3 ASSET payload (`l3/<module>/assets/**`) into `<destRoot>/_<id>_/l3/...`.
+ * Copy every project's l3 ASSET payload into `<destRoot>/_<id>_/l3/...`.
  *
- * Seed images live in l3 (`l3/cafeFlow/assets/seed/MenuItem/x.webp`) and the BFF hands the browser
- * `/cafeFlow/assets/seed/MenuItem/x.webp`. Neither copy pass reached them: the local pass walks
- * RES_SEGMENTS (core/l1/l2/l5 — no l3) and the web pass walks only l2, and BOTH filter by RES_EXT,
- * which has no image extension. So the request fell through to the SPA shell and the browser got HTML
- * with 200 instead of the WebP.
+ * Two layouts:
+ *   `l3/<module>/assets/**` — registered app (seed images; BFF returns `/cafeFlow/assets/...`)
+ *   `l3/assets/**`          — library / project-level (e.g. collab-messages notification wav)
  *
- * No extension filter here: an `assets` directory IS static payload by definition, so filtering would
- * only re-create the same silent gap for the next format (png, woff2, mp4...).
+ * No extension filter: an `assets` directory IS static payload by definition. `cp` copies
+ * bytes, so wav/png/woff2 stay intact.
  */
-async function copyL3Assets(ids, destRoot) {
+export async function copyL3Assets(ids, destRoot) {
   let copied = 0;
   for (const id of ids) {
     const l3 = join(projectDir(id), 'l3');
     if (!existsSync(l3)) continue;
     for (const file of await walkFiles(l3)) {
       const rel = toPosix(relative(l3, file));
-      if (!/^[^/]+\/assets\//u.test(rel)) continue;      // only <module>/assets/**
+      // <module>/assets/** (app) OR assets/** (library, no module prefix)
+      if (!/^(?:[^/]+\/)?assets\//u.test(rel)) continue;
       const dest = resolve(destRoot, `_${id}_`, 'l3', rel);
       await mkdir(dirname(dest), { recursive: true });
       await cp(file, dest);
@@ -491,7 +497,7 @@ async function buildServer(ids) {
   // rewrite /_<id>_/... imports to relative paths within dist/local
   await rewriteLocalDistAbsoluteImports(LOCAL_DIST);
 
-  // copy non-TS resources (sql/html/css/less/json/svg/md) into dist/local/_<id>_
+  // copy non-TS resources (sql/html/css/less/json/svg/md + binary assets) into dist/local/_<id>_
   let copied = 0;
   for (const id of ids) {
     for (const seg of RES_SEGMENTS) {
@@ -536,20 +542,22 @@ export async function buildWeb(clientConfig, ids) {
   log(`lit runtime -> ${litConfig.outDir} (${litCount} modules, served at ${litConfig.baseUrl})`);
   log(`web build -> dist/${WEB_DIST_DIR} (Lit + shells + css + l3; app modules come from the zip)`);
 
-  // copy l2 static resources (html/css/svg/json/md/assets) into dist/web
+  // copy l2/l3 static resources (html/css/svg/json/md/wav/png/…) into dist/web
   let copied = 0;
   for (const id of ids) {
-    const l2 = join(projectDir(id), 'l2');
-    if (!existsSync(l2)) continue;
-    for (const file of await walkFiles(l2)) {
-      const ext = extname(file);
-      if (!RES_EXT.has(ext) && ext !== '') continue;
-      if (ext === '.ts' || ext === '.tsx') continue;
-      const rel = toPosix(relative(l2, file));
-      const dest = resolve(outdir, `_${id}_`, 'l2', rel);
-      await mkdir(dirname(dest), { recursive: true });
-      await cp(file, dest);
-      copied += 1;
+    for (const layer of ['l2', 'l3']) {
+      const src = join(projectDir(id), layer);
+      if (!existsSync(src)) continue;
+      for (const file of await walkFiles(src)) {
+        const ext = extname(file);
+        if (!RES_EXT.has(ext) && ext !== '') continue;
+        if (ext === '.ts' || ext === '.tsx') continue;
+        const rel = toPosix(relative(src, file));
+        const dest = resolve(outdir, `_${id}_`, layer, rel);
+        await mkdir(dirname(dest), { recursive: true });
+        await cp(file, dest);
+        copied += 1;
+      }
     }
   }
   copied += await copyL3Assets(ids, outdir);

@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildWeb,
+  copyL3Assets,
+  RES_EXT,
+  RES_SEGMENTS,
   rewriteAbsoluteImportSource,
   rewriteLocalDistAbsoluteImports,
   setProjectRoot,
@@ -213,4 +216,74 @@ test('rewrite: log counts completed specifiers', async (t) => {
     assert.match(out, /doesNotExist['"]/);
     assert.doesNotMatch(out, /doesNotExist\.js/);
   });
+});
+
+test('RES_SEGMENTS includes l3 and RES_EXT includes servable binary assets', () => {
+  assert.equal(RES_SEGMENTS.includes('l3'), true);
+  for (const ext of ['.wav', '.mp3', '.ogg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff2']) {
+    assert.equal(RES_EXT.has(ext), true, ext);
+  }
+});
+
+test('copyL3Assets still copies module-scoped l3/<app>/assets (registered app)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'not23-mod-'));
+  const id = '102051';
+  const srcDir = join(root, 'l3', 'cafeFlow', 'assets', 'seed');
+  mkdirSync(srcDir, { recursive: true });
+  const payload = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0xff]);
+  writeFileSync(join(srcDir, 'espresso.webp'), payload);
+  const destRoot = mkdtempSync(join(tmpdir(), 'not23-mod-dist-'));
+  setProjectRoot(id, root);
+  try {
+    const copied = await copyL3Assets([id], destRoot);
+    assert.equal(copied, 1);
+    const destFile = join(destRoot, `_${id}_`, 'l3', 'cafeFlow', 'assets', 'seed', 'espresso.webp');
+    assert.deepEqual(readFileSync(destFile), payload);
+  } finally {
+    setProjectRoot(id, undefined);
+    rmSync(root, { recursive: true, force: true });
+    rmSync(destRoot, { recursive: true, force: true });
+  }
+});
+
+test('T5: copyL3Assets copies l3/assets wav byte-identical (binary, not text)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'not23-l3-'));
+  const id = '102025';
+  const srcDir = join(root, 'l3', 'assets');
+  mkdirSync(srcDir, { recursive: true });
+  // Bytes that are invalid UTF-8: a text copy would replace them and change length/content.
+  const payload = Buffer.from([0x52, 0x49, 0x46, 0x46, 0xff, 0xfe, 0x00, 0x80, 0xc0, 0x00]);
+  const srcFile = join(srcDir, 'collabNotification.wav');
+  writeFileSync(srcFile, payload);
+  const destRoot = mkdtempSync(join(tmpdir(), 'not23-dist-'));
+  setProjectRoot(id, root);
+  try {
+    const copied = await copyL3Assets([id], destRoot);
+    assert.equal(copied, 1);
+    const destFile = join(destRoot, `_${id}_`, 'l3', 'assets', 'collabNotification.wav');
+    assert.equal(existsSync(destFile), true);
+    assert.equal(statSync(destFile).size, payload.length);
+    assert.deepEqual(readFileSync(destFile), payload);
+  } finally {
+    setProjectRoot(id, undefined);
+    rmSync(root, { recursive: true, force: true });
+    rmSync(destRoot, { recursive: true, force: true });
+  }
+});
+
+test('T5: real collabNotification.wav copies at 13934 bytes', async () => {
+  const wav = resolve(MLS_BASE, 'mls-102025', 'l3', 'assets', 'collabNotification.wav');
+  assert.equal(existsSync(wav), true, 'wav must live at mls-102025/l3/assets/');
+  assert.equal(statSync(wav).size, 13934);
+  const destRoot = mkdtempSync(join(tmpdir(), 'not23-wav-'));
+  try {
+    const copied = await copyL3Assets(['102025'], destRoot);
+    assert.equal(copied >= 1, true);
+    const destFile = join(destRoot, '_102025_', 'l3', 'assets', 'collabNotification.wav');
+    assert.equal(existsSync(destFile), true);
+    assert.equal(statSync(destFile).size, 13934);
+    assert.deepEqual(readFileSync(destFile), readFileSync(wav));
+  } finally {
+    rmSync(destRoot, { recursive: true, force: true });
+  }
 });
