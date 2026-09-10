@@ -5,6 +5,9 @@ const fs = require('fs');
 const path = require('path');
 
 const VERSION_RE = /^\d{14}$/u;
+// First published mls lib without Firebase (not03b). A pin below this is the
+// Firebase bundle; bumping is a reviewed commit, this guard keeps it that way.
+const FIRST_LIBS_WITHOUT_FIREBASE = '20260910003715';
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -31,6 +34,14 @@ function readLibsPin(root) {
     );
   }
   return { libs, monaco };
+}
+
+function assertLibsPinWithoutFirebase(libs) {
+  if (String(libs) < FIRST_LIBS_WITHOUT_FIREBASE) {
+    throw new Error(
+      `libs pin ${libs} points at a lib that still bundles Firebase; bump it to ${FIRST_LIBS_WITHOUT_FIREBASE} or newer`,
+    );
+  }
 }
 
 function libFileUrls(pin) {
@@ -82,7 +93,9 @@ function buildReleaseStamp({ releaseId, pin, clientId, versionRef, modelCommit, 
 
 module.exports = {
   VERSION_RE,
+  FIRST_LIBS_WITHOUT_FIREBASE,
   readLibsPin,
+  assertLibsPinWithoutFirebase,
   libFileUrls,
   installFiles,
   typeFiles,

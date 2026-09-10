@@ -9,12 +9,18 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const {
   readLibsPin,
+  assertLibsPinWithoutFirebase,
+  FIRST_LIBS_WITHOUT_FIREBASE,
   libFileUrls,
   installFiles,
   typeFiles,
   correctionMessage,
   buildReleaseStamp,
 } = require('./libsPin.js');
+
+const FIXTURE = { libs: '20991231235959', monaco: '20240313204233' };
+const PIN_WITH_FIREBASE = '20260904142119';
+const PIN_CLEAN = '20260910124210';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PINNED_SCRIPTS = [
@@ -35,9 +41,8 @@ function withRoot(pkg, fn) {
 }
 
 test('readLibsPin lê collabLibs do package.json e recusa latest.json', () => {
-  const pin = { libs: '20260904142119', monaco: '20240313204233' };
-  withRoot({ name: 'x', collabLibs: pin }, (root) => {
-    assert.deepEqual(readLibsPin(root), pin);
+  withRoot({ name: 'x', collabLibs: FIXTURE }, (root) => {
+    assert.deepEqual(readLibsPin(root), FIXTURE);
   });
 });
 
@@ -51,19 +56,18 @@ test('readLibsPin falha fechado sem o pin — não há fallback para latest.json
 });
 
 test('libFileUrls aponta a versão pinada e nenhuma URL consulta latest.json', () => {
-  const pin = { libs: '20260904142119', monaco: '20240313204233' };
-  const urls = libFileUrls(pin);
-  assert.equal(urls.mlsDts, 'https://collab.codes/libs/20260904142119/mls.d.ts');
-  assert.equal(urls.mlsJs, 'https://collab.codes/libs/20260904142119/mls.js');
-  assert.equal(urls.monacoDts, 'https://collab.codes/monaco/20240313204233/monaco.d.ts');
+  const urls = libFileUrls(FIXTURE);
+  assert.equal(urls.mlsDts, `https://collab.codes/libs/${FIXTURE.libs}/mls.d.ts`);
+  assert.equal(urls.mlsJs, `https://collab.codes/libs/${FIXTURE.libs}/mls.js`);
+  assert.equal(urls.monacoDts, `https://collab.codes/monaco/${FIXTURE.monaco}/monaco.d.ts`);
   const listed = [
     ...Object.values(urls),
-    ...installFiles(pin).map((f) => f.url),
-    ...typeFiles(pin).map((f) => f.url),
+    ...installFiles(FIXTURE).map((f) => f.url),
+    ...typeFiles(FIXTURE).map((f) => f.url),
   ];
   for (const url of listed) {
     assert.doesNotMatch(url, /latest\.json/u);
-    assert.match(url, /20260904142119|20240313204233/u);
+    assert.match(url, new RegExp(`${FIXTURE.libs}|${FIXTURE.monaco}`, 'u'));
   }
 });
 
@@ -79,23 +83,23 @@ test('o instalador e o downloadTypes não consultam o latest.json do S3', () => 
 });
 
 test('correctionMessage nomeia o arquivo e o pin', () => {
-  const msg = correctionMessage('types/mls.d.ts', { libs: '20260904142119', monaco: '20240313204233' });
+  const msg = correctionMessage('types/mls.d.ts', FIXTURE);
   assert.match(msg, /corrected types\/mls\.d\.ts/u);
-  assert.match(msg, /libs=20260904142119/u);
+  assert.match(msg, new RegExp(`libs=${FIXTURE.libs}`, 'u'));
 });
 
 test('buildReleaseStamp sela libs, monaco, versionRef, o commit do modelo e o da plataforma', () => {
   const stamp = buildReleaseStamp({
     releaseId: '20260904153000',
-    pin: { libs: '20260904142119', monaco: '20240313204233' },
+    pin: FIXTURE,
     clientId: '102043',
     versionRef: 'abc123',
     modelCommit: 'def456',
     platformCommit: 'cafed00d',
   });
   assert.equal(stamp.id, '20260904153000');
-  assert.equal(stamp.libs, '20260904142119');
-  assert.equal(stamp.monaco, '20240313204233');
+  assert.equal(stamp.libs, FIXTURE.libs);
+  assert.equal(stamp.monaco, FIXTURE.monaco);
   assert.equal(stamp.client, '102043');
   assert.equal(stamp.versionRef, 'abc123');
   assert.equal(stamp.modelCommit, 'def456');
@@ -105,7 +109,7 @@ test('buildReleaseStamp sela libs, monaco, versionRef, o commit do modelo e o da
 test('buildReleaseStamp grava platformCommit unknown quando a raiz não é checkout', () => {
   const stamp = buildReleaseStamp({
     releaseId: '20260904153000',
-    pin: { libs: '20260904142119', monaco: '20240313204233' },
+    pin: FIXTURE,
     clientId: '102043',
     versionRef: 'abc123',
     modelCommit: 'def456',
@@ -117,4 +121,30 @@ test('package.json do mls-base declara o pin no formato 14 dígitos', () => {
   const pin = readLibsPin(join(HERE, '..', '..'));
   assert.match(pin.libs, /^\d{14}$/u);
   assert.match(pin.monaco, /^\d{14}$/u);
+});
+
+test('assertLibsPinWithoutFirebase recusa pin com Firebase e aceita a fronteira', () => {
+  assert.throws(
+    () => assertLibsPinWithoutFirebase(PIN_WITH_FIREBASE),
+    new RegExp(
+      `libs pin ${PIN_WITH_FIREBASE} points at a lib that still bundles Firebase; `
+      + `bump it to ${FIRST_LIBS_WITHOUT_FIREBASE} or newer`,
+    ),
+  );
+  assert.doesNotThrow(() => assertLibsPinWithoutFirebase(FIRST_LIBS_WITHOUT_FIREBASE));
+  assert.doesNotThrow(() => assertLibsPinWithoutFirebase(PIN_CLEAN));
+});
+
+test('o pin do package.json não aponta para uma lib com Firebase', () => {
+  const pin = readLibsPin(join(HERE, '..', '..'));
+  assertLibsPinWithoutFirebase(pin.libs);
+});
+
+test('libFileUrls monta as URLs do pin sem Firebase', () => {
+  const pin = { libs: PIN_CLEAN, monaco: FIXTURE.monaco };
+  const urls = libFileUrls(pin);
+  assert.equal(urls.mlsJs, `https://collab.codes/libs/${PIN_CLEAN}/mls.js`);
+  assert.equal(urls.mlsDts, `https://collab.codes/libs/${PIN_CLEAN}/mls.d.ts`);
+  assert.equal(urls.mlsJsMap, `https://collab.codes/libs/${PIN_CLEAN}/mls.js.map`);
+  assert.equal(urls.globalDts, `https://collab.codes/libs/${PIN_CLEAN}/global.d.ts`);
 });
