@@ -66,6 +66,14 @@ function layerHasSources(root, projectId, layer) {
   return existsSync(dir);
 }
 
+/** One line the gate prints before tsc: `typeCheck: tsconfig=./tsconfig.vm.json aliases=13`. */
+export function formatTypeCheckTsconfigLog(root) {
+  const rel = vmTsconfigRel(root);
+  const file = join(root, rel);
+  const n = existsSync(file) ? pathIdsOf(readFileSync(file, 'utf8')).length : 0;
+  return `typeCheck: tsconfig=${rel} aliases=${n}`;
+}
+
 /** `paths` from vmTsconfigRel (generated file when it exists, versioned otherwise). */
 function compilerPathsFromRoot(root) {
   const file = join(root, vmTsconfigRel(root));

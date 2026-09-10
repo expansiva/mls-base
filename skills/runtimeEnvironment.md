@@ -51,7 +51,7 @@ the VM domain) and `publish:git` (ssh to lima). All three call
 ## On-VM build and release (`pnpm build`)
 
 `mls-base/scripts/runtime/addNewVersion.mjs` IS the build pipeline: write unversioned
-`tsconfig.vm.json` with `paths` pruned to the mls-* projects on disk (the versioned
+`tsconfig.vm.json` with `paths` = disk ∪ existing vm ∪ versioned (never shrinks; the versioned
 `tsconfig.json` is never touched — gb63), pnpm install, per-project migrate, compile, assemble a release under
 `releases/<yyyyMMddHHmmss>` (runtime output only; node_modules symlinked), run the **master
 backend migrate** (schemaBootstrap creates the Postgres tables from the client TableDefinitions

@@ -22,7 +22,7 @@ import { execSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { typeCheckProject } from '../typeCheckRun.mjs';
+import { formatTypeCheckTsconfigLog, typeCheckProject } from '../typeCheckRun.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SOURCE_LEVELS = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
@@ -82,6 +82,7 @@ function isStale(id) {
 
 const ids = discoverProjects().filter((id) => !only || only.has(id));
 console.log(`[buildProjectsObj] projects on disk: ${ids.map((i) => 'mls-' + i).join(' ') || '(none)'}`);
+if (only) console.log(formatTypeCheckTsconfigLog(ROOT));
 
 const results = { built: [], skipped: [], failed: [] };
 for (const id of ids) {

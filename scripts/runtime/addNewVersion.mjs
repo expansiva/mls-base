@@ -3,8 +3,9 @@
 // This IS the `pnpm build` pipeline (package.json "build" points here). The publish
 // only syncs sources, then runs `pnpm build` on the VM — which compiles AND deploys.
 // Steps:
-//   1. Write tsconfig.vm.json "paths" from the mls-<id> projects present on
-//      disk. The versioned tsconfig.json is never modified (gb63).
+//   1. Write tsconfig.vm.json "paths" as the union of mls-* on disk, aliases
+//      already in tsconfig.vm.json, and aliases in the versioned tsconfig.json.
+//      The generated file never shrinks. The versioned file is never modified (gb63).
 //   2. pnpm install (deps only; the dev-only clone lives in "install:dev").
 //   3. pnpm migrate for every project that declares a "migrate" script.
 //   4. Compile via `node scripts/build.mjs` (-> dist/local + dist/web).
@@ -21,6 +22,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pathIdsOf } from '../syncTsconfigPaths.mjs';
 import { collectReleaseStamp, writeReleaseStamp } from './releaseStamp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -50,8 +52,9 @@ const runWithRetry = (cmd, cwd = ROOT, attempts = 3, delayMs = 3000) => {
 };
 
 // Unversioned tsconfig the VM compile uses. Written from tsconfig.json with
-// paths pruned to the mls-* folders on disk, so `tsc` does not resolve projects
-// that are not present. Never write this back over the versioned tsconfig.json.
+// paths = disk ∪ existing vm ∪ versioned, so a VM that still has one mls-*
+// folder does not drop the platform aliases. Never write this back over the
+// versioned tsconfig.json.
 export const VM_TSCONFIG = 'tsconfig.vm.json';
 
 export function vmTsconfigRel(root) {
@@ -67,13 +70,34 @@ export function discoverProjects(root) {
     .sort();
 }
 
-// Rebuild the "paths" object from the projects on disk, preserving the rest of
-// tsconfig.json and the existing "// label" comments. Writes tsconfig.vm.json
-// and leaves the versioned tsconfig.json untouched.
+function aliasIdsFromFile(file) {
+  if (!existsSync(file)) return [];
+  return pathIdsOf(readFileSync(file, 'utf8'));
+}
+
+/** Union of caller ids, versioned tsconfig.json, and existing tsconfig.vm.json. Never shrinks. */
+function unionAliasIds(root, ids) {
+  const merged = new Set((ids ?? []).map(String));
+  for (const id of aliasIdsFromFile(join(root, 'tsconfig.json'))) merged.add(id);
+  for (const id of aliasIdsFromFile(join(root, VM_TSCONFIG))) merged.add(id);
+  return [...merged].sort();
+}
+
+// Rebuild the "paths" object as the union of `ids`, aliases already in
+// tsconfig.vm.json, and aliases in the versioned tsconfig.json. Preserves
+// "// label" comments. Writes tsconfig.vm.json; never touches the versioned file.
 export function updateTsconfigPaths(root, ids) {
   const source = join(root, 'tsconfig.json');
   const dest = join(root, VM_TSCONFIG);
   const text = readFileSync(source, 'utf8');
+
+  // The paths object contains only string arrays, so there is no nested "}" —
+  // a simple match up to the first "}" is safe.
+  if (!/"paths"\s*:\s*\{[^}]*\}/.test(text)) {
+    throw new Error('Could not find a "paths" block in tsconfig.json');
+  }
+
+  const merged = unionAliasIds(root, ids);
 
   // Keep the human labels already present (e.g. "// collabCommon").
   const labels = {};
@@ -82,25 +106,19 @@ export function updateTsconfigPaths(root, ids) {
   while ((m = lineRe.exec(text)) !== null) labels[m[1]] = m[2].trim();
 
   const indent = ' '.repeat(12);
-  const entries = ids.map((id, i) => {
-    const comma = i < ids.length - 1 ? ',' : '';
+  const entries = merged.map((id, i) => {
+    const comma = i < merged.length - 1 ? ',' : '';
     const label = labels[id] ? ` // ${labels[id]}` : '';
     return `${indent}"/_${id}_/*": ["./mls-${id}/*"]${comma}${label}`;
   });
   const block = `"paths": {\n${entries.join('\n')}\n        }`;
 
-  // The paths object contains only string arrays, so there is no nested "}" —
-  // a simple match up to the first "}" is safe.
-  if (!/"paths"\s*:\s*\{[^}]*\}/.test(text)) {
-    throw new Error('Could not find a "paths" block in tsconfig.json');
-  }
   writeFileSync(dest, text.replace(/"paths"\s*:\s*\{[^}]*\}/, () => block));
+  return merged;
 }
 
 export function writeVmTsconfig(root) {
-  const ids = discoverProjects(root);
-  updateTsconfigPaths(root, ids);
-  return ids;
+  return updateTsconfigPaths(root, discoverProjects(root));
 }
 
 function pad(n) {

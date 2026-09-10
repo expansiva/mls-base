@@ -33,7 +33,7 @@ import {
   readLitRuntimeConfig,
 } from './litRuntime.mjs';
 import { readTypeCheckPolicy } from './typeCheckPolicy.mjs';
-import { typeCheckProject } from './typeCheckRun.mjs';
+import { formatTypeCheckTsconfigLog, typeCheckProject } from './typeCheckRun.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(ROOT, 'dist');
@@ -102,6 +102,7 @@ async function runTsc(_tsconfigPath, ids, compilerOptions) {
     log('COLLAB_RUN_TSC_TYPECHECK=0 is ignored: typecheck always runs; the verdict is l5/project.json typeCheck.status');
   }
   const blocked = [];
+  console.log(formatTypeCheckTsconfigLog(ROOT));
   for (const id of ids) {
     const report = typeCheckProject({ root: ROOT, projectId: id });
     if (report.overrideLog) log(report.overrideLog);

@@ -805,6 +805,10 @@ async function main() {
     restoreWorktree(root, depName);
   }
 
+  // Deps have landed. Rewrite aliases now so the project's typeCheck sees
+  // /_102034_/* and the rest — the call above ran when a new VM only had mls-<id>.
+  ensureTsconfigPaths(root);
+
   const build = await runLive(
     'node',
     ['scripts/runtime/buildProjectsObj.mjs', '--only', id, '--force'],

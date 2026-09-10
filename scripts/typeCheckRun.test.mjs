@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluateBuild } from './runtime/gitPostReceive.mjs';
-import { typeCheckProject } from './typeCheckRun.mjs';
+import { writeVmTsconfig } from './runtime/addNewVersion.mjs';
+import { pathIdsOf } from './syncTsconfigPaths.mjs';
+import { formatTypeCheckTsconfigLog, typeCheckProject } from './typeCheckRun.mjs';
 
 const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -315,4 +317,128 @@ test('both paths import the shared runner — the verdict cannot fork', () => {
   const typeCheckIdx = objs.indexOf('typeCheckProject', skipIdx);
   assert.ok(skipIdx >= 0 && typeCheckIdx > skipIdx);
   assert.ok(continueAfterSkip < 0 || typeCheckIdx < continueAfterSkip);
+});
+
+const PLATFORM_IDS = [
+  '100554', '102025', '102027', '102029', '102033', '102034',
+  '102036', '102039', '102043', '102047', '102051', '102056',
+];
+const ALL_13 = [...PLATFORM_IDS, '102057'];
+
+function writeMlsDirs(root, ids) {
+  for (const id of ids) mkdirSync(join(root, `mls-${id}`), { recursive: true });
+}
+
+function vmPathIds(root) {
+  return pathIdsOf(readFileSync(join(root, 'tsconfig.vm.json'), 'utf8'));
+}
+
+test('clone06 T1: um mls-102057 + vm com 12 aliases → resultado com 13', () => {
+  const root = mkdtempSync(join(tmpdir(), 'clone06-t1-'));
+  try {
+    writeTypecheckFixture(root, {
+      versionedIds: PLATFORM_IDS,
+      vmIds: PLATFORM_IDS,
+      projectId: '102057',
+    });
+    const written = writeVmTsconfig(root);
+    assert.deepEqual(written, ALL_13);
+    assert.deepEqual(vmPathIds(root), ALL_13);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('clone06 T2: 13 diretórios + vm com 1 alias → resultado com 13', () => {
+  const root = mkdtempSync(join(tmpdir(), 'clone06-t2-'));
+  try {
+    writeTypecheckFixture(root, {
+      versionedIds: ['102057'],
+      vmIds: ['102057'],
+      projectId: '102057',
+    });
+    writeMlsDirs(root, ALL_13);
+    const written = writeVmTsconfig(root);
+    assert.deepEqual(written, ALL_13);
+    assert.deepEqual(vmPathIds(root), ALL_13);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('clone06 T3: sem vm, 13 diretórios → 13 aliases e versionado intocado', () => {
+  const root = mkdtempSync(join(tmpdir(), 'clone06-t3-'));
+  try {
+    writeTypecheckFixture(root, {
+      versionedIds: ALL_13,
+      vmIds: null,
+      projectId: '102057',
+    });
+    writeMlsDirs(root, ALL_13);
+    const before = readFileSync(join(root, 'tsconfig.json'), 'utf8');
+    const written = writeVmTsconfig(root);
+    assert.deepEqual(written, ALL_13);
+    assert.deepEqual(vmPathIds(root), ALL_13);
+    assert.equal(readFileSync(join(root, 'tsconfig.json'), 'utf8'), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('clone06 T4: alias só no versionado (projeto fora do disco) sobrevive no gerado', () => {
+  const root = mkdtempSync(join(tmpdir(), 'clone06-t4-'));
+  try {
+    writeTypecheckFixture(root, {
+      versionedIds: ['100554', '102057'],
+      vmIds: ['102057'],
+      projectId: '102057',
+    });
+    const written = writeVmTsconfig(root);
+    assert.deepEqual(written, ['100554', '102057']);
+    assert.deepEqual(vmPathIds(root), ['100554', '102057']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('clone06 T5: duas execuções seguidas — segundo arquivo byte a byte igual ao primeiro', () => {
+  const root = mkdtempSync(join(tmpdir(), 'clone06-t5-'));
+  try {
+    writeTypecheckFixture(root, {
+      versionedIds: PLATFORM_IDS,
+      vmIds: PLATFORM_IDS,
+      projectId: '102057',
+    });
+    writeVmTsconfig(root);
+    const first = readFileSync(join(root, 'tsconfig.vm.json'));
+    writeVmTsconfig(root);
+    const second = readFileSync(join(root, 'tsconfig.vm.json'));
+    assert.deepEqual(second, first);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('clone06 T7: typeCheck: tsconfig=… aliases=N sai com o N certo', () => {
+  const root = mkdtempSync(join(tmpdir(), 'clone06-t7-'));
+  try {
+    writeTypecheckFixture(root, {
+      versionedIds: ALL_13,
+      vmIds: ALL_13,
+      projectId: '102057',
+    });
+    assert.equal(
+      formatTypeCheckTsconfigLog(root),
+      'typeCheck: tsconfig=./tsconfig.vm.json aliases=13',
+    );
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const run = readFileSync(join(dir, 'typeCheckRun.mjs'), 'utf8');
+    const build = readFileSync(join(dir, 'build.mjs'), 'utf8');
+    const objs = readFileSync(join(dir, 'runtime', 'buildProjectsObj.mjs'), 'utf8');
+    assert.match(run, /typeCheck: tsconfig=\$\{rel\} aliases=\$\{n\}/);
+    assert.match(build, /formatTypeCheckTsconfigLog/);
+    assert.match(objs, /formatTypeCheckTsconfigLog/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

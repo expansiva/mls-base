@@ -169,6 +169,18 @@ test('typeCheck blocking names every blocked project, never status=permissive', 
   assert.doesNotMatch(gateMessage(verdict), /status=permissive/);
 });
 
+test('T6: ensureTsconfigPaths roda de novo depois do laço de deps, não só antes', () => {
+  const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
+  const first = src.indexOf('ensureTsconfigPaths(root);');
+  const loop = src.indexOf('for (const depId of deps)');
+  const second = src.indexOf('ensureTsconfigPaths(root);', first + 1);
+  assert.ok(first >= 0, 'first ensureTsconfigPaths(root); missing');
+  assert.ok(loop > first, 'deps loop must follow the first ensureTsconfigPaths');
+  assert.ok(second > loop, 'second ensureTsconfigPaths must run after the deps loop');
+  const build = src.indexOf('const build = await runLive', second);
+  assert.ok(build > second, 'project typeCheck/build must run after the second rewrite');
+});
+
 test('ensureTsconfigPaths gera tsconfig.vm.json e não suja o versionado (T1 T5)', () => {
   const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
   assert.match(

@@ -72,18 +72,19 @@ function withGitRoot(fn) {
   }
 }
 
-test('writeVmTsconfig poda paths para os mls-* do disco e não toca o tsconfig.json versionado', () => {
+test('writeVmTsconfig une disco + versionado e não toca o tsconfig.json', () => {
   withGitRoot((root) => {
     const before = readFileSync(join(root, 'tsconfig.json'), 'utf8');
     const ids = writeVmTsconfig(root);
-    assert.deepEqual(ids, ['102033', '102034', '102043']);
+    // 100554 is only in the versioned file (not on disk) and must survive.
+    assert.deepEqual(ids, ['100554', '102033', '102034', '102043']);
     assert.equal(readFileSync(join(root, 'tsconfig.json'), 'utf8'), before);
     const vm = readFileSync(join(root, VM_TSCONFIG), 'utf8');
-    assert.deepEqual(pathIds(vm), ['102033', '102034', '102043']);
-    assert.doesNotMatch(vm, /100554/);
+    assert.deepEqual(pathIds(vm), ['100554', '102033', '102034', '102043']);
+    assert.match(vm, /100554/);
     assert.match(vm, /\/\/ collabMasterFrontendAuraClient/);
     assert.match(vm, /\/\/ collabMasterBackendForgeClient/);
-    assert.doesNotMatch(vm, /collab_workspace/);
+    assert.match(vm, /collab_workspace/);
   });
 });
 
