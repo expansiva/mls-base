@@ -249,8 +249,10 @@ Each organization instance reads AWS region/bucket from `appconfig.json`. Creden
 
 The host SQLite index (`collab-mls.sqlite`) is filled by `scanMlsBase` / `desktop.boot()` walking `mls-base/mls-*` (`collab-msg/collab-mls/src/stor.ts`). As of 08/09/2026 the scan also **purges** memory + sqlite rows whose files no longer exist on disk (`deleteFileKey` + `delete files[key]`, same pair as `setContent(null)`). It does **not** leave `status: 'deleted'` — a resident deleted row breaks CB.
 
+On the host, **delete is delete**. `localStor.deleteFile(file)` (11/09/2026, ns5_11) is the named capability: `rmSync`, `status: 'deleted'`, `deleteFileKey`, drop `files[key]`, `onWrite('delete')`. `setContent(null)` calls it. `libStor.deleteFile` branches on `typeof localStor.deleteFile === 'function'` and unlinks; Studio without the capability still writes the IDB trash. `localStor.listFolder(project, level, folder)` lists the real disk tree (recursive). Do not branch on `"Deno" in globalThis`.
+
 Manual folder removal + `deno task cli -- host` clears the index. Do not edit the sqlite by hand. The ns10 module-removal agent no longer needs a separate "sync deletions" step for the host index (that part of ns10 question 2 / design is done here).
 
 Incident (08/09/2026): n02 moved `agentNewSolution` from `mls-102020` to `mls-102035`; the additive scan left the `102020` row as `nochange`; `getInstanceByName` (102027) walked `workspaceDependencies` (`102020` before `102035`) and loaded the ghost. Purge removes the class, not only that name.
 
-*Written 06/09/2026; NS widget `presentation` 07/09/2026; host scan purge 08/09/2026.*
+*Written 06/09/2026; NS widget `presentation` 07/09/2026; host scan purge 08/09/2026; host unlink 11/09/2026.*

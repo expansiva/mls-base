@@ -58,14 +58,16 @@ by request. The journey is the acceptance oracle of both sides and generates nei
 - `/module` fixes the folder name. Without it, `module10` proposes a lowerCamel name.
 - `/fast` skips reserved clarification anchors (they have no screen) and auto-approves each
   implemented step.
-- `/rebuild all` deletes only `l4/<module>/**` of that module and recreates the pipeline.
+- `/rebuild all` unlinks only `l4/<module>/**` of that module and recreates the pipeline.
 - An existing module without `/rebuild all` is refused.
 - Never dispatches CB/CF.
 
 Flow (`docs/flow.json`): `module10 → journeys20 → ontology30 → {rules40, workflows50, access60}
-→ integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I6, organization
+→ integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I7, organization
 registry, l5 `config.json` / `project.json`, `pipeline.status: complete`). Oracle errors fail
-the run; warnings do not.
+the run; warnings do not. I7: files in `journeys/` and `ontology/` must equal the index plus
+`index.defs.ts` (`NS5_FINALIZE_I7_ORPHAN_FILE`). `/rebuild all` unlinks the real `l4/<module>/**`
+on the host (`localStor.deleteFile`); `journeys20` / `ontology30` drop defs that left the index.
 
 ## How to certify
 
@@ -84,4 +86,4 @@ the run; warnings do not.
 Live proof (`@@newSolution5 … /fast /module <name>` on `mls-102047`) is owned by the
 supervisor, not the executing session.
 
-*Written 11/09/2026 (ns5_10).*
+*Written 11/09/2026 (ns5_10); I7 / host unlink ns5_11.*
