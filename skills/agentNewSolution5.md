@@ -66,8 +66,20 @@ Flow (`docs/flow.json`): `module10 → journeys20 → ontology30 → {rules40, w
 → integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I7, organization
 registry, l5 `config.json` / `project.json`, `pipeline.status: complete`). Oracle errors fail
 the run; warnings do not. I7: files in `journeys/` and `ontology/` must equal the index plus
-`index.defs.ts` (`NS5_FINALIZE_I7_ORPHAN_FILE`). `/rebuild all` unlinks the real `l4/<module>/**`
+`index.defs.ts` (`NS5_FINALIZE_I7_ORPHAN_FILE`). I2: an `act` on an already-provided entity
+with lifecycle needs a transition from a reachable origin state
+(`NS5_FINALIZE_I2_ACT_WITHOUT_TRANSITION`); a locate→inspect journey is valid and I2
+does not apply to it. I4: a cited `transitions[].ruleRefs` exists in `rules.defs.ts`.
+Rules are `{ruleId, description}`. Organization-wide aggregates live in `module.details`
+(ontology30). After the entity fan-out, ontology30 lifts a core/supporting entity that
+only stores aggregates into `module.details` and does not write its `.defs.ts`
+(`liftNs5AggregateOnlyEntities`; gate `NS5_ONTOLOGY_AGGREGATE_ONLY_ENTITY` stays as the
+net). The lifted ids are stored on `pipeline.json` `ontology30.liftedAggregateEntities`;
+finalize80 I1 accepts a journey `entity`/`affects` that names one of them when
+`module.details` still has keys. `/rebuild all` unlinks the real `l4/<module>/**`
 on the host (`localStor.deleteFile`); `journeys20` / `ontology30` drop defs that left the index.
+access60 normalizes unrestricted `fieldsOnly` to `fullRecord` and drops `anchorEntity` outside
+`own`/`assigned`/`related`. ontology30 rejects persisted `id → id` realizations.
 
 ## How to certify
 
@@ -86,4 +98,6 @@ on the host (`localStor.deleteFile`); `journeys20` / `ontology30` drop defs that
 Live proof (`@@newSolution5 … /fast /module <name>` on `mls-102047`) is owned by the
 supervisor, not the executing session.
 
-*Written 11/09/2026 (ns5_10); I7 / host unlink ns5_11.*
+*Written 11/09/2026 (ns5_10); I7 / host unlink ns5_11; form normalizations ns5_12;
+rules/module.details/read-only journey/MDM skill ns5_13; aggregate-only lift ns5_13 T7;
+I1 lifted-entity ref ns5_13 T8.*

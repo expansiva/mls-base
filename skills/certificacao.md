@@ -34,7 +34,7 @@ Baseline reds, measured 31/08/2026:
 |---|---|---|
 | `mls-102021` | l2 | green |
 | `mls-102020` | l2 | `aura/molecules/agentSyncMoleculeCatalog/helpers/syMigrateIndexTs.test.ts` (L88, L107, L149) + `aura/molecules/shared/localDocRefs.test.ts` (2 `todo/` paths in `agentNewMoleculeVariant/steps/v4-index/CHANGELOG.md:36` and `molecules/skills/canonicalFallbacks.ts:16`, since 04/09) — **4 failures**. `agentGenerateHeader.test.ts` no longer fails (re-measured 06/09/2026) |
-| `mls-102035` | l2 | green with NS5 (`agentNewSolution5`, including `replayRealRuns.test.ts` on the two complete runs). **76 files, 0 red**, measured 11/09/2026 (ns5_10; was 74 after ns5_09) |
+| `mls-102035` | l2 | green with NS5 (`agentNewSolution5`, including `replayRealRuns.test.ts` on the two complete runs). **77 files, 0 red**, measured 11/09/2026 (ns5_13; was 76 after ns5_10) |
 
 `tsc` baseline (07/09/2026): frontend — `mls-102051/l5/runtimeConfig.ts` (generated app) +
 `mls-102047/l2/controleEstoque4/web/desktop/page31/stockMovementCatalogue.ts` TS2367 (evidence of the
@@ -95,4 +95,4 @@ NS5 live-run cost (complete `/fast /rebuild all` on `mls-102047`, 11/09/2026, fr
 
 *Written 31/08/2026; typeCheck status (gb74) added 04/09/2026; baselines re-measured 06/09/2026;
 frontend baseline gained the page31 TS2367 (07/09/2026, leaves on regenerate); 102035 l2 + NS5
-run costs added 11/09/2026 (ns5_10).*
+run costs added 11/09/2026 (ns5_10); 102035 l2 77 files ns5_13 (11/09/2026).*
