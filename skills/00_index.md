@@ -18,7 +18,7 @@ generated app. Never edit one to "improve the docs".
 | agent | project | writes | skill |
 |---|---|---|---|
 | `agentNewSolution` (NS) | `mls-102035` | `l4` (product contracts) + `l5` (delivery contracts) | [`agentNewSolution.md`](agentNewSolution.md) |
-| `agentNewSolution5` (NS5) | `mls-102035` | `l4` sources only (no derived copies); never dispatches CB/CF | [`agentNewSolution5.md`](agentNewSolution5.md) (in construction, ns5_10) |
+| `agentNewSolution5` (NS5) | `mls-102035` | `l4` sources only (no derived copies); never dispatches CB/CF | [`agentNewSolution5.md`](agentNewSolution5.md) |
 | `agentChangeBackend` (CB) | `mls-102021` | `l1` (backend) | [`agentChangeBackend.md`](agentChangeBackend.md) |
 | `agentChangeFrontend` (CF) | `mls-102020` | `l2` (frontend) | [`agentChangeFrontend.md`](agentChangeFrontend.md) |
 | runtime / publish | `mls-102033`, `mls-102034`, `mls-base/scripts` | the running app | [`runtimeEnvironment.md`](runtimeEnvironment.md) + [`publishGitBackend.md`](publishGitBackend.md) |

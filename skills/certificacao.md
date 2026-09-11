@@ -34,6 +34,7 @@ Baseline reds, measured 31/08/2026:
 |---|---|---|
 | `mls-102021` | l2 | green |
 | `mls-102020` | l2 | `aura/molecules/agentSyncMoleculeCatalog/helpers/syMigrateIndexTs.test.ts` (L88, L107, L149) + `aura/molecules/shared/localDocRefs.test.ts` (2 `todo/` paths in `agentNewMoleculeVariant/steps/v4-index/CHANGELOG.md:36` and `molecules/skills/canonicalFallbacks.ts:16`, since 04/09) — **4 failures**. `agentGenerateHeader.test.ts` no longer fails (re-measured 06/09/2026) |
+| `mls-102035` | l2 | green with NS5 (`agentNewSolution5`, including `replayRealRuns.test.ts` on the two complete runs). **76 files, 0 red**, measured 11/09/2026 (ns5_10; was 74 after ns5_09) |
 
 `tsc` baseline (07/09/2026): frontend — `mls-102051/l5/runtimeConfig.ts` (generated app) +
 `mls-102047/l2/controleEstoque4/web/desktop/page31/stockMovementCatalogue.ts` TS2367 (evidence of the
@@ -84,5 +85,14 @@ Syntax errors (TS1xxx), broken imports (`TS2307`) and emit/tsc crashes **always*
 
 Do not add a follow-up task to tighten this. Tightening is a decision, not a schedule.
 
+NS5 live-run cost (complete `/fast /rebuild all` on `mls-102047`, 11/09/2026, from
+`l4/<mod>/pipeline/run01_newsolution5.json`):
+
+| module | total USD | by step (LLM) |
+|---|---|---|
+| `comandaRestaurante5` | 0.8386 | module10 0.0462, journeys20 0.0616, ontology30 0.4386, rules40 0.1776, access60 0.1146 (`workflows50` / `integration70` empty, no call) |
+| `ordenServicio5` | 1.4994 | module10 0.045, journeys20 0.2509, ontology30 0.6616, rules40 0.1717, workflows50 0.1353, access60 0.2349 (`integration70` empty, no call) |
+
 *Written 31/08/2026; typeCheck status (gb74) added 04/09/2026; baselines re-measured 06/09/2026;
-frontend baseline gained the page31 TS2367 (07/09/2026, leaves on regenerate).*
+frontend baseline gained the page31 TS2367 (07/09/2026, leaves on regenerate); 102035 l2 + NS5
+run costs added 11/09/2026 (ns5_10).*
