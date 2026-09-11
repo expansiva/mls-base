@@ -4,6 +4,9 @@ Cross-cutting notes for anyone touching the NS5 (`mls-102035/l2/agentNewSolution
 what it writes. The agent's own contract lives in `mls-102035/l2/agentNewSolution5/README.md` and
 `docs/flow.json`. This file carries what downstream agents and humans depend on.
 
+The MDM level-1 catalog (subtypes and `platform.defs.ts`) is emitted by `mls-102034` and
+read from `/_102034_/l4/organization/ontology/*`. NS5 does not copy or re-parse it.
+
 NS5 writes **l4 sources only**. It never emits derived copies (operations, workspaces, usecases,
 contracts, landings, site maps) and **never** dispatches `agentChangeBackend` or
 `agentChangeFrontend`. There is no `/nochain` flag: handoff does not exist.
@@ -100,4 +103,4 @@ supervisor, not the executing session.
 
 *Written 11/09/2026 (ns5_10); I7 / host unlink ns5_11; form normalizations ns5_12;
 rules/module.details/read-only journey/MDM skill ns5_13; aggregate-only lift ns5_13 T7;
-I1 lifted-entity ref ns5_13 T8.*
+I1 lifted-entity ref ns5_13 T8; MDM ontology emitted by 102034 ns5_14.*

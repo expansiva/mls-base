@@ -72,3 +72,7 @@ Cross-cutting:
    `cfeInferenceRatchet.test.ts` (n05, 2026-09-08).
 
 *Written 31/08/2026; rule 5 (multi-host) added 01/09/2026; rule 7 (l4 is meaning) added 08/09/2026.*
+
+## MDM (engine)
+
+- `mls-102034/l1/mdm/README.md` — documentação funcional do MDM (registro em 4 camadas, visibilidade, papéis, relacionamentos, `mdm_tag` e login, prospects, custo das buscas, invariantes, mapa de arquivos). Skill injetada nos agentes: `mls-102035/l2/agentNewSolution5/skills/mdm.md`.
