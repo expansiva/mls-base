@@ -79,12 +79,13 @@ Rules are `{ruleId, description}`. Ontology fields may declare `unique` / `uniqu
 and intrinsic `constraints`; `details` are `{ type, description }`; each relationship
 has a `description`; enum values are `{ value, title }` (the phrases catalogue does
 not label domain enums). Organization-wide aggregates live in `module.details`
-(ontology30). After the entity fan-out, ontology30 lifts a core/supporting entity that
+(ontology30). After the entity fan-out, ontology30 lifts a non-mdm entity that
 only stores aggregates into `module.details` and does not write its `.defs.ts`
 (`liftNs5AggregateOnlyEntities`; gate `NS5_ONTOLOGY_AGGREGATE_ONLY_ENTITY` stays as the
-net). The lifted ids are stored on `pipeline.json` `ontology30.liftedAggregateEntities`;
+net). Extra fields on that panel are recorded as `liftedFields`. The lifted ids are stored on `pipeline.json` `ontology30.liftedAggregateEntities`;
 finalize80 I1 accepts a journey `entity`/`affects` that names one of them when
-`module.details` still has keys. I9: `uniqueKeys` fieldIds exist on the entity.
+`module.details` still has keys. Normalize drops `unique` on the idField; cyclic
+lifecycles are reachable from source SCCs (ns5_23). I9: `uniqueKeys` fieldIds exist on the entity.
 I10: a written entity is the `entity` or `affects` of an `act`, or
 `maintenance: 'crud'` (normalize drops crud when an act already writes it);
 a crud entity has an internal-actor grant. I8 still requires the person's own `act`.
@@ -118,4 +119,5 @@ I1 lifted-entity ref ns5_13 T8; MDM ontology emitted by 102034 ns5_14;
 ontology unique/uniqueKeys, typed details, relationship description, enum titles,
 intrinsic constraints, I9 ns5_19;
 `maintenance: 'crud'` vs journey `act` (WITHOUT_WRITER / access internal grant / I10);
-normalize drops conflicting crud; `affects` counts as a writer (ns5_21 r2).*
+normalize drops conflicting crud; `affects` counts as a writer (ns5_21 r2);
+idField unique / cyclic lifecycle SCC / valueObject panel lift (ns5_23).*
