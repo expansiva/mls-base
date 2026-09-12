@@ -23,7 +23,7 @@ contracts, landings, site maps) and **never** dispatches `agentChangeBackend` or
 | rules | `rules.defs.ts` | `2026-09-10-ns5-rules-v1` |
 | workflows | `workflows.defs.ts` | `2026-09-12-ns5-workflows-v2` |
 | access | `access.defs.ts` | `2026-09-12-ns5-access-v3` |
-| integration | `integration.defs.ts` | `2026-09-10-ns5-integration-v1` |
+| integration | `integration.defs.ts` | `2026-09-12-ns5-integration-v2` |
 
 Pipeline: `pipeline/pipeline.json`, per-step `pipeline/<step>-draft.json`,
 `pipeline/finalize-report.json`, `pipeline/runNN_newsolution5.json`.
@@ -68,7 +68,7 @@ by request. The journey is the acceptance oracle of both sides and generates nei
 - Never dispatches CB/CF.
 
 Flow (`docs/flow.json`): `module10 → journeys20 → ontology30 → {rules40, workflows50, access60}
-→ integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I10, organization
+→ integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I12, organization
 registry, l5 `config.json` / `project.json`, `pipeline.status: complete`). Oracle errors fail
 the run; warnings do not. I7: files in `journeys/` and `ontology/` must equal the index plus
 `index.defs.ts` (`NS5_FINALIZE_I7_ORPHAN_FILE`). I2: an `act` with `effect: 'transition'` must cite a
@@ -87,8 +87,11 @@ finalize80 I1 accepts a journey `entity`/`affects` that names one of them when
 `module.details` still has keys. Normalize drops `unique` on the idField; cyclic
 lifecycles are reachable from source SCCs (ns5_23). I9: `uniqueKeys` fieldIds exist on the entity.
 I10: a written entity is the `entity` or `affects` of an `act`, or
-`maintenance: 'crud'` (normalize drops crud when an act already writes it);
-a crud entity has an internal-actor grant. I8 still requires the person's own `act`.
+`writer: 'crud'` / `'inbound'` (normalize drops conflicting crud/inbound when an act
+already writes it); a crud entity has an internal-actor grant; inbound appears in
+`inbound.writes`. I8 still requires the person's own `act` (or crud/self-registration).
+I11 (warning) queues `l4/<sibling|/organization>/tobe/integration/` when inbound asks a
+sibling for an event it does not publish. I12: `outbound.on` and `plugins.usedBy` exist.
 `/rebuild all` calls `removeModule` (exact
 `l4/l1/l2/l5/<module>/**` plus l5 jsons and the registry; `localStor.deleteFile`
 on the host); `journeys20` / `ontology30` drop defs that left the index.
@@ -125,4 +128,5 @@ normalize drops conflicting crud; `affects` counts as a writer (ns5_21 r2);
 idField unique / cyclic lifecycle SCC / valueObject panel lift (ns5_23);
 act `effect` (`create` / `update` / `transition`) + `transitionRef`, I2 by citation and SCC reachability (ns5_28 r2);
 grant is the authority, `authorities[]` removed (ns5_29);
-workflows v2: process trigger + stage `human`/`mechanical`/`llm`/`wait` (G13, ns5_30).*)
+workflows v2: process trigger + stage `human`/`mechanical`/`llm`/`wait` (G13, ns5_30);
+integration v2: inbound writer, registry entities/events, tobe/integration requests (G7, ns5_31).*)
