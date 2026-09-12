@@ -85,8 +85,9 @@ only stores aggregates into `module.details` and does not write its `.defs.ts`
 net). The lifted ids are stored on `pipeline.json` `ontology30.liftedAggregateEntities`;
 finalize80 I1 accepts a journey `entity`/`affects` that names one of them when
 `module.details` still has keys. I9: `uniqueKeys` fieldIds exist on the entity.
-I10: a written entity is the `entity` of an `act` or `maintenance: 'crud'`
-(not both; crud has no lifecycle) and a crud entity has an internal-actor grant.
+I10: a written entity is the `entity` or `affects` of an `act`, or
+`maintenance: 'crud'` (normalize drops crud when an act already writes it);
+a crud entity has an internal-actor grant. I8 still requires the person's own `act`.
 `/rebuild all` calls `removeModule` (exact
 `l4/l1/l2/l5/<module>/**` plus l5 jsons and the registry; `localStor.deleteFile`
 on the host); `journeys20` / `ontology30` drop defs that left the index.
@@ -116,4 +117,5 @@ I1 lifted-entity ref ns5_13 T8; MDM ontology emitted by 102034 ns5_14;
 `/rebuild all` via `removeModule` ns5_20;
 ontology unique/uniqueKeys, typed details, relationship description, enum titles,
 intrinsic constraints, I9 ns5_19;
-`maintenance: 'crud'` vs journey `act` (WITHOUT_WRITER / access internal grant / I10) ns5_21.*
+`maintenance: 'crud'` vs journey `act` (WITHOUT_WRITER / access internal grant / I10);
+normalize drops conflicting crud; `affects` counts as a writer (ns5_21 r2).*
