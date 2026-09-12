@@ -22,7 +22,7 @@ contracts, landings, site maps) and **never** dispatches `agentChangeBackend` or
 | ontology | `ontology/<Entity>.defs.ts` + `ontology/index.defs.ts` | `2026-09-11-ns5-ontology-v2` |
 | rules | `rules.defs.ts` | `2026-09-10-ns5-rules-v1` |
 | workflows | `workflows.defs.ts` | `2026-09-10-ns5-workflows-v1` |
-| access | `access.defs.ts` | `2026-09-10-ns5-access-v2` |
+| access | `access.defs.ts` | `2026-09-12-ns5-access-v3` |
 | integration | `integration.defs.ts` | `2026-09-10-ns5-integration-v1` |
 
 Pipeline: `pipeline/pipeline.json`, per-step `pipeline/<step>-draft.json`,
@@ -92,8 +92,10 @@ a crud entity has an internal-actor grant. I8 still requires the person's own `a
 `/rebuild all` calls `removeModule` (exact
 `l4/l1/l2/l5/<module>/**` plus l5 jsons and the registry; `localStor.deleteFile`
 on the host); `journeys20` / `ontology30` drop defs that left the index.
-access60 normalizes unrestricted `fieldsOnly` to `fullRecord` and drops `anchorEntity` outside
-`own`/`assigned`/`related`. ontology30 rejects persisted `id → id` realizations.
+access60 writes actors + grants (`-access-v3`); the grant carries `title`/`description` and
+there is no `authorities[]`. access60 normalizes unrestricted `fieldsOnly` to `fullRecord` and
+drops `anchorEntity` outside `own`/`assigned`/`related`. ontology30 rejects persisted
+`id → id` realizations.
 
 ## How to certify
 
@@ -121,4 +123,5 @@ intrinsic constraints, I9 ns5_19;
 `maintenance: 'crud'` vs journey `act` (WITHOUT_WRITER / access internal grant / I10);
 normalize drops conflicting crud; `affects` counts as a writer (ns5_21 r2);
 idField unique / cyclic lifecycle SCC / valueObject panel lift (ns5_23);
-act `creates` / `transitionRef`, I2 by citation and SCC reachability (ns5_28).*)
+act `creates` / `transitionRef`, I2 by citation and SCC reachability (ns5_28);
+grant is the authority, `authorities[]` removed (ns5_29).*)
