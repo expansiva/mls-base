@@ -17,12 +17,12 @@ contracts, landings, site maps) and **never** dispatches `agentChangeBackend` or
 
 | source | file(s) | `schemaVersion` |
 |---|---|---|
-| module (envelope) | `module.defs.ts` | `2026-09-10-ns5-module-v1` |
+| module (envelope) | `module.defs.ts` | `2026-09-10-ns5-module-v2` |
 | journeys | `journeys/<journeyId>.defs.ts` + `journeys/index.defs.ts` | `2026-09-10-ns5-journey-v1` |
 | ontology | `ontology/<Entity>.defs.ts` + `ontology/index.defs.ts` | `2026-09-10-ns5-ontology-v1` |
 | rules | `rules.defs.ts` | `2026-09-10-ns5-rules-v1` |
 | workflows | `workflows.defs.ts` | `2026-09-10-ns5-workflows-v1` |
-| access | `access.defs.ts` | `2026-09-10-ns5-access-v1` |
+| access | `access.defs.ts` | `2026-09-10-ns5-access-v2` |
 | integration | `integration.defs.ts` | `2026-09-10-ns5-integration-v1` |
 
 Pipeline: `pipeline/pipeline.json`, per-step `pipeline/<step>-draft.json`,
@@ -32,7 +32,7 @@ Types live in `/_102035_/l2/solution/types.ts`. Shared pure helpers are re-expor
 `/_102035_/l2/solution/lib.ts` without moving the NS4 files.
 
 The six **human** sources are journeys, ontology, rules, workflows, access and integration.
-`module.defs.ts` is the envelope (name, actors, languages, scope).
+`module.defs.ts` is the envelope (name, languages, prompt, details). Actors live on `access.defs.ts`.
 
 ## Ownership rule
 
