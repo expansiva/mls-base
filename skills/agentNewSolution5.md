@@ -21,7 +21,7 @@ contracts, landings, site maps) and **never** dispatches `agentChangeBackend` or
 | journeys | `journeys/<journeyId>.defs.ts` + `journeys/index.defs.ts` | `2026-09-10-ns5-journey-v1` |
 | ontology | `ontology/<Entity>.defs.ts` + `ontology/index.defs.ts` | `2026-09-11-ns5-ontology-v2` |
 | rules | `rules.defs.ts` | `2026-09-10-ns5-rules-v1` |
-| workflows | `workflows.defs.ts` | `2026-09-10-ns5-workflows-v1` |
+| workflows | `workflows.defs.ts` | `2026-09-12-ns5-workflows-v2` |
 | access | `access.defs.ts` | `2026-09-12-ns5-access-v3` |
 | integration | `integration.defs.ts` | `2026-09-10-ns5-integration-v1` |
 
@@ -124,4 +124,5 @@ intrinsic constraints, I9 ns5_19;
 normalize drops conflicting crud; `affects` counts as a writer (ns5_21 r2);
 idField unique / cyclic lifecycle SCC / valueObject panel lift (ns5_23);
 act `effect` (`create` / `update` / `transition`) + `transitionRef`, I2 by citation and SCC reachability (ns5_28 r2);
-grant is the authority, `authorities[]` removed (ns5_29).*)
+grant is the authority, `authorities[]` removed (ns5_29);
+workflows v2: process trigger + stage `human`/`mechanical`/`llm`/`wait` (G13, ns5_30).*)
