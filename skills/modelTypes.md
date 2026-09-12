@@ -58,3 +58,21 @@ const prompt = `<!-- modelType: reasoning -->
 <!-- reasoningEffort: high -->
  ...`;
 ```
+
+
+## `x-tool-strict` and optional fields (measured 12/09/2026)
+
+Under provider-native strict mode for OpenAI/Azure, collab-llm rewrites the tool schema (`helpers/strictToolSchema.ts`): **every
+property becomes required, and every previously-optional property becomes nullable**. The model therefore never sees "optional" — it
+sees "`<value> | null`, mandatory". Two consequences for agent schemas:
+
+- A **single-valued optional field** (`{ const: true }`, `{ enum: ['crud'] }`, `{ enum: ['appendOnly'] }`) turns into a coin: the model
+  picks the value far more often than `null` (NS5: `maintenance: crud` on 5/5 entities, `creates: true` on 17/17 act steps). Do not
+  declare such fields. Where absence carries meaning, declare a **required enum with an explicit neutral value** (`effect: 'create' |
+  'update' | 'transition'`, `mutability: 'appendOnly' | 'mutable'`).
+- An **optional free-text field** becomes `string | null` and the model may fill placeholders (`"dummy"`, `"x"`, `"undefined"`) instead
+  of `null`. `stripNullOptionalToolArgs` strips only explicit nulls. Keep such fields only when a deterministic normalizer can discard
+  junk, or make them conditional on an enum value the gate can check.
+
+Anthropic strict mode keeps optional properties optional (`toAnthropicStrictToolParameters`), which is why the same schema behaves
+differently across providers. Design the schema for the stricter dialect.

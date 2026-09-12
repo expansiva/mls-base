@@ -71,10 +71,10 @@ Flow (`docs/flow.json`): `module10 → journeys20 → ontology30 → {rules40, w
 → integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I10, organization
 registry, l5 `config.json` / `project.json`, `pipeline.status: complete`). Oracle errors fail
 the run; warnings do not. I7: files in `journeys/` and `ontology/` must equal the index plus
-`index.defs.ts` (`NS5_FINALIZE_I7_ORPHAN_FILE`). I2: an `act` with `transitionRef` must cite a
-declared transition whose `by` includes the actor and whose `from` is reachable from
-source-SCC births (`NS5_FINALIZE_I2_ACT_WITHOUT_TRANSITION`); `creates` or neither is not
-an I2 error; a locate→inspect journey is valid and I2 does not apply to it. I4: a cited `transitions[].ruleRefs` exists in `rules.defs.ts`.
+`index.defs.ts` (`NS5_FINALIZE_I7_ORPHAN_FILE`). I2: an `act` with `effect: 'transition'` must cite a
+declared `transitionRef` whose `by` includes the actor and whose `from` is reachable from
+source-SCC births (`NS5_FINALIZE_I2_ACT_WITHOUT_TRANSITION`); `create` is not an I2 error;
+`update` with a declared actor transition is a warning; a locate→inspect journey is valid and I2 does not apply to it. I4: a cited `transitions[].ruleRefs` exists in `rules.defs.ts`.
 Rules are `{ruleId, description}`. Ontology fields may declare `unique` / `uniqueKeys`
 and intrinsic `constraints`; `details` are `{ type, description }`; each relationship
 has a `description`; enum values are `{ value, title }` (the phrases catalogue does
@@ -123,5 +123,5 @@ intrinsic constraints, I9 ns5_19;
 `maintenance: 'crud'` vs journey `act` (WITHOUT_WRITER / access internal grant / I10);
 normalize drops conflicting crud; `affects` counts as a writer (ns5_21 r2);
 idField unique / cyclic lifecycle SCC / valueObject panel lift (ns5_23);
-act `creates` / `transitionRef`, I2 by citation and SCC reachability (ns5_28);
+act `effect` (`create` / `update` / `transition`) + `transitionRef`, I2 by citation and SCC reachability (ns5_28 r2);
 grant is the authority, `authorities[]` removed (ns5_29).*)
