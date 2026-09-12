@@ -68,7 +68,7 @@ by request. The journey is the acceptance oracle of both sides and generates nei
 - Never dispatches CB/CF.
 
 Flow (`docs/flow.json`): `module10 → journeys20 → ontology30 → {rules40, workflows50, access60}
-→ integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I9, organization
+→ integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I10, organization
 registry, l5 `config.json` / `project.json`, `pipeline.status: complete`). Oracle errors fail
 the run; warnings do not. I7: files in `journeys/` and `ontology/` must equal the index plus
 `index.defs.ts` (`NS5_FINALIZE_I7_ORPHAN_FILE`). I2: an `act` on an already-provided entity
@@ -85,6 +85,8 @@ only stores aggregates into `module.details` and does not write its `.defs.ts`
 net). The lifted ids are stored on `pipeline.json` `ontology30.liftedAggregateEntities`;
 finalize80 I1 accepts a journey `entity`/`affects` that names one of them when
 `module.details` still has keys. I9: `uniqueKeys` fieldIds exist on the entity.
+I10: a written entity is the `entity` of an `act` or `maintenance: 'crud'`
+(not both; crud has no lifecycle) and a crud entity has an internal-actor grant.
 `/rebuild all` calls `removeModule` (exact
 `l4/l1/l2/l5/<module>/**` plus l5 jsons and the registry; `localStor.deleteFile`
 on the host); `journeys20` / `ontology30` drop defs that left the index.
@@ -113,4 +115,5 @@ rules/module.details/read-only journey/MDM skill ns5_13; aggregate-only lift ns5
 I1 lifted-entity ref ns5_13 T8; MDM ontology emitted by 102034 ns5_14;
 `/rebuild all` via `removeModule` ns5_20;
 ontology unique/uniqueKeys, typed details, relationship description, enum titles,
-intrinsic constraints, I9 ns5_19.*
+intrinsic constraints, I9 ns5_19;
+`maintenance: 'crud'` vs journey `act` (WITHOUT_WRITER / access internal grant / I10) ns5_21.*
