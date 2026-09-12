@@ -61,7 +61,9 @@ by request. The journey is the acceptance oracle of both sides and generates nei
 - `/module` fixes the folder name. Without it, `module10` proposes a lowerCamel name.
 - `/fast` skips reserved clarification anchors (they have no screen) and auto-approves each
   implemented step.
-- `/rebuild all` unlinks only `l4/<module>/**` of that module and recreates the pipeline.
+- `/rebuild all` calls `solution/removeModule`: unlinks exact `l4/l1/l2/l5/<module>/**`,
+  strips the module from `l5/config.json`, `l5/project.json` (nested `routeKeys` too) and
+  the organization registry, then recreates the pipeline. Neighbouring modules stay.
 - An existing module without `/rebuild all` is refused.
 - Never dispatches CB/CF.
 
@@ -79,8 +81,9 @@ only stores aggregates into `module.details` and does not write its `.defs.ts`
 (`liftNs5AggregateOnlyEntities`; gate `NS5_ONTOLOGY_AGGREGATE_ONLY_ENTITY` stays as the
 net). The lifted ids are stored on `pipeline.json` `ontology30.liftedAggregateEntities`;
 finalize80 I1 accepts a journey `entity`/`affects` that names one of them when
-`module.details` still has keys. `/rebuild all` unlinks the real `l4/<module>/**`
-on the host (`localStor.deleteFile`); `journeys20` / `ontology30` drop defs that left the index.
+`module.details` still has keys. `/rebuild all` calls `removeModule` (exact
+`l4/l1/l2/l5/<module>/**` plus l5 jsons and the registry; `localStor.deleteFile`
+on the host); `journeys20` / `ontology30` drop defs that left the index.
 access60 normalizes unrestricted `fieldsOnly` to `fullRecord` and drops `anchorEntity` outside
 `own`/`assigned`/`related`. ontology30 rejects persisted `id → id` realizations.
 
@@ -103,4 +106,5 @@ supervisor, not the executing session.
 
 *Written 11/09/2026 (ns5_10); I7 / host unlink ns5_11; form normalizations ns5_12;
 rules/module.details/read-only journey/MDM skill ns5_13; aggregate-only lift ns5_13 T7;
-I1 lifted-entity ref ns5_13 T8; MDM ontology emitted by 102034 ns5_14.*
+I1 lifted-entity ref ns5_13 T8; MDM ontology emitted by 102034 ns5_14;
+`/rebuild all` via `removeModule` ns5_20.*

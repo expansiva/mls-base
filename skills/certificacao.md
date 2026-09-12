@@ -34,12 +34,12 @@ Baseline reds, measured 31/08/2026:
 |---|---|---|
 | `mls-102021` | l2 | green |
 | `mls-102020` | l2 | `aura/molecules/agentSyncMoleculeCatalog/helpers/syMigrateIndexTs.test.ts` (L88, L107, L149) + `aura/molecules/shared/localDocRefs.test.ts` (2 `todo/` paths in `agentNewMoleculeVariant/steps/v4-index/CHANGELOG.md:36` and `molecules/skills/canonicalFallbacks.ts:16`, since 04/09) — **4 failures**. `agentGenerateHeader.test.ts` no longer fails (re-measured 06/09/2026) |
-| `mls-102035` | l2 | green with NS5 (`agentNewSolution5`, including `replayRealRuns.test.ts` on the two complete runs). **77 files, 0 red**, measured 11/09/2026 (ns5_13; was 76 after ns5_10) |
+| `mls-102035` | l2 | green with NS5 (`agentNewSolution5`, including `replayRealRuns.test.ts` on the two complete runs). **78 files, 0 red**, measured 11/09/2026 (ns5_20; was 77 after ns5_13) |
 
-`tsc` baseline (07/09/2026): frontend — `mls-102051/l5/runtimeConfig.ts` (generated app) +
-`mls-102047/l2/controleEstoque4/web/desktop/page31/stockMovementCatalogue.ts` TS2367 (evidence of the
-CF compile-gate-by-capability gap; **leaves this baseline when that module is regenerated**);
-backend — 5 in `mls-102047/l1/controleChamados` + the same `mls-102051` (generated apps). Zero in
+`tsc` baseline (11/09/2026, re-measured ns5_20): frontend — **1**, `mls-102051/l5/runtimeConfig.ts`
+(generated app; the page31 TS2367 left with `controleEstoque4` on ns5_15);
+backend — **1**, only `mls-102051` (generated app); `controleChamados` (NS4, `mls-102047/l1`) was
+retired 11/09/2026 (ns5_15: bancada `mls-102047` limpa para a análise do NS5). Zero in
 `mls-102020`/`mls-102021`. The old `l2/aura/agentManageHeader` (4 errors) is gone.
 
 A red file outside that list is a regression. Re-measure the baseline if it drifts, and update this
@@ -95,4 +95,5 @@ NS5 live-run cost (complete `/fast /rebuild all` on `mls-102047`, 11/09/2026, fr
 
 *Written 31/08/2026; typeCheck status (gb74) added 04/09/2026; baselines re-measured 06/09/2026;
 frontend baseline gained the page31 TS2367 (07/09/2026, leaves on regenerate); 102035 l2 + NS5
-run costs added 11/09/2026 (ns5_10); 102035 l2 77 files ns5_13 (11/09/2026).*
+run costs added 11/09/2026 (ns5_10); 102035 l2 77 files ns5_13 (11/09/2026); 102035 l2 78 files
+ns5_20 (11/09/2026).*
