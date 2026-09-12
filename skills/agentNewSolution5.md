@@ -27,6 +27,8 @@ contracts, landings, site maps) and **never** dispatches `agentChangeBackend` or
 
 Pipeline: `pipeline/pipeline.json`, per-step `pipeline/<step>-draft.json`,
 `pipeline/finalize-report.json`, `pipeline/runNN_newsolution5.json`.
+`steps.<step>.normalizations[]` (and ontology30 `liftedFields` /
+`liftedAggregateEntities`) is what the system adjusted — Fase 2 reads it.
 
 Types live in `/_102035_/l2/solution/types.ts`. Shared pure helpers are re-exported from
 `/_102035_/l2/solution/lib.ts` without moving the NS4 files.
@@ -67,38 +69,50 @@ by request. The journey is the acceptance oracle of both sides and generates nei
 - An existing module without `/rebuild all` is refused.
 - Never dispatches CB/CF.
 
+## Form (final, Fase 1)
+
 Flow (`docs/flow.json`): `module10 → journeys20 → ontology30 → {rules40, workflows50, access60}
-→ integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I12, organization
-registry, l5 `config.json` / `project.json`, `pipeline.status: complete`). Oracle errors fail
-the run; warnings do not. I7: files in `journeys/` and `ontology/` must equal the index plus
-`index.defs.ts` (`NS5_FINALIZE_I7_ORPHAN_FILE`). I2: an `act` with `effect: 'transition'` must cite a
-declared `transitionRef` whose `by` includes the actor and whose `from` is reachable from
-source-SCC births (`NS5_FINALIZE_I2_ACT_WITHOUT_TRANSITION`); `create` is not an I2 error;
-`update` with a declared actor transition is a warning; a locate→inspect journey is valid and I2 does not apply to it. I4: a cited `transitions[].ruleRefs` exists in `rules.defs.ts`.
-Rules are `{ruleId, description}`. Ontology fields may declare `unique` / `uniqueKeys`
-and intrinsic `constraints`; `details` are `{ type, description }`; each relationship
-has a `description`; enum values are `{ value, title }` (the phrases catalogue does
-not label domain enums). Organization-wide aggregates live in `module.details`
-(ontology30). After the entity fan-out, ontology30 lifts a non-mdm entity that
-only stores aggregates into `module.details` and does not write its `.defs.ts`
-(`liftNs5AggregateOnlyEntities`; gate `NS5_ONTOLOGY_AGGREGATE_ONLY_ENTITY` stays as the
-net). Extra fields on that panel are recorded as `liftedFields`. The lifted ids are stored on `pipeline.json` `ontology30.liftedAggregateEntities`;
-finalize80 I1 accepts a journey `entity`/`affects` that names one of them when
-`module.details` still has keys. Normalize drops `unique` on the idField; cyclic
-lifecycles are reachable from source SCCs (ns5_23). I9: `uniqueKeys` fieldIds exist on the entity.
-I10: a written entity is the `entity` or `affects` of an `act`, or
-`writer: 'crud'` / `'inbound'` (normalize drops conflicting crud/inbound when an act
-already writes it); a crud entity has an internal-actor grant; inbound appears in
-`inbound.writes`. I8 still requires the person's own `act` (or crud/self-registration).
-I11 (warning) queues `l4/<sibling|/organization>/tobe/integration/` when inbound asks a
-sibling for an event it does not publish. I12: `outbound.on` and `plugins.usedBy` exist.
-`/rebuild all` calls `removeModule` (exact
-`l4/l1/l2/l5/<module>/**` plus l5 jsons and the registry; `localStor.deleteFile`
-on the host); `journeys20` / `ontology30` drop defs that left the index.
-access60 writes actors + grants (`-access-v3`); the grant carries `title`/`description` and
-there is no `authorities[]`. access60 normalizes unrestricted `fieldsOnly` to `fullRecord` and
-drops `anchorEntity` outside `own`/`assigned`/`related`. ontology30 rejects persisted
-`id → id` realizations.
+→ integration70 → finalize80`. `finalize80` is deterministic. Oracle errors fail the run;
+warnings do not.
+
+**Languages.** `pt` → `pt-BR` (BCP-47 with region). `en` stays `en`. Recorded as `ptToPtBR`.
+
+**`act.effect`.** Required: `'create' | 'update' | 'transition'`. `transitionRef` only with
+`transition`. Lifecycle is required when there is a `transition` act or a `decide` on the
+entity (`collectNs5LifecycleSignal`); `create`/`update` do not count.
+
+**`writer`.** `'journey' | 'crud' | 'inbound'` (omitted = journey). Normalize drops conflicting
+crud/inbound when an act already writes the entity.
+
+**Workflows.** Process `trigger` (`manual` / `scheduled` / `event`) and stage
+`human` / `mechanical` / `llm` / `wait`.
+
+**`module.details`.** Organization-wide aggregates. After fan-out, an aggregate-only entity
+is lifted into this map and not written as `.defs.ts`. The panel is the source of overlapping
+keys; plan-only keys stay. Extra panel fields become `liftedFields`.
+
+### Oracle I1–I13
+
+| check | meaning | on fail |
+|---|---|---|
+| I1 | every id ref between sources exists. A journey `entity`/`affects` naming a lifted id is a `module.details` ref when that map has keys | error |
+| I2 | `effect: 'transition'` cites a declared `transitionRef` (`by` includes the actor, `from` reachable from source-SCC births). `create` is not an I2 error; `update` with a declared actor transition is a warning. Every `decide` has two transitions from the same origin. Same citation on workflow `mechanical`/`llm` stages | error (warning does not fail) |
+| I3 | every `access.actors` row has at least one journey and one grant | error |
+| I4 | every cited `transitions[].ruleRefs` exists in `rules.defs.ts` | error |
+| I5 | every mdm entity has `mdmSubtype`; every non-mdm entity on an `own` grant reaches a `party: person` | error |
+| I6 | a `handoff` without a covering human `journeyRef`; a `by: system`/`time` transition that is not a mechanical/llm `effect: transition` or `trigger.event` | warning |
+| I7 | `journeys/*.defs.ts` and `ontology/*.defs.ts` on disk equal the index plus `index.defs.ts` | error |
+| I8 | a login person is registered by an internal `act` (entity/`affects`), `writer: 'crud'` with an internal grant, or an `act` of her own external actor | error |
+| I9 | every `uniqueKeys` fieldId exists on the entity | error |
+| I10 | written entity is an `act` `entity` or `affects`, or `writer: 'crud'` / `'inbound'`; crud has an internal-actor grant; inbound appears in `inbound.writes` | error |
+| I11 | inbound event from a sibling that does not publish it; queues `l4/<target>/tobe/integration/` | warning |
+| I12 | `outbound.on` is `Entity.transitionId` or `Entity.create`; `plugins.usedBy` exists; `from: organization` events are in the platform catalog | error |
+| I13 | remaining `custom` grants (count in `checks.I13.warningCount`) | warning |
+
+I7: files in `journeys/` and `ontology/` must equal the index plus `index.defs.ts`
+(`NS5_FINALIZE_I7_ORPHAN_FILE`). access60 writes actors + grants; the grant is the
+authority. Unrestricted `fieldsOnly` becomes `fullRecord`; `anchorEntity` only on
+`own`/`assigned`/`related`. ontology30 rejects persisted `id → id` realizations.
 
 ## How to certify
 
@@ -107,12 +121,12 @@ drops `anchorEntity` outside `own`/`assigned`/`related`. ontology30 rejects pers
    including `replayRealRuns.test.ts`).
 3. `ns5CreateAgentGraph.test.ts`, prompt `modelType` markers, i18n guard, no `todo/` paths.
 4. Fixtures in `steps/*/fixtures/` are byte copies of the two complete runs
-   (`comandaRestaurante5`, `ordenServicio5`). Gate tests run on those drafts. The replay
-   `normalize → gate → writeDefs` must match the recorded defs (hashes stripped).
+   (`comandaRestaurante5`, `ordenServicio5`). The 12 leva modules are listed in
+   `NS5_LEVA_MODULES`; byte copies land after the final leva. Gate tests run on those
+   drafts. The replay `normalize → gate → writeDefs` must match the recorded defs
+   (hashes stripped).
 5. `nsArtifactFieldRatchet.test.ts`: every structured key of the source contracts has a
    declared non-LLM reader.
-6. Neighbour: `controleChamados` file counts stay 160 / 53 / 44 (l4 / l1 / l2). NS4
-   (`agentNewSolution`) stays on disk and untouched.
 
 Live proof (`@@newSolution5 … /fast /module <name>` on `mls-102047`) is owned by the
 supervisor, not the executing session.
@@ -123,10 +137,12 @@ I1 lifted-entity ref ns5_13 T8; MDM ontology emitted by 102034 ns5_14;
 `/rebuild all` via `removeModule` ns5_20;
 ontology unique/uniqueKeys, typed details, relationship description, enum titles,
 intrinsic constraints, I9 ns5_19;
-`maintenance: 'crud'` vs journey `act` (WITHOUT_WRITER / access internal grant / I10);
+`writer: 'crud'` vs journey `act` (WITHOUT_WRITER / access internal grant / I10);
 normalize drops conflicting crud; `affects` counts as a writer (ns5_21 r2);
 idField unique / cyclic lifecycle SCC / valueObject panel lift (ns5_23);
 act `effect` (`create` / `update` / `transition`) + `transitionRef`, I2 by citation and SCC reachability (ns5_28 r2);
 grant is the authority, `authorities[]` removed (ns5_29);
 workflows v2: process trigger + stage `human`/`mechanical`/`llm`/`wait` (G13, ns5_30);
-integration v2: inbound writer, registry entities/events, tobe/integration requests (G7, ns5_31).*)
+integration v2: inbound writer, registry entities/events, tobe/integration requests (G7, ns5_31);
+lifecycle by `effect` (not act count), `pt`→`pt-BR`, panel replaces `module.details` keys,
+`normalizations[]` on `pipeline.json` (ns5_33).*
