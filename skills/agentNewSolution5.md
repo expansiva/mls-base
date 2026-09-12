@@ -82,7 +82,8 @@ warnings do not.
 entity (`collectNs5LifecycleSignal`); `create`/`update` do not count.
 
 **`writer`.** `'journey' | 'crud' | 'inbound'` (omitted = journey). Normalize drops conflicting
-crud/inbound when an act already writes the entity.
+crud/inbound when an act already writes the entity. A child of a written parent (`parent`) and an
+MDM attached by a create act (`attach`) also count (`ns5ResolveEntityWriter`; `writerDerived`).
 
 **Workflows.** Process `trigger` (`manual` / `scheduled` / `event`) and stage
 `human` / `mechanical` / `llm` / `wait`.
@@ -102,9 +103,9 @@ keys; plan-only keys stay. Extra panel fields become `liftedFields`.
 | I5 | every mdm entity has `mdmSubtype`; every non-mdm entity on an `own` grant reaches a `party: person` | error |
 | I6 | a `handoff` without a covering human `journeyRef`; a `by: system`/`time` transition that is not a mechanical/llm `effect: transition` or `trigger.event` | warning |
 | I7 | `journeys/*.defs.ts` and `ontology/*.defs.ts` on disk equal the index plus `index.defs.ts` | error |
-| I8 | a login person is registered by an internal `act` (entity/`affects`), `writer: 'crud'` with an internal grant, or an `act` of her own external actor | error |
+| I8 | a login person is registered by an internal `act` (entity/`affects`), `writer: 'crud'` with an internal grant, an `act` of her own external actor, or derived `parent`/`attach` | error |
 | I9 | every `uniqueKeys` fieldId exists on the entity | error |
-| I10 | written entity is an `act` `entity` or `affects`, or `writer: 'crud'` / `'inbound'`; crud has an internal-actor grant; inbound appears in `inbound.writes` | error |
+| I10 | written entity is an `act` `entity` or `affects`, or `writer: 'crud'` / `'inbound'`, or derived `parent`/`attach`; crud has an internal-actor grant; inbound appears in `inbound.writes` | error |
 | I11 | inbound event from a sibling that does not publish it; queues `l4/<target>/tobe/integration/` | warning |
 | I12 | `outbound.on` is `Entity.transitionId` or `Entity.create`; `plugins.usedBy` exists; `from: organization` events are in the platform catalog | error |
 | I13 | remaining `custom` grants (count in `checks.I13.warningCount`) | warning |
