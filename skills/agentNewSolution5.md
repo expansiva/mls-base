@@ -19,7 +19,7 @@ contracts, landings, site maps) and **never** dispatches `agentChangeBackend` or
 |---|---|---|
 | module (envelope) | `module.defs.ts` | `2026-09-10-ns5-module-v2` |
 | journeys | `journeys/<journeyId>.defs.ts` + `journeys/index.defs.ts` | `2026-09-10-ns5-journey-v1` |
-| ontology | `ontology/<Entity>.defs.ts` + `ontology/index.defs.ts` | `2026-09-10-ns5-ontology-v1` |
+| ontology | `ontology/<Entity>.defs.ts` + `ontology/index.defs.ts` | `2026-09-11-ns5-ontology-v2` |
 | rules | `rules.defs.ts` | `2026-09-10-ns5-rules-v1` |
 | workflows | `workflows.defs.ts` | `2026-09-10-ns5-workflows-v1` |
 | access | `access.defs.ts` | `2026-09-10-ns5-access-v2` |
@@ -68,20 +68,24 @@ by request. The journey is the acceptance oracle of both sides and generates nei
 - Never dispatches CB/CF.
 
 Flow (`docs/flow.json`): `module10 → journeys20 → ontology30 → {rules40, workflows50, access60}
-→ integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I7, organization
+→ integration70 → finalize80`. `finalize80` is deterministic (oracle I1–I9, organization
 registry, l5 `config.json` / `project.json`, `pipeline.status: complete`). Oracle errors fail
 the run; warnings do not. I7: files in `journeys/` and `ontology/` must equal the index plus
 `index.defs.ts` (`NS5_FINALIZE_I7_ORPHAN_FILE`). I2: an `act` on an already-provided entity
 with lifecycle needs a transition from a reachable origin state
 (`NS5_FINALIZE_I2_ACT_WITHOUT_TRANSITION`); a locate→inspect journey is valid and I2
 does not apply to it. I4: a cited `transitions[].ruleRefs` exists in `rules.defs.ts`.
-Rules are `{ruleId, description}`. Organization-wide aggregates live in `module.details`
+Rules are `{ruleId, description}`. Ontology fields may declare `unique` / `uniqueKeys`
+and intrinsic `constraints`; `details` are `{ type, description }`; each relationship
+has a `description`; enum values are `{ value, title }` (the phrases catalogue does
+not label domain enums). Organization-wide aggregates live in `module.details`
 (ontology30). After the entity fan-out, ontology30 lifts a core/supporting entity that
 only stores aggregates into `module.details` and does not write its `.defs.ts`
 (`liftNs5AggregateOnlyEntities`; gate `NS5_ONTOLOGY_AGGREGATE_ONLY_ENTITY` stays as the
 net). The lifted ids are stored on `pipeline.json` `ontology30.liftedAggregateEntities`;
 finalize80 I1 accepts a journey `entity`/`affects` that names one of them when
-`module.details` still has keys. `/rebuild all` calls `removeModule` (exact
+`module.details` still has keys. I9: `uniqueKeys` fieldIds exist on the entity.
+`/rebuild all` calls `removeModule` (exact
 `l4/l1/l2/l5/<module>/**` plus l5 jsons and the registry; `localStor.deleteFile`
 on the host); `journeys20` / `ontology30` drop defs that left the index.
 access60 normalizes unrestricted `fieldsOnly` to `fullRecord` and drops `anchorEntity` outside
@@ -107,4 +111,6 @@ supervisor, not the executing session.
 *Written 11/09/2026 (ns5_10); I7 / host unlink ns5_11; form normalizations ns5_12;
 rules/module.details/read-only journey/MDM skill ns5_13; aggregate-only lift ns5_13 T7;
 I1 lifted-entity ref ns5_13 T8; MDM ontology emitted by 102034 ns5_14;
-`/rebuild all` via `removeModule` ns5_20.*
+`/rebuild all` via `removeModule` ns5_20;
+ontology unique/uniqueKeys, typed details, relationship description, enum titles,
+intrinsic constraints, I9 ns5_19.*
