@@ -541,6 +541,12 @@ export async function buildWeb(clientConfig, ids) {
     root: ROOT, outdir, config: litConfig, entries: litEntries, pkgDir: litPkgDir,
   });
   log(`lit runtime -> ${litConfig.outDir} (${litCount} modules, served at ${litConfig.baseUrl})`);
+  const echartsSource = resolve(ROOT, 'node_modules/echarts/dist/echarts.min.js');
+  const echartsTarget = resolve(outdir, '_libs/echarts.min.js');
+  if (!existsSync(echartsSource)) throw new Error(`local ECharts runtime not found at ${echartsSource}`);
+  await mkdir(dirname(echartsTarget), { recursive: true });
+  await cp(echartsSource, echartsTarget);
+  log('echarts runtime -> _libs/echarts.min.js');
   log(`web build -> dist/${WEB_DIST_DIR} (Lit + shells + css + l3; app modules come from the zip)`);
 
   // copy l2/l3 static resources (html/css/svg/json/md/wav/png/…) into dist/web
