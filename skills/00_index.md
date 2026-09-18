@@ -22,7 +22,7 @@ generated app. Never edit one to "improve the docs".
 | `agentPlannerL4` | `mls-102035` | lists l4 artifacts and dispatches L2/L1 planners through the module pool; no LLM | [`agentPlannerL4.md`](agentPlannerL4.md) |
 | `agentChangeBackend` (CB) | `mls-102021` | `l1` (backend) | [`agentChangeBackend.md`](agentChangeBackend.md) |
 | `agentChangeFrontend` (CF) | `mls-102020` | `l2` (frontend) | [`agentChangeFrontend.md`](agentChangeFrontend.md) |
-| `agentPlannerL2` (P2) | `mls-102020` | `l2/<mod>` contracts/shared + `pool/l1`, from a complete l4 and `pool/l2` | this index; code in `mls-102020/l2/agentPlannerL2` (skeleton + `entry10` as of 18/09/2026) |
+| `agentPlannerL2` (P2) | `mls-102020` | `l2/<mod>` contracts/shared + `pool/l1`, from a complete l4 and `pool/l2` | this index; code in `mls-102020/l2/agentPlannerL2` (`entry10` + `workspaces20` + `contracts30` as of 18/09/2026) |
 | runtime / publish | `mls-102033`, `mls-102034`, `mls-base/scripts` | the running app | [`runtimeEnvironment.md`](runtimeEnvironment.md) + [`publishGitBackend.md`](publishGitBackend.md) |
 
 Cross-cutting:
