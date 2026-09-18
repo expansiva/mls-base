@@ -28,18 +28,22 @@ module `pipeline.json` as `l5Adjusted`. A config that already lists both is left
 
 `dispatch20` lists every file under `l4/<mod>/` except `pipeline/`, `tobe/`, `pool/` and writes
 two equal messages (`from: l4`, `to: l2` and `to: l1`, `round: 1`, `mode: implement`, subject
-`Changed artifacts of <mod>`). It invokes `agentPlannerL2` by name (`prompt: { moduleName,
-thread, file }`). `agentPlannerL1` is invoked only when that agent exists; otherwise the status
-says the requests stayed in the box.
+`Changed artifacts of <mod>`). It traces both as `delivered` and completes. It does **not**
+create an `agentPlannerL2` / `agentPlannerL1` step.
 
-`loop30` counts rounds from the L4 `pipeline.json` pool trace and `listPoolBox`. It does not
-read `l2/<mod>/pipeline/` or `l1/`. While a new message is in `pool/l2` or `pool/l1` and
-`round < 3`, it creates the next step of that box's owner. At round 3 with a non-empty box it
-records `outcome: disputed` and does not delete the message.
+`loop30` reports `pool/l1` and `pool/l2` via `listPoolBox` and completes immediately. It does
+not read `l2/<mod>/pipeline/` or `l1/`. `decidePlLoop` still runs (3-round / `disputed` rule
+unchanged); invoke is ignored, `disputed` is still recorded.
+
+**Dispatch to other planners is suspended** (Wagner, 18/09: *"faz o plannerl4 fazer só o l4,
+sem disparar outra task, assim fica mais fácil testar"*). `createPlInvokeStep` and the round
+loop stay in the code; they come back when L2/L1 are published. Without this suspension the
+task stayed `in progress` waiting for planners that are not there.
 
 ## Pool
 
 Mailbox: `l4/<mod>/pool/{l1,l2,l4}/`. Type and helpers: `mls-102035/l2/solution/pool.ts`.
 Each owner traces only on its own `pipeline.json` (`tracePoolAt`).
 
-*Written 18/09/2026 (p4_02); dispatch20/loop30 18/09/2026 (p4_03).*
+*Written 18/09/2026 (p4_02); dispatch20/loop30 18/09/2026 (p4_03); dispatch to other planners
+suspended 18/09/2026 (p4_06).*
