@@ -75,7 +75,7 @@ by request. The journey is the acceptance oracle of both sides and generates nei
 Flow (`docs/flow.json`): `module10 → journeys20 → workflows50 → ontology30 → judge35 →
 {rules40, access60} → integration70 → finalize80` (v3, ns5_62). `judge35` is an LLM judge of
 journey completeness (human transitions no journey or process cites; `decide` branches the module
-does not cover). Empty candidates skip the model. `finalize80` is deterministic. Oracle errors fail
+does not cover; `coveredByAct` when a cited act on a related entity is the same human act). Empty candidates skip the model. `finalize80` is deterministic. Oracle errors fail
 the run; warnings do not. Previous flow versions are not migrated.
 
 **Languages.** `pt` → `pt-BR` (BCP-47 with region). `en` stays `en`. Recorded as `ptToPtBR`.
