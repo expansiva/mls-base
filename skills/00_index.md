@@ -22,7 +22,7 @@ generated app. Never edit one to "improve the docs".
 | `agentPlannerL4` | `mls-102035` | lists l4 artifacts and writes `pool/l1`+`pool/l2`; dispatch to other planners is suspended (p4_06); no LLM | [`agentPlannerL4.md`](agentPlannerL4.md) |
 | `agentChangeBackend` (CB) | `mls-102021` | `l1` (backend) | [`agentChangeBackend.md`](agentChangeBackend.md) |
 | `agentChangeFrontend` (CF) | `mls-102020` | `l2` (frontend) | [`agentChangeFrontend.md`](agentChangeFrontend.md) |
-| `agentPlannerL2` (P2) | `mls-102020` | `l4/<mod>/pool/l2/menu.json` menu v2.1 (tree of hubs/pages/organisms including inbox/alerts, authorities by actor, `meta.journeys` + `meta.processes`) from a complete l4 and `pool/l2` (does not delete the pool or write `pool/l1` during the marco) | this index; code in `mls-102020/l2/agentPlannerL2` (`entry10` + `menu20`; `workspaces20`/`contracts30`/`shared40`/`requests50` parked as of 18/09/2026) |
+| `agentPlannerL2` (P2) | `mls-102020` | `l4/<mod>/pool/l2/<device>/menu.json` menu v2.2 (tree of hubs/pages/organisms including inbox/alerts, authorities by actor, `meta.journeys` + `meta.processes` + `meta.removed`, `action` per node) from a complete l4 and `pool/l2` (does not delete the pool or write `pool/l1` during the marco; device today is `web`) | this index; code in `mls-102020/l2/agentPlannerL2` (`entry10` + `menu20`; `workspaces20`/`contracts30`/`shared40`/`requests50` parked as of 18/09/2026) |
 | runtime / publish | `mls-102033`, `mls-102034`, `mls-base/scripts` | the running app | [`runtimeEnvironment.md`](runtimeEnvironment.md) + [`publishGitBackend.md`](publishGitBackend.md) |
 
 Cross-cutting:
