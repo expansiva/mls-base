@@ -75,7 +75,9 @@ by request. The journey is the acceptance oracle of both sides and generates nei
 Flow (`docs/flow.json`): `module10 → journeys20 → workflows50 → ontology30 → judge35 →
 {rules40, access60} → integration70 → finalize80` (v3, ns5_62). `judge35` is an LLM judge of
 journey completeness (human transitions no journey or process cites; `decide` branches the module
-does not cover; `coveredByAct` when a cited act on a related entity is the same human act). Empty candidates skip the model. A written boolean or two-value enum on an entity with no
+does not cover; `coveredByAct` when a cited act on a related entity is the same human act). The
+judge is additive and never fails the run: a malformed verdict, a leftover orphan and a missing
+precondition become comments; valid verdicts in the same batch still apply. Empty candidates skip the model. A written boolean or two-value enum on an entity with no
 lifecycle, cited by a rule, a process or another entity's derived field, is a `writtenSwitch`
 candidate: `switchNeedsLifecycle` repairs the entity once through `ontology30` (`parallelEntityStep`
 with feedback) and then the journeys repair; a switch the judge does not confirm records
@@ -155,4 +157,4 @@ authority. Unrestricted `fieldsOnly` becomes `fullRecord`; `anchorEntity` only o
 Live proof (`@@newSolution5 … /fast /module <name>` on `mls-102047`) is owned by the
 supervisor, not the executing session.
 
-*Written 11/09/2026 (ns5_10); form closed 12/09/2026 (ns5_33 T6, leva final 11/12); flow v3 judge35 19/09/2026 (ns5_62).*
+*Written 11/09/2026 (ns5_10); form closed 12/09/2026 (ns5_33 T6, leva final 11/12); flow v3 judge35 19/09/2026 (ns5_62); judge additive 20/09/2026 (ns5_66).*
