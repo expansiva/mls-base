@@ -75,7 +75,13 @@ by request. The journey is the acceptance oracle of both sides and generates nei
 Flow (`docs/flow.json`): `module10 → journeys20 → workflows50 → ontology30 → judge35 →
 {rules40, access60} → integration70 → finalize80` (v3, ns5_62). `judge35` is an LLM judge of
 journey completeness (human transitions no journey or process cites; `decide` branches the module
-does not cover; `coveredByAct` when a cited act on a related entity is the same human act). Empty candidates skip the model. `finalize80` is deterministic. Oracle errors fail
+does not cover; `coveredByAct` when a cited act on a related entity is the same human act). Empty candidates skip the model. A written boolean or two-value enum on an entity with no
+lifecycle, cited by a rule, a process or another entity's derived field, is a `writtenSwitch`
+candidate: `switchNeedsLifecycle` repairs the entity once through `ontology30` (`parallelEntityStep`
+with feedback) and then the journeys repair; a switch the judge does not confirm records
+`switchKeptAsField`. A lifecycle is for what somebody moves AND the system reacts to, or that has
+a duration people ask about; a switch with no such consequence is a field. `finalize80` is
+deterministic. Oracle errors fail
 the run; warnings do not. Previous flow versions are not migrated.
 
 **Languages.** `pt` → `pt-BR` (BCP-47 with region). `en` stays `en`. Recorded as `ptToPtBR`.
