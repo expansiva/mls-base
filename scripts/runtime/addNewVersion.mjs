@@ -17,10 +17,10 @@
 
 import { execSync } from 'node:child_process';
 import {
-  cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync,
-  renameSync, rmSync, statSync, symlinkSync, writeFileSync,
+  cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
+  realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pathIdsOf } from '../syncTsconfigPaths.mjs';
 import { collectReleaseStamp, writeReleaseStamp } from './releaseStamp.mjs';
@@ -176,6 +176,29 @@ export function pm2ConfigRel(root) {
 }
 
 /**
+ * Release names still pointed at by a `current*` symlink at the root — the
+ * global `current` and every `current-<id>` alias a hosted app runs from.
+ *
+ * The prune below must never delete these: an alias whose target is gone leaves
+ * that app with a script that does not exist, and `pm2 startOrReload` then fails
+ * for the WHOLE config file — taking down the release step of every later build
+ * (observed on the VM: app2046 pointed at a pruned release and every
+ * rebuild-on-save aborted before it could refresh any obj).
+ */
+export function releasesInUse(root) {
+  const inUse = new Set();
+  for (const name of readdirSync(root)) {
+    if (!name.startsWith('current')) continue;
+    const link = join(root, name);
+    try {
+      if (!lstatSync(link).isSymbolicLink()) continue;
+      inUse.add(basename(readlinkSync(link)));
+    } catch { /* unreadable link: nothing to protect */ }
+  }
+  return inUse;
+}
+
+/**
  * Aliases `current-<id>` that this release should flip. Empty string → none
  * (the global `current` still flips in activateCurrent). Comma-separated so
  * a library push can move every hosted app in one env. collab-sites still
@@ -277,9 +300,15 @@ function main() {
     console.log(`--- ${releaseAlias} -> releases/${releaseId}`);
   }
 
-  // Keep the 10 most recent releases; remove older ones.
+  // Keep the 10 most recent releases; remove older ones — except any still
+  // pointed at by a `current*` symlink (see releasesInUse).
   const releases = readdirSync(releasesDir).filter((n) => /^\d{14}$/.test(n)).sort().reverse();
+  const stillInUse = releasesInUse(ROOT);
   for (const old of releases.slice(10)) {
+    if (stillInUse.has(old)) {
+      console.log(`    kept old release ${old} (still referenced by a current* symlink)`);
+      continue;
+    }
     rmSync(join(releasesDir, old), { recursive: true, force: true });
     console.log(`    pruned old release ${old}`);
   }
@@ -291,12 +320,23 @@ function main() {
   // before those steps run.
   const pm2Config = pm2ConfigRel(ROOT);
   mkdirSync(join(ROOT, 'logs'), { recursive: true });
+  // A pm2 failure is still fatal for the build, but it is rethrown only AFTER
+  // the obj refresh below: the objs are what the cbe login serves, and skipping
+  // them leaves every browser on a stale versionRef — a much wider outage than
+  // the reload itself. Deferred instead of reordered so the reload keeps
+  // happening as early as it does today.
+  let pm2Error = null;
   if (deferPm2) {
     console.log(`--- pm2 reload skipped (--skip-pm2; caller reloads after the hook finishes)`);
   } else {
     console.log(`--- pm2 reload (${pm2Config})`);
-    runWithRetry(`pm2 startOrReload ${pm2Config} --update-env`);
-    try { run('pm2 save'); } catch { /* non-fatal */ }
+    try {
+      runWithRetry(`pm2 startOrReload ${pm2Config} --update-env`);
+      try { run('pm2 save'); } catch { /* non-fatal */ }
+    } catch (error) {
+      pm2Error = error;
+      console.error(`[addNewVersion] pm2 reload failed — refreshing objs first, then failing: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   // Refresh objs of projects OUTSIDE the release fecho (Studio: 100554, …).
@@ -315,6 +355,7 @@ function main() {
     console.log('--- obj build skipped for projects outside the fecho (CBE_BUILD_OBJS=false)');
   }
 
+  if (pm2Error) throw pm2Error;
   console.log(`addNewVersion done (release ${releaseId}).`);
 }
 

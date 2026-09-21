@@ -17,6 +17,7 @@ import {
   fechoProjectIds,
   pm2ConfigRel,
   parseReleaseAliases,
+  releasesInUse,
   skipPm2,
   updateTsconfigPaths,
   vmTsconfigRel,
@@ -301,4 +302,46 @@ test('tsconfig.vm.json está no .gitignore e o compile da VM aponta para ele', (
   assert.match(buildSrc, /tsconfig\.vm\.json/);
   const createSrc = readFileSync(join(HERE, '..', 'buildCI', 'createTsconfig.mjs'), 'utf8');
   assert.match(createSrc, /tsconfig\.json raiz do mls-base nunca é tocado/);
+});
+
+test('T4: releasesInUse protege os releases apontados por current e current-<id>', () => {
+  const root = mkdtempSync(join(tmpdir(), 'addversion-inuse-'));
+  try {
+    const releases = join(root, 'releases');
+    for (const name of ['20260101000000', '20260202000000', '20260303000000']) {
+      mkdirSync(join(releases, name), { recursive: true });
+    }
+    symlinkSync(join(releases, '20260303000000'), join(root, 'current'));
+    symlinkSync(join(releases, '20260101000000'), join(root, 'current-102046'));
+
+    const inUse = releasesInUse(root);
+    assert.deepEqual([...inUse].sort(), ['20260101000000', '20260303000000']);
+    // O release que ninguém referencia continua livre para o prune.
+    assert.equal(inUse.has('20260202000000'), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('T5: releasesInUse ignora um current* que não é symlink (e não quebra)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'addversion-inuse-'));
+  try {
+    mkdirSync(join(root, 'releases'), { recursive: true });
+    writeFileSync(join(root, 'current-notes.txt'), 'nao sou symlink');
+    assert.deepEqual([...releasesInUse(root)], []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('T6: uma falha no pm2 só é lançada DEPOIS do refresh dos objs', () => {
+  // O bug real (VM, app2046 órfão): o reload falhava, addNewVersion abortava e
+  // o buildProjectsObj dos extras nunca rodava — nenhum versionRef se movia.
+  const src = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
+  const pm2Catch = src.indexOf('pm2Error = error;');
+  const objBuild = src.indexOf('buildProjectsObj.mjs --only');
+  const rethrow = src.indexOf('if (pm2Error) throw pm2Error;');
+  assert.ok(pm2Catch > 0 && objBuild > 0 && rethrow > 0);
+  assert.ok(pm2Catch < objBuild, 'o erro do pm2 precisa ser capturado antes do obj build');
+  assert.ok(objBuild < rethrow, 'o rethrow precisa vir depois do obj build');
 });
