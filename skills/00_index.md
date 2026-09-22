@@ -24,6 +24,8 @@ generated app. Never edit one to "improve the docs".
 | `agentChangeFrontend` (CF) | `mls-102020` | `l2` (frontend) | [`agentChangeFrontend.md`](agentChangeFrontend.md) |
 | `agentPlannerL2` (P2) | `mls-102020` | `l4/<mod>/pool/l2/<device>/menu.json` menu v2.2 (tree of hubs/pages/organisms including inbox/alerts, authorities by actor, `meta.journeys` + `meta.processes` + `meta.removed`, `action` per node) from a complete l4 and `pool/l2` (does not delete the pool or write `pool/l1` during the marco; device today is `web`) | this index; code in `mls-102020/l2/agentPlannerL2` (`entry10` + `menu20`; `workspaces20`/`contracts30`/`shared40`/`requests50` parked as of 18/09/2026) |
 | `agentPlannerL1` (P1) | `mls-102021` | `l1/<mod>/pipeline/pipeline.json` from a complete l4, `pool/l1` (`needs.json` from l2) and the existing l1 inventory; `plan20` writes `pool/l2/web/backend.json` (does not delete the pool or write l1 `.defs.ts`/`.ts`) | this index; code in `mls-102021/l2/agentPlannerL1` (`entry10` + `plan20`) |
+| `agentDefsL1` (D1) | `mls-102021` | L1 defs under `l1/<mod>/` plus `l1/<mod>/pipeline/agentDefsL1/` (`input.json`, drafts, `report.json`). Does not materialize `.ts`, does not write the planner pipeline, effort, backend or l5 | [`agentDefsL1.md`](agentDefsL1.md) |
+| `agentDefsL2` (D2) | `mls-102020` | typed contracts plus shared and paired desktop/mobile frontend defs; no materialization | [`agentDefsL2.md`](agentDefsL2.md) |
 | runtime / publish | `mls-102033`, `mls-102034`, `mls-base/scripts` | the running app | [`runtimeEnvironment.md`](runtimeEnvironment.md) + [`publishGitBackend.md`](publishGitBackend.md) |
 
 Cross-cutting:
