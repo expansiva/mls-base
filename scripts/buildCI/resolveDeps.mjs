@@ -2,19 +2,24 @@
 //
 // ONLY downloads what's DECLARED in each project's manifest (decision #4),
 // in the first of these sources that exists:
-//   1. mlsDep.json -> workspaceDependencies   (new/preferred name; same
-//      format as config.json — decision #15 of taskNewBuildCI.md)
-//   2. config.json -> workspaceDependencies   (the `commit` field is IGNORED:
-//      we always download the latest main — decision #5 of taskNewBuildCI.md)
+//   1. l5/config.json -> workspaceDependencies   (the source of truth: the
+//      host resolves the agent through this file and nothing else — see
+//      scripts/runtime/projectInit.mjs)
+//   2. config.json -> workspaceDependencies   (root, legacy; the `commit`
+//      field is IGNORED: we always download the latest main — decision #5
+//      of taskNewBuildCI.md)
 //   3. package.json -> actionDependencies (if present, REPLACES dependencies —
 //      decision #28) or dependencies, filtered to "mls-\d+" with a git+https
 //      URL (fallback, decision #26 of taskNewBuildCI.md)
 //   4. packagelib.json -> same format as package.json (fallback)
 //
+// `mlsDep.json` is NOT a source: it was retired from the build in 09/2026.
+// It is not read, not warned about and not migrated.
+//
 // No fixed/implicit project is ever downloaded. After the closure is built,
 // the target's `/_<id>_/` imports and `/// <mls ... enhancement="_<id>_..."`
 // headers are VALIDATED: a reference outside the declared closure fails the
-// build (the fix is to declare the dependency in mlsDep.json).
+// build (the fix is to declare the dependency in l5/config.json).
 //
 // Clones whatever is missing at the mls-base root (git clone --depth 1,
 // default branch), skipping existing folders, and walks the clones'
@@ -65,7 +70,7 @@ function readGitDeps(depsObject, defaultRepo) {
 }
 
 // workspaceDependencies is either:
-//   - string[] of project ids (l5/config.json and mlsDep.json)
+//   - string[] of project ids (the l5/config.json form)
 //   - { [id]: { repo?, commit? } } (the original buildCI object form; `commit` is ignored)
 function depsFromWorkspaceDependencies(workspaceDependencies, defaultRepo) {
   const deps = new Map();
@@ -87,10 +92,10 @@ function depsFromWorkspaceDependencies(workspaceDependencies, defaultRepo) {
 }
 
 // deps declared in the project's manifest: Map<id, repoUrl>
-// Order: mlsDep.json (new/preferred) -> config.json -> package.json ->
-// packagelib.json (fallback, decision #26 of taskNewBuildCI.md)
+// Order: l5/config.json (the source of truth) -> config.json (root, legacy) ->
+// package.json -> packagelib.json (fallback, decision #26 of taskNewBuildCI.md)
 export async function readManifestDeps(projectDir, defaultRepo) {
-  for (const manifestName of ['mlsDep.json', 'config.json']) {
+  for (const manifestName of ['l5/config.json', 'config.json']) {
     const manifest = await readJsonIfExists(join(projectDir, manifestName));
     if (manifest?.workspaceDependencies) {
       return { deps: depsFromWorkspaceDependencies(manifest.workspaceDependencies, defaultRepo), source: manifestName };
@@ -381,7 +386,7 @@ export async function resolveDeps({ root, targetId, orgName, levels, log, armClo
   if (undeclared.length > 0) {
     throw new Error(
       undeclared
-        .map(([depId, rel]) => `undeclared dependency: ${depId} (imported by ${rel}) — declare it in mlsDep.json`)
+        .map(([depId, rel]) => `undeclared dependency: ${depId} (imported by ${rel}) — declare it in l5/config.json`)
         .join('\n'),
     );
   }
@@ -396,7 +401,7 @@ export async function resolveDeps({ root, targetId, orgName, levels, log, armClo
     // project (e.g. it only has package.json, no config.json at all).
     const manifestHint = targetManifestSource
       ? `mls-${targetId}'s ${targetManifestSource}`
-      : `mls-${targetId}'s mlsDep.json, config.json, package.json, or packagelib.json`;
+      : `mls-${targetId}'s l5/config.json, config.json, package.json, or packagelib.json`;
     throw new Error(
       `mls-${targetId}'s enhancement references project(s) outside the declared dependencies: ` +
       missing.map((d) => `mls-${d}`).join(', ') +

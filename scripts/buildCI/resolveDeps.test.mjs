@@ -41,10 +41,10 @@ function stubProject(root, id, files = {}) {
   return dir;
 }
 
-test('mlsDep.json wins over package.json actionDependencies', async () => {
+test('l5/config.json wins over package.json actionDependencies', async () => {
   await withRoot(async (root) => {
     const dir = stubProject(root, '109001', {
-      'mlsDep.json': JSON.stringify({ workspaceDependencies: ['102033', '102034'] }),
+      'l5/config.json': JSON.stringify({ workspaceDependencies: ['102033', '102034'] }),
       'package.json': JSON.stringify({
         actionDependencies: {
           'mls-102020': 'git+https://github.com/expansiva/mls-102020.git',
@@ -53,12 +53,12 @@ test('mlsDep.json wins over package.json actionDependencies', async () => {
       }),
     });
     const { deps, source } = await readManifestDeps(dir, defaultRepo);
-    assert.equal(source, 'mlsDep.json');
+    assert.equal(source, 'l5/config.json');
     assert.deepEqual([...deps.keys()].sort(), ['102033', '102034']);
   });
 });
 
-test('without mlsDep.json, root config.json array is used (traditional path)', async () => {
+test('without l5/config.json, root config.json array is used (traditional path)', async () => {
   await withRoot(async (root) => {
     const dir = stubProject(root, '109001', {
       'config.json': JSON.stringify({ workspaceDependencies: ['102020', '102029'] }),
@@ -72,10 +72,23 @@ test('without mlsDep.json, root config.json array is used (traditional path)', a
   });
 });
 
-test('resolveDeps logs manifest=mlsDep.json and does not clone existing folders', async () => {
+test('um mlsDep.json presente é IGNORADO — vence o l5/config.json', async () => {
+  await withRoot(async (root) => {
+    const dir = stubProject(root, '109001', {
+      'l5/config.json': JSON.stringify({ workspaceDependencies: ['102033', '102034'] }),
+      'mlsDep.json': JSON.stringify({ workspaceDependencies: ['102020'] }),
+    });
+    const { deps, source } = await readManifestDeps(dir, defaultRepo);
+    assert.equal(source, 'l5/config.json');
+    assert.deepEqual([...deps.keys()].sort(), ['102033', '102034']);
+    assert.ok(!deps.has('102020'), 'o mlsDep.json não pode entrar no fecho');
+  });
+});
+
+test('resolveDeps logs manifest=l5/config.json and does not clone existing folders', async () => {
   await withRoot(async (root) => {
     stubProject(root, '109001', {
-      'mlsDep.json': JSON.stringify({ workspaceDependencies: ['102033', '102034'] }),
+      'l5/config.json': JSON.stringify({ workspaceDependencies: ['102033', '102034'] }),
       'package.json': JSON.stringify({
         actionDependencies: { 'mls-102020': 'git+https://github.com/expansiva/mls-102020.git' },
       }),
@@ -91,7 +104,7 @@ test('resolveDeps logs manifest=mlsDep.json and does not clone existing folders'
       log: (stage, msg) => logs.push(`${stage}: ${msg}`),
     });
     const targetLog = logs.find((line) => line.includes('mls-109001: manifest='));
-    assert.match(targetLog, /manifest=mlsDep\.json/);
+    assert.match(targetLog, /manifest=l5\/config\.json/);
     assert.match(targetLog, /deps=.*102033/);
     assert.match(targetLog, /deps=.*102034/);
     assert.ok(!targetLog.includes('102020'), targetLog);
@@ -103,7 +116,7 @@ test('resolveDeps logs manifest=mlsDep.json and does not clone existing folders'
 test('import /_99999_/ outside the closure is one finding naming the file', async () => {
   await withRoot(async (root) => {
     stubProject(root, '109001', {
-      'mlsDep.json': JSON.stringify({ workspaceDependencies: ['102033'] }),
+      'l5/config.json': JSON.stringify({ workspaceDependencies: ['102033'] }),
       'l1/todo/createTicket.ts': "import { x } from '/_99999_/l1/server/foo.ts';\n",
     });
     stubProject(root, '102033');
@@ -116,7 +129,7 @@ test('import /_99999_/ outside the closure is one finding naming the file', asyn
         log: () => {},
       }),
       (error) => {
-        assert.match(error.message, /undeclared dependency: 99999 \(imported by l1\/todo\/createTicket\.ts\) — declare it in mlsDep\.json/);
+        assert.match(error.message, /undeclared dependency: 99999 \(imported by l1\/todo\/createTicket\.ts\) — declare it in l5\/config\.json/);
         assert.equal(error.message.split('\n').length, 1);
         return true;
       },
@@ -263,7 +276,7 @@ test('clone de dep faltante, armado, sai com origin e com receive do retrato', a
   await withRoot(async (root) => {
     const upstream = makeUpstream(root, 'upstream-109002');
     stubProject(root, '109001', {
-      'mlsDep.json': JSON.stringify({
+      'l5/config.json': JSON.stringify({
         workspaceDependencies: { 109002: { repo: upstream } },
       }),
     });
@@ -288,7 +301,7 @@ test('clone fora da VM conserva origin (não arma)', async () => {
   await withRoot(async (root) => {
     const upstream = makeUpstream(root, 'upstream-109002');
     stubProject(root, '109001', {
-      'mlsDep.json': JSON.stringify({
+      'l5/config.json': JSON.stringify({
         workspaceDependencies: { 109002: { repo: upstream } },
       }),
     });

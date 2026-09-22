@@ -21,20 +21,33 @@ import { join } from 'node:path';
 
 export const SNAPSHOT_REF = 'refs/heads/vm-snapshot';
 
+/** workspaceDependencies de um json, ou null quando o arquivo não serve. */
+function readWorkspaceDeps(path) {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    return Array.isArray(parsed?.workspaceDependencies) ? parsed.workspaceDependencies : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Ids de que o cliente depende, sem o próprio cliente, na ordem declarada.
- * A fonte é o mlsDep.json (o mesmo fecho que o host usa para carregar agentes).
+ *
+ * A fonte é o l5/config.json — a mesma lista que descreve o workspace do projeto.
+ * Era o mlsDep.json, que é o fecho que o HOST usa para carregar agentes: uma lista
+ * mais estreita, sem o studio (100554/100555). O efeito era um publish do cliente
+ * que nunca levava o studio, mesmo com ele declarado no l5/config.json — quem
+ * quisesse testar uma alteração lá tinha de publicar o projeto à mão.
+ *
+ * O mlsDep.json continua valendo como fallback: um projeto que só o tenha (ou cujo
+ * l5/config.json não declare o bloco) segue publicando como antes.
  */
 export function readDepIds(clientRepo, clientId) {
-  const path = join(clientRepo, 'mlsDep.json');
-  if (!existsSync(path)) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    return [];
-  }
-  const list = Array.isArray(parsed?.workspaceDependencies) ? parsed.workspaceDependencies : [];
+  const list = readWorkspaceDeps(join(clientRepo, 'l5', 'config.json'))
+    ?? readWorkspaceDeps(join(clientRepo, 'mlsDep.json'))
+    ?? [];
   return [...new Set(list.map(String).filter((id) => /^\d+$/u.test(id) && id !== String(clientId)))];
 }
 

@@ -47,13 +47,48 @@ function makeRepo(root, name, files) {
 test('readDepIds tira o próprio cliente e aceita só ids', () => {
   const root = mkdtempSync(join(tmpdir(), 'deps-'));
   try {
-    mkdirSync(join(root, 'mls-102043'), { recursive: true });
+    mkdirSync(join(root, 'mls-102043', 'l5'), { recursive: true });
     writeFileSync(
-      join(root, 'mls-102043', 'mlsDep.json'),
+      join(root, 'mls-102043', 'l5', 'config.json'),
       JSON.stringify({ workspaceDependencies: ['102020', '102043', '102029', 'lixo', '102020'] }),
     );
     assert.deepEqual(readDepIds(join(root, 'mls-102043'), '102043'), ['102020', '102029']);
     assert.deepEqual(readDepIds(join(root, 'nao-existe'), '102043'), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('readDepIds prefere o l5/config.json ao mlsDep.json', () => {
+  // O mlsDep.json é o fecho de agentes do host — mais estreito, sem o studio.
+  // Publicar o cliente tem de levar o workspace que o projeto declara.
+  const root = mkdtempSync(join(tmpdir(), 'deps-'));
+  try {
+    mkdirSync(join(root, 'mls-102050', 'l5'), { recursive: true });
+    writeFileSync(
+      join(root, 'mls-102050', 'mlsDep.json'),
+      JSON.stringify({ workspaceDependencies: ['102020'] }),
+    );
+    writeFileSync(
+      join(root, 'mls-102050', 'l5', 'config.json'),
+      JSON.stringify({ workspaceDependencies: ['102020', '100554', '100555'] }),
+    );
+    assert.deepEqual(readDepIds(join(root, 'mls-102050'), '102050'), ['102020', '100554', '100555']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('readDepIds cai no mlsDep.json quando o l5/config.json não declara o bloco', () => {
+  const root = mkdtempSync(join(tmpdir(), 'deps-'));
+  try {
+    mkdirSync(join(root, 'mls-102043', 'l5'), { recursive: true });
+    writeFileSync(join(root, 'mls-102043', 'l5', 'config.json'), JSON.stringify({ modules: [] }));
+    writeFileSync(
+      join(root, 'mls-102043', 'mlsDep.json'),
+      JSON.stringify({ workspaceDependencies: ['102029'] }),
+    );
+    assert.deepEqual(readDepIds(join(root, 'mls-102043'), '102043'), ['102029']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
