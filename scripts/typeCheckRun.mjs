@@ -95,8 +95,8 @@ function writeLayerTsconfig(root, projectId, layer) {
   ];
   if (layer === 'l1') include.push(`./mls-${projectId}/nodejs*/**/*.ts`);
   // Child `paths` override inherited ones, so the gate sees the machine's
-  // aliases without dirtying the versioned tsconfig.json. Do not set
-  // `baseUrl`: it is commented out in tsconfig.json, and paths resolve
+  // aliases without dirtying the versioned tsconfig base. Do not set
+  // `baseUrl`: it is commented out in tsconfig.base.json, and paths resolve
   // relative to this file, which lives at the repo root.
   const compilerOptions = { noEmit: true };
   const paths = compilerPathsFromRoot(root);

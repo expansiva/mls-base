@@ -40,7 +40,7 @@ import {
 } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addMissingTsconfigPaths, pathIdsOf } from '../syncTsconfigPaths.mjs';
+import { addMissingTsconfigPaths, pathIdsOf, versionedTsconfigPathsFile } from '../syncTsconfigPaths.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = resolve(SCRIPT_DIR, '..', '..');
@@ -174,16 +174,16 @@ export function missingShellTemplates(configText) {
 }
 
 /**
- * Register `/_<id>_/*` in the versioned tsconfig.json (the typeCheck gate
+ * Register `/_<id>_/*` in the versioned tsconfig base (the typeCheck gate
  * extends tsconfig.backend.json → this file). Reuses addMissingTsconfigPaths;
  * returns the tsconfig path (and why) when the id is still absent.
  */
 export function ensureProjectTsconfigPath(root, id) {
-  const file = join(root, 'tsconfig.json');
+  const file = versionedTsconfigPathsFile(root);
   try {
     const added = addMissingTsconfigPaths(root);
     if (added.length) {
-      log(`tsconfig.json paths: added ${added.map((item) => `"/_${item}_/*"`).join(', ')} — setup mapping, not an agent error`);
+      log(`tsconfig.base.json paths: added ${added.map((item) => `"/_${item}_/*"`).join(', ')} — setup mapping, not an agent error`);
     }
   } catch (error) {
     return `${file} (${error instanceof Error ? error.message : String(error)})`;

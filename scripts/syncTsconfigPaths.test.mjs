@@ -84,7 +84,7 @@ test('insertPathEntries acrescenta no fim, preserva labels, vírgula no anterior
 test('insertPathEntries recusa tsconfig sem bloco paths', () => {
   assert.throws(
     () => insertPathEntries('{ "compilerOptions": { "strict": true } }', ['102077']),
-    /Could not find a "paths" block in tsconfig\.json/,
+    /Could not find a "paths" block in the versioned tsconfig/,
   );
 });
 
@@ -126,7 +126,7 @@ test('cabeçalho: Mac escreve o versionado; o gate da VM lê o gerado', () => {
   assert.match(src, /vmTsconfigRel/);
   assert.match(src, /gitPostReceive refreshes tsconfig\.vm\.json/);
   assert.match(src, /does not call this writer/);
-  assert.match(src, /Mac writer of the versioned tsconfig\.json/);
+  assert.match(src, /Mac writer of the versioned tsconfig\.base\.json/);
   assert.match(src, /git pull --ff-only/);
 });
 

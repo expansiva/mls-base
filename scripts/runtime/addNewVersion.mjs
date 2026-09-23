@@ -4,7 +4,7 @@
 // only syncs sources, then runs `pnpm build` on the VM — which compiles AND deploys.
 // Steps:
 //   1. Write tsconfig.vm.json "paths" as the union of mls-* on disk, aliases
-//      already in tsconfig.vm.json, and aliases in the versioned tsconfig.json.
+//      already in tsconfig.vm.json, and aliases in the versioned tsconfig base.
 //      The generated file never shrinks. The versioned file is never modified (gb63).
 //   2. pnpm install (deps only; the dev-only clone lives in "install:dev").
 //   3. pnpm migrate for every project that declares a "migrate" script.
@@ -22,7 +22,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pathIdsOf } from '../syncTsconfigPaths.mjs';
+import { pathIdsOf, versionedTsconfigPathsFile } from '../syncTsconfigPaths.mjs';
 import { collectReleaseStamp, writeReleaseStamp } from './releaseStamp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -51,14 +51,15 @@ const runWithRetry = (cmd, cwd = ROOT, attempts = 3, delayMs = 3000) => {
   }
 };
 
-// Unversioned tsconfig the VM compile uses. Written from tsconfig.json with
+// Unversioned tsconfig the VM compile uses. It extends tsconfig.json and overrides
 // paths = disk ∪ existing vm ∪ versioned, so a VM that still has one mls-*
 // folder does not drop the platform aliases. Never write this back over the
-// versioned tsconfig.json.
+// versioned tsconfig.base.json.
 export const VM_TSCONFIG = 'tsconfig.vm.json';
 
 export function vmTsconfigRel(root) {
-  return existsSync(join(root, VM_TSCONFIG)) ? `./${VM_TSCONFIG}` : './tsconfig.json';
+  if (existsSync(join(root, VM_TSCONFIG))) return `./${VM_TSCONFIG}`;
+  return existsSync(join(root, 'tsconfig.base.json')) ? './tsconfig.base.json' : './tsconfig.json';
 }
 
 // Directories named exactly mls-<digits> (skip "-temp" and other variants).
@@ -75,26 +76,26 @@ function aliasIdsFromFile(file) {
   return pathIdsOf(readFileSync(file, 'utf8'));
 }
 
-/** Union of caller ids, versioned tsconfig.json, and existing tsconfig.vm.json. Never shrinks. */
+/** Union of caller ids, versioned base, and existing tsconfig.vm.json. Never shrinks. */
 function unionAliasIds(root, ids) {
   const merged = new Set((ids ?? []).map(String));
-  for (const id of aliasIdsFromFile(join(root, 'tsconfig.json'))) merged.add(id);
+  for (const id of aliasIdsFromFile(versionedTsconfigPathsFile(root))) merged.add(id);
   for (const id of aliasIdsFromFile(join(root, VM_TSCONFIG))) merged.add(id);
   return [...merged].sort();
 }
 
 // Rebuild the "paths" object as the union of `ids`, aliases already in
-// tsconfig.vm.json, and aliases in the versioned tsconfig.json. Preserves
+// tsconfig.vm.json, and aliases in the versioned base. Preserves
 // "// label" comments. Writes tsconfig.vm.json; never touches the versioned file.
 export function updateTsconfigPaths(root, ids) {
-  const source = join(root, 'tsconfig.json');
+  const source = versionedTsconfigPathsFile(root);
   const dest = join(root, VM_TSCONFIG);
   const text = readFileSync(source, 'utf8');
 
   // The paths object contains only string arrays, so there is no nested "}" —
   // a simple match up to the first "}" is safe.
   if (!/"paths"\s*:\s*\{[^}]*\}/.test(text)) {
-    throw new Error('Could not find a "paths" block in tsconfig.json');
+    throw new Error('Could not find a "paths" block in the versioned tsconfig');
   }
 
   const merged = unionAliasIds(root, ids);
@@ -111,9 +112,10 @@ export function updateTsconfigPaths(root, ids) {
     const label = labels[id] ? ` // ${labels[id]}` : '';
     return `${indent}"/_${id}_/*": ["./mls-${id}/*"]${comma}${label}`;
   });
-  const block = `"paths": {\n${entries.join('\n')}\n        }`;
+  const block = `        "paths": {\n${entries.join('\n')}\n        }`;
+  const vmText = `{\n    "extends": "./tsconfig.json",\n    "compilerOptions": {\n${block}\n    }\n}\n`;
 
-  writeFileSync(dest, text.replace(/"paths"\s*:\s*\{[^}]*\}/, () => block));
+  writeFileSync(dest, vmText);
   return merged;
 }
 

@@ -283,7 +283,7 @@ test('updateTsconfigPaths recusa tsconfig sem bloco paths', () => {
     writeFileSync(join(root, 'tsconfig.json'), '{ "compilerOptions": { "strict": true } }\n');
     assert.throws(
       () => updateTsconfigPaths(root, ['102043']),
-      /Could not find a "paths" block in tsconfig\.json/,
+      /Could not find a "paths" block in the versioned tsconfig/,
     );
     assert.equal(existsSync(join(root, VM_TSCONFIG)), false);
   } finally {

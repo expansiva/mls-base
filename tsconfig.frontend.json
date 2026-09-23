@@ -1,5 +1,5 @@
 {
-    "extends": "./tsconfig.json",
+    "extends": "./tsconfig.base.json",
     "compilerOptions": {
         "module": "esnext",
         "outDir": "./distFrontend",
@@ -17,6 +17,7 @@
         "**/*.spec.ts",
         "**/*.test.ts",
         "**/nodejs*",
+        "**/l2/certificacao/**/*",
         "./mls-102030/**/*",
         "./mls-102049-Old/**/*"
     ]

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Workspace tsconfig.json "paths" must list every mls-<id> that has
+// Workspace tsconfig.base.json "paths" must list every mls-<id> that has
 // l5/config.json. A missing entry makes every `/_<id>_/` import a TS2307
 // that looks like an agent generation error. This is a setup problem.
 //
 // Mac (publishGit, projectInit): this script writes the versioned
-// tsconfig.json. There the repo is the source and the entry is committed
+// tsconfig.base.json. There the repo is the source and the entry is committed
 // with the project.
 //
 // VM compile (addNewVersion) writes tsconfig.vm.json from the projects on
@@ -25,6 +25,11 @@ import { fileURLToPath } from 'node:url';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PATHS_BLOCK = /"paths"\s*:\s*\{[^}]*\}/;
+
+export function versionedTsconfigPathsFile(root) {
+  const base = join(root, 'tsconfig.base.json');
+  return existsSync(base) ? base : join(root, 'tsconfig.json');
+}
 
 export function pathIdsOf(text) {
   return [...String(text).matchAll(/"\/_(\d+)_\/\*"/g)].map((m) => m[1]);
@@ -51,7 +56,7 @@ export function discoverConfiguredProjectIds(root) {
 }
 
 export function missingTsconfigPathIds(root) {
-  const text = readFileSync(join(root, 'tsconfig.json'), 'utf8');
+  const text = readFileSync(versionedTsconfigPathsFile(root), 'utf8');
   const have = new Set(pathIdsOf(text));
   return discoverConfiguredProjectIds(root).filter((id) => !have.has(id));
 }
@@ -59,7 +64,7 @@ export function missingTsconfigPathIds(root) {
 export function formatMissingTsconfigPathsMessage(ids) {
   const list = ids.map((id) => `mls-${id} (l5/config.json) → "/_${id}_/*": ["./mls-${id}/*"]`).join('\n  ');
   return [
-    'tsconfig.json paths is missing a project that exists on disk.',
+    'tsconfig.base.json paths is missing a project that exists on disk.',
     'This is a setup error, not an agent error. Imports `/_<id>_/*` resolve',
     'through compilerOptions.paths; without a mapping, tsc reports TS2307',
     "on the project's own files and the agent looks broken.",
@@ -70,7 +75,7 @@ export function formatMissingTsconfigPathsMessage(ids) {
 
 export function insertPathEntries(text, idsToAdd) {
   if (!PATHS_BLOCK.test(text)) {
-    throw new Error('Could not find a "paths" block in tsconfig.json');
+    throw new Error('Could not find a "paths" block in the versioned tsconfig');
   }
   if (!idsToAdd.length) return text;
   const labels = pathLabelsOf(text);
@@ -91,7 +96,7 @@ export function insertPathEntries(text, idsToAdd) {
 /**
  * Append missing `/_<id>_/*` entries. Does not remove paths whose folder is gone.
  *
- * Mac writer of the versioned tsconfig.json: there the repo is the source and
+ * Mac writer of the versioned tsconfig.base.json: there the repo is the source and
  * the entry is committed with the project. The VM hook must not call this —
  * the VM is a checkout that has to stay clean for `git pull --ff-only`
  * (Atualizar plataforma).
@@ -99,7 +104,7 @@ export function insertPathEntries(text, idsToAdd) {
 export function addMissingTsconfigPaths(root) {
   const missing = missingTsconfigPathIds(root);
   if (missing.length === 0) return [];
-  const file = join(root, 'tsconfig.json');
+  const file = versionedTsconfigPathsFile(root);
   writeFileSync(file, insertPathEntries(readFileSync(file, 'utf8'), missing));
   return missing;
 }
@@ -140,7 +145,7 @@ if (invokedAsMain()) {
   const added = addMissingTsconfigPaths(root);
   if (added.length) {
     process.stderr.write(
-      `tsconfig.json paths: added ${added.map((id) => `"/_${id}_/*"`).join(', ')} — setup mapping, not an agent error.\n`,
+      `tsconfig.base.json paths: added ${added.map((id) => `"/_${id}_/*"`).join(', ')} — setup mapping, not an agent error.\n`,
     );
   }
 }

@@ -1053,7 +1053,7 @@ export function noteTsconfigPaths(root, write = (text) => process.stderr.write(t
   const added = addMissingTsconfigPaths(root);
   if (added.length) {
     write(
-      `[publishGit] tsconfig.json paths: added ${added.map((id) => `"/_${id}_/*"`).join(', ')}` +
+      `[publishGit] tsconfig.base.json paths: added ${added.map((id) => `"/_${id}_/*"`).join(', ')}` +
         ' — setup mapping, not an agent error.\n',
     );
   }
