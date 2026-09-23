@@ -40,7 +40,7 @@ The report separates three facts:
 
 - defs complete, incomplete, or not run
 - future `.ts` outputs pending materialization (absence is expected)
-- contract and business gaps (`CONTRACT_ABSENT`, `PAYLOAD_UNDECLARED`, `INTEGRATION_UNBOUND`, an enum with no consumer)
+- contract and business gaps (`CONTRACT_ABSENT`, `PAYLOAD_UNDECLARED`, `INTEGRATION_UNBOUND`, `MECHANISM_INCOMPATIBLE`, an enum with no consumer)
 
 `executableBackend` is false. A round-trip through `readL1Inventory` recovers ids, routes,
 ports and tables. That recognition is not a runnable backend.
