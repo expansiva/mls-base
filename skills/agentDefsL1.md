@@ -40,7 +40,9 @@ The report separates three facts:
 
 - defs complete, incomplete, or not run
 - future `.ts` outputs pending materialization (absence is expected)
-- contract and business gaps (`CONTRACT_ABSENT`, `PAYLOAD_UNDECLARED`, `INTEGRATION_UNBOUND`, `MECHANISM_INCOMPATIBLE`, an enum with no consumer)
+- contract and business gaps (`CONTRACT_ABSENT`, `PAYLOAD_UNDECLARED`, `INTEGRATION_UNBOUND`, `MECHANISM_INCOMPATIBLE`, an enum whose covered analysis found no consumer)
+
+An enumeration row separates catalog owner, writer (`derived` wins over `platform`) and restriction (`inherited`, `subset`, `own`, `invalid`, `unresolved`). `consumed` means a seed scenario, route contract or domain/usecase def named that entity and path. A TypeScript union is not runtime enforcement. A platform owner does not remove a local restriction. `ENUMERATIONS_NOT_CONSUMED` is not used for a field that has a covered consumer. Schema `2026-09-23-d1-report-v2`.
 
 `executableBackend` is false. A round-trip through `readL1Inventory` recovers ids, routes,
 ports and tables. That recognition is not a runnable backend.
