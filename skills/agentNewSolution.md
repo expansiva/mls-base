@@ -49,7 +49,7 @@ profile. E2 drops an inferred external actor without exclusive steps (`dropInfer
 profile has no workspace. **A confirmation is not a decision.**
 Confirming a form, validating captured data or applying a system rule is an `act` with `useRules`;
 a `decide` step exists only when the request names a human choice between alternative outcomes.
-The record-owner handle is `party: person` + E3 `dataScope.mode: own`, never a field name.
+The record-owner handle is `party: person` + E3 `dataScope.mode: own`, never a field name. NS5 access (ns5_69): `actors[].personEntity` is additive on `2026-09-12-ns5-access-v3` — the role entity that actor is (`''` if none); `own`/`assigned` anchor on it.
 
 **7. `mutability: appendOnly` ⇒ no update/delete.** E4 may declare `mutability: 'editable' |
 'appendOnly'` on an entity; E8 then emits no catalogue `update`/`delete`/`inactivate`/`reactivate`
