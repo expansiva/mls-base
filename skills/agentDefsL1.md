@@ -1,6 +1,7 @@
 # agentDefsL1 — generate L1 definitions
 
-Developer documentation for `mls-102021/l2/agentDefsL1/`, verified on 22/09/2026.
+Developer documentation for `mls-102021/l2/agentDefsL1/`. The call report below
+was verified on 22/09/2026. The definition export was aligned to v2 on 25/09/2026.
 This is not a prompt skill and changing it has no runtime effect. The text injected
 into a later materializer lives under `agentDefsL1/skills/`.
 
@@ -13,6 +14,36 @@ not dispatch `agentCbMaterialize`, `agentChangeBackend` or `agentChangeFrontend`
 
 Invoke it as `@@agentDefsL1 <lowerCamel> /run`. `/resume` continues an intact checkpoint
 and does not rewrite it. `/help` writes nothing.
+
+## Definition export (v2)
+
+Each `.defs.ts` exports one value, `definition`, and may default-export that
+same object. Schema `2026-09-24-d1-definition-v2`. Fields: `artifactType`,
+`artifactId`, `moduleName`, `status`, `dependencies`, `data`. There is no
+`export const pipeline` and no `agent`.
+
+`status` is `pending`, `generated`, `blocked` or `failed`. The model does not
+choose it. A new def is `pending`. A concrete external gap is `blocked`, and
+the reason is on the materialization receipt next to the def, not inside the
+hash. `generated` is only a later materializer status, and only with a receipt
+whose semantic hash, dependency hashes, outputs and verifications still match.
+Status and timestamps are outside the semantic hash, so a status edit is not a
+new source and does not regenerate the file.
+
+`dependencies` are the files the def actually consumes, qualified as
+`_NNNNN_/lN/...`, sorted and unique: L2 contracts, rules, ontology, access and
+platform sources. Skills and future output paths are materializer conventions.
+They are not written into the def. Business references stay in `data`.
+
+The internal checkpoint `l1/<module>/pipeline/agentDefsL1/` stays, including
+its own `pipeline.json`. Removing the pipeline export does not remove rules,
+access, MDM bindings or runtime contracts from `data`. A v1 file is refused
+on read. It is not converted in place and the module is not deleted to force
+another run.
+
+The agendaClinica bench on disk stays at the previous export until the client
+regeneration. An isolated replay reads those sources and writes defs only in
+the test host.
 
 `entry10 → input20 → domain30 → persistence40 → usecases50 → controllers60 → support70 → finalize80`
 
@@ -54,13 +85,14 @@ An error keeps `pipeline.status` at `awaitingStep`, names `finalize80`, and stor
 
 ## Certification
 
-From `mls-base/` run:
+From `mls-base/` run the project checker and the project tests. The monorepo
+`tsc` is not the gate.
 
 ```sh
-npx tsc --noEmit
 node scripts/run-tests.mjs 102021 l2
+node --input-type=module -e 'import {typeCheckProject} from "./scripts/typeCheckRun.mjs"; const r=typeCheckProject({root:process.cwd(),projectId:"102021"}); console.log(r.marker); console.log(r.excerpt.join("\n")); process.exit(r.verdict.fatal || r.verdict.type || r.verdict.blocking ? 1 : 0);'
 ```
 
 Compare normalized diagnostics and named test failures, not only the exit code.
-A live `/run` on this bench stops at `input20` while L2 contracts are absent. That stop
-is `CONTRACT_ABSENT`, not a completed defs run.
+A live `/run` on the client bench is a separate regeneration. It is not required
+to prove the v2 export, and it does not turn defs into an executable backend.
