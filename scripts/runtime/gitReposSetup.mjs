@@ -15,6 +15,15 @@
 // It is NOT run by the build — a snapshot the developer just pushed would be
 // wiped. Who fires it (button / schedule, N VMs) is collab-sites / gb62.
 //
+// A CLIENT PROJECT has no `origin`: its copy here is the one the developer pushes
+// with `publish:remote`, so cloning it from GitHub would overwrite exactly that.
+// `vmGitOrigin` in the project's own `l5/config.json` inverts this FOR THAT PROJECT:
+// the remote is added on demand and the project is reset from GitHub like a lib.
+// The trade is deliberate and belongs to whoever sets it — the last writer wins, so
+// a release run after a GitHub push replaces what was published from a workstation,
+// and a `publish:remote` after that replaces it back. Opened in 25/09/2026 for a
+// project whose team pushes to GitHub but cannot publish.
+//
 // Usage (on the VM):
 //   node scripts/runtime/gitReposSetup.mjs
 //   node scripts/runtime/gitReposSetup.mjs --root /data/mls-base
@@ -423,9 +432,41 @@ function originDefaultBranch(dir) {
  *
  * Não é chamado pelo build. Gatilho: collab-sites / gb62.
  */
+/**
+ * O `vmGitOrigin` que o PROPRIO projeto declara em `l5/config.json`, ou ''.
+ *
+ * Projeto cliente nasce sem `origin` de proposito: a copia da VM e' mantida pelo push do
+ * `publish:remote`, e clonar do GitHub passaria por cima dela. Declarar o campo e' a inversao
+ * EXPLICITA disso, por projeto: "para este, quem manda e' o GitHub".
+ *
+ * O campo carrega a URL em vez de ser um booleano porque a organizacao nao esta' em lugar nenhum
+ * que este script possa ler sem adivinhar, e derivar de um repo irmao amarraria um projeto ao
+ * dono de outro.
+ *
+ * A validacao existe para nao transformar string solta em remote, nao para restringir transporte:
+ * `https://` e' o valor real em producao e `file://` mantem o comportamento exercitavel em teste
+ * sem rede. Qualquer outra coisa e' tratada como ausente — recusa igual a de antes, sem remote.
+ */
+const GIT_ORIGIN_URL = /^(?:https?|file):\/\/\S+$/u;
+
+function declaredGitOrigin(dir) {
+  try {
+    const raw = readFileSync(join(dir, 'l5', 'config.json'), 'utf8');
+    const value = JSON.parse(raw)?.vmGitOrigin;
+    return typeof value === 'string' && GIT_ORIGIN_URL.test(value.trim()) ? value.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
 export function resetFromOrigin(dir) {
   if (!isRepo(dir)) return { status: 'skipped-not-a-repo' };
-  if (!remotes(dir).includes('origin')) return { status: 'skipped-no-origin' };
+  if (!remotes(dir).includes('origin')) {
+    // Opt-in do projeto: sem `vmGitOrigin` o comportamento e' o de sempre (pular).
+    const declared = declaredGitOrigin(dir);
+    if (!declared) return { status: 'skipped-no-origin' };
+    gitOrThrow(dir, ['remote', 'add', 'origin', declared]);
+  }
   if (!branchExists(dir, 'vm-baseline')) return { status: 'skipped-no-vm-baseline' };
 
   gitOrThrow(dir, ['fetch', 'origin']);
