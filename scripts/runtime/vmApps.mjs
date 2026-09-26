@@ -25,7 +25,49 @@ import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 export const APPS_DIR = 'pm2.apps.d';
 export const PM2_CONFIG = 'pm2.config.js';
 
-function envBlock(projectId, port, msgProxyTarget) {
+/** Banco de teste já existente na VM. Não é credencial nova — user/senha/host vêm do `.env`. */
+export const TEST_DATABASE_NAME = 'collab_test';
+
+const TEST_APP_ENVS = new Set(['development', 'presentation']);
+
+/**
+ * Expressão (sem segredo) que o pm2 avalia ao carregar o config: lê o `.env` da VM
+ * e monta `postgres://…@host:port/collab_test`. Valor não fica no arquivo.
+ */
+export function databaseUrlTestExpr(remoteBase) {
+  const envPath = JSON.stringify(`${String(remoteBase).replace(/\/+$/u, '')}/.env`);
+  return `(function () {
+    const text = require('node:fs').readFileSync(${envPath}, 'utf8');
+    const env = {};
+    for (const line of text.split('\\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq < 1) continue;
+      env[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
+    }
+    const user = env.PGUSER;
+    const password = env.PGPASSWORD;
+    if (!user || password == null || password === '') return '';
+    const host = env.PGHOST || '127.0.0.1';
+    const port = env.PGPORT || '5432';
+    return 'postgres://' + encodeURIComponent(user) + ':' + encodeURIComponent(password) + '@' + host + ':' + port + '/${TEST_DATABASE_NAME}';
+  })()`;
+}
+
+/** `l5/project.json` declarou modo de teste? Ausente não conta — o legado continua. */
+export function declaredTestMode(root, projectId) {
+  const path = join(root, `mls-${projectId}`, 'l5', 'project.json');
+  if (!existsSync(path)) return false;
+  try {
+    const appEnv = JSON.parse(readFileSync(path, 'utf8')).appEnv;
+    return TEST_APP_ENVS.has(appEnv);
+  } catch {
+    return false;
+  }
+}
+
+function envBlock(projectId, port, msgProxyTarget, databaseUrlTestExprText) {
   const lines = [
     "    NODE_ENV: 'production',",
     "    TZ: 'UTC',",
@@ -36,11 +78,15 @@ function envBlock(projectId, port, msgProxyTarget) {
     lines[lines.length - 1] += ",";
     lines.push(`    MSG_PROXY_TARGET: ${JSON.stringify(String(msgProxyTarget))}`);
   }
+  if (databaseUrlTestExprText) {
+    lines[lines.length - 1] += ",";
+    lines.push(`    DATABASE_URL_TEST: ${databaseUrlTestExprText}`);
+  }
   return lines.join("\n");
 }
 
 /** Conteúdo de pm2.apps.d/app<porta>.config.js. */
-export function pm2AppConfig(projectId, port, remoteBase, msgProxyTarget) {
+export function pm2AppConfig(projectId, port, remoteBase, msgProxyTarget, databaseUrlTest = false) {
   const appName = appNameOf(port);
   return `module.exports = {
   name: ${JSON.stringify(appName)},
@@ -51,7 +97,7 @@ export function pm2AppConfig(projectId, port, remoteBase, msgProxyTarget) {
   watch: false,
   kill_timeout: 180000,
   env: {
-${envBlock(projectId, port, msgProxyTarget)}
+${envBlock(projectId, port, msgProxyTarget, databaseUrlTest ? databaseUrlTestExpr(remoteBase) : '')}
   },
   log_date_format: 'YYYY-MM-DDTHH:mm:ss',
   out_file: ${JSON.stringify(`${remoteBase}/logs/${appName}-out.log`)},
@@ -106,7 +152,7 @@ export function ensureProjectApp({ root, projectId, remoteBase = root, msgProxyT
   const target = msgProxyTarget === undefined
     ? msgProxyTargetFromPm2Config(existingText)
     : msgProxyTarget;
-  const appText = pm2AppConfig(projectId, port, remoteBase, target);
+  const appText = pm2AppConfig(projectId, port, remoteBase, target, declaredTestMode(root, projectId));
   let wrote = false;
   if (!existsSync(appPath) || readFileSync(appPath, 'utf8') !== appText) {
     writeFileSync(appPath, appText);
