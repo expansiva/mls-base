@@ -26,7 +26,6 @@
         "typecheck:all": "tsc -p tsconfig.json --noEmit",
         "processCss": "node scripts/processCssAfterCompile.mjs --dist dist",
         "compile:local": "tsc && node scripts/processCssAfterCompile.mjs --dist dist",
-        "materializeL1": "tsx mls-102021/l1/cbMaterializeCli/nodejsMaterializeL1.ts 102048 cafeFlow --check --force",
         "materializeL2": "tsx mls-102020/l2/agentChangeFrontend/nodejsMaterializeL2.ts -- 102045 buildFlowFsm",
         "materializeL2:page": "tsx mls-102020/l2/agentChangeFrontend/nodejsMaterializeL2.ts 102045 buildFlowFsm --force --only",
         "migrate": "node scripts/runMigrate.mjs",

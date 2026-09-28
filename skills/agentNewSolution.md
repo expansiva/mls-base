@@ -1,3 +1,10 @@
+# HISTÓRICO — agente apagado em 27/09 (p4_15)
+
+`agentNewSolution` (NS4) foi apagado: `mls-102035/l2/agentNewSolution` não existe mais. O que ainda
+era usado moveu para `mls-102035/l2/solution/helpers/` (ex.: `ns4Types.ts`). O agente vivo que produz
+`l4` é `agentNewSolution5` (skill `agentNewSolution5.md`). O resto deste arquivo descreve o NS4 como
+existia antes e serve só de referência histórica.
+
 # Skill: agentNewSolution (NS) — producing `l4` and `l5`
 
 Cross-cutting notes for anyone touching the NS (`mls-102035/l2/agentNewSolution`) or consuming what

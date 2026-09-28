@@ -1,3 +1,12 @@
+# HISTÓRICO — agente apagado em 27/09 (p4_15)
+
+`agentChangeBackend` (CB) foi apagado: `mls-102021/l2/agentChangeBackend` não existe mais. O que
+ainda era usado moveu: `defsSource.ts` (ex-`cbDefsSource.ts`) e `OwnerStatus` para
+`mls-102021/l2/agentPlannerL1/helpers/`; o composer de publish (`nodejsSaveConfigJson.ts` +
+`cbReconcileBackendConfig.ts`) ficou onde estava, ainda lido por `scripts/build.mjs`. Agentes vivos
+do lado L1: `agentPlannerL1` e `agentDefsL1`. O resto deste arquivo descreve o CB como existia antes
+e serve só de referência histórica.
+
 # Skill: agentChangeBackend (CB) — generating `l1` from `l4`
 
 What you must know before changing the CB (`mls-102021/l2/agentChangeBackend`). Read

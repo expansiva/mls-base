@@ -17,10 +17,10 @@ generated app. Never edit one to "improve the docs".
 
 | agent | project | writes | skill |
 |---|---|---|---|
-| `agentNewSolution` (NS) | `mls-102035` | `l4` (product contracts) + `l5` (delivery contracts) | [`agentNewSolution.md`](agentNewSolution.md) |
+| `agentNewSolution` (NS) — **deleted, p4_15, 27/09** | `mls-102035` | historic; superseded by `agentNewSolution5` below | [`agentNewSolution.md`](agentNewSolution.md) (historic) |
 | `agentNewSolution5` (NS5) | `mls-102035` | `l4` sources only (no derived copies); never dispatches CB/CF | [`agentNewSolution5.md`](agentNewSolution5.md) |
 | `agentPlannerL4` | `mls-102035` | lists l4 artifacts and writes `pool/l1`+`pool/l2`; dispatch to other planners is suspended (p4_06); no LLM | [`agentPlannerL4.md`](agentPlannerL4.md) |
-| `agentChangeBackend` (CB) | `mls-102021` | `l1` (backend) | [`agentChangeBackend.md`](agentChangeBackend.md) |
+| `agentChangeBackend` (CB) — **deleted, p4_15, 27/09** | `mls-102021` | historic; the used parts (`defsSource.ts`, `OwnerStatus`) moved into `agentPlannerL1`; the publish composer (`nodejsSaveConfigJson.ts`) stayed put | [`agentChangeBackend.md`](agentChangeBackend.md) (historic) |
 | `agentChangeFrontend` (CF) | `mls-102020` | `l2` (frontend) | [`agentChangeFrontend.md`](agentChangeFrontend.md) |
 | `agentPlannerL2` (P2) | `mls-102020` | `l4/<mod>/pool/l2/<device>/menu.json` menu v2.2 (tree of hubs/pages/organisms including inbox/alerts, authorities by actor, `meta.journeys` + `meta.processes` + `meta.removed`, `action` per node) from a complete l4 and `pool/l2` (does not delete the pool or write `pool/l1` during the marco; device today is `web`) | this index; code in `mls-102020/l2/agentPlannerL2` (`entry10` + `menu20`; `workspaces20`/`contracts30`/`shared40`/`requests50` parked as of 18/09/2026) |
 | `agentPlannerL1` (P1) | `mls-102021` | `l1/<mod>/pipeline/pipeline.json` from a complete l4, `pool/l1` (`needs.json` from l2) and the existing l1 inventory; `plan20` writes `pool/l2/web/backend.json` (does not delete the pool or write l1 `.defs.ts`/`.ts`) | this index; code in `mls-102021/l2/agentPlannerL1` (`entry10` + `plan20`) |
@@ -70,11 +70,12 @@ Cross-cutting:
    `createAgent()` graph — see the am1–am8 wave.
 6. **No `todo/` paths in committed code.** `todo/` is disposable and gitignored; code keeps the
    motivation, never the pointer. Guard: `mls-102020/l2/aura/molecules/shared/localDocRefs.test.ts`.
-7. **The l4 is the only source of business meaning. CB and CF transcribe; they do not infer.**
-   An inference by name (suffix `Id`, substring, vocabulary) in the CB or the CF is a defect with
+7. **The l4 is the only source of business meaning. CF transcribes; it does not infer.**
+   An inference by name (suffix `Id`, substring, vocabulary) in the CF is a defect with
    two possible owners: the l4 did not declare it, or it declared it and the consumer did not read
-   it. Never fixed by improving the heuristic. Guard: `cbInferenceRatchet.test.ts` /
-   `cfeInferenceRatchet.test.ts` (n05, 2026-09-08).
+   it. Never fixed by improving the heuristic. Guard: `cfeInferenceRatchet.test.ts`
+   (n05, 2026-09-08). CB had the same guard (`cbInferenceRatchet.test.ts`) before it was deleted
+   (p4_15, 27/09); the l1 side of the rule now lives with `agentDefsL1`/`agentPlannerL1`.
 
 *Written 31/08/2026; rule 5 (multi-host) added 01/09/2026; rule 7 (l4 is meaning) added 08/09/2026.*
 
