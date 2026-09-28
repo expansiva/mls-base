@@ -219,3 +219,72 @@ test('resetArmedDepsFromOrigin só mexe em quem tem origin e vm-baseline', () =>
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * Projeto cliente nasce sem `origin` e por isso e' pulado — a copia da VM e' a que o
+ * `publish:remote` empurra. `vmGitOrigin` no `l5/config.json` DELE inverte isso, so' para ele.
+ * Aberto em 25/09/2026: o time empurra para o GitHub mas nao consegue publicar.
+ */
+function upstreamPath(root) {
+  return join(root, 'upstream');
+}
+
+function makeClientRepoNoOrigin(root, { vmGitOrigin } = {}) {
+  const upstream = join(root, 'upstream');
+  mkdirSync(upstream, { recursive: true });
+  git(upstream, 'init', '-q', '-b', 'main');
+  writeFileSync(join(upstream, 'readme.md'), 'github\n');
+  git(upstream, 'add', '-A');
+  git(upstream, 'commit', '-q', '-m', 'init');
+
+  const dest = join(root, 'mls-102047');
+  mkdirSync(join(dest, 'l5'), { recursive: true });
+  git(dest, 'init', '-q', '-b', 'main');
+  writeFileSync(join(dest, 'readme.md'), 'empurrado da estacao\n');
+  const config = vmGitOrigin ? { vmGitOrigin } : {};
+  writeFileSync(join(dest, 'l5', 'config.json'), `${JSON.stringify(config, null, 2)}\n`);
+  git(dest, 'add', '-A');
+  git(dest, 'commit', '-q', '-m', 'retrato do publish');
+  git(dest, 'branch', 'vm-baseline', git(dest, 'rev-parse', 'HEAD'));
+  return { dest, upstream };
+}
+
+test('sem vmGitOrigin o projeto cliente continua intocado (comportamento de hoje)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-client-optout-'));
+  try {
+    const { dest } = makeClientRepoNoOrigin(root);
+    const result = resetFromOrigin(dest);
+    assert.equal(result.status, 'skipped-no-origin');
+    assert.equal(readFileSync(join(dest, 'readme.md'), 'utf8'), 'empurrado da estacao\n');
+    assert.equal(git(dest, 'remote'), '', 'nao inventa remote para quem nao pediu');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('com vmGitOrigin o projeto cliente ganha o remote e e resetado do GitHub', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-client-optin-'));
+  try {
+    const { dest, upstream } = makeClientRepoNoOrigin(root, { vmGitOrigin: `file://${upstreamPath(root)}` });
+    const result = resetFromOrigin(dest);
+    assert.equal(result.status, 'reset', result.status);
+    assert.equal(result.head, result.originHead);
+    // O conteudo do GitHub substitui o que estava na VM: e' o "quem executar por ultimo ganha".
+    assert.equal(readFileSync(join(dest, 'readme.md'), 'utf8'), 'github\n');
+    assert.equal(git(dest, 'remote', 'get-url', 'origin'), `file://${upstream}`);
+    assert.equal(git(dest, 'log', '--merges', '--oneline'), '', 'substitui, não mescla');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('vmGitOrigin invalido nao vira remote — recusa como antes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-client-bad-'));
+  try {
+    const { dest } = makeClientRepoNoOrigin(root, { vmGitOrigin: 'nao-e-url' });
+    assert.equal(resetFromOrigin(dest).status, 'skipped-no-origin');
+    assert.equal(git(dest, 'remote'), '');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

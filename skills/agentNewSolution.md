@@ -1,3 +1,10 @@
+# HISTÓRICO — agente apagado em 27/09 (p4_15)
+
+`agentNewSolution` (NS4) foi apagado: `mls-102035/l2/agentNewSolution` não existe mais. O que ainda
+era usado moveu para `mls-102035/l2/solution/helpers/` (ex.: `ns4Types.ts`). O agente vivo que produz
+`l4` é `agentNewSolution5` (skill `agentNewSolution5.md`). O resto deste arquivo descreve o NS4 como
+existia antes e serve só de referência histórica.
+
 # Skill: agentNewSolution (NS) — producing `l4` and `l5`
 
 Cross-cutting notes for anyone touching the NS (`mls-102035/l2/agentNewSolution`) or consuming what
@@ -49,7 +56,7 @@ profile. E2 drops an inferred external actor without exclusive steps (`dropInfer
 profile has no workspace. **A confirmation is not a decision.**
 Confirming a form, validating captured data or applying a system rule is an `act` with `useRules`;
 a `decide` step exists only when the request names a human choice between alternative outcomes.
-The record-owner handle is `party: person` + E3 `dataScope.mode: own`, never a field name.
+The record-owner handle is `party: person` + E3 `dataScope.mode: own`, never a field name. NS5 access (ns5_69): `actors[].personEntity` is additive on `2026-09-12-ns5-access-v3` — the role entity that actor is (`''` if none); `own`/`assigned` anchor on it.
 
 **7. `mutability: appendOnly` ⇒ no update/delete.** E4 may declare `mutability: 'editable' |
 'appendOnly'` on an entity; E8 then emits no catalogue `update`/`delete`/`inactivate`/`reactivate`

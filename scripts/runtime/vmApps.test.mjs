@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appNameOf, ProjectPortError, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
-import { ensureProjectApp, hostedProjectIds, isAggregator, msgProxyTargetFromPm2Config, pm2AggregatorConfig, pm2AppConfig } from './vmApps.mjs';
+import { databaseUrlTestExpr, declaredTestMode, ensureProjectApp, hostedProjectIds, isAggregator, msgProxyTargetFromPm2Config, pm2AggregatorConfig, pm2AppConfig } from './vmApps.mjs';
 
 // ── porta: a MESMA regra do collab-sites (sites.ts, `projectIdToPort`) ──────
 //
@@ -170,5 +171,47 @@ test('agregador já existente não é reescrito nem marcado como legado', () => 
     writeFileSync(join(root, 'pm2.config.js'), pm2AggregatorConfig());
     const result = ensureProjectApp({ root, projectId: '102043', remoteBase: '/data/mls-base' });
     assert.equal(result.replacedLegacy, false);
+  });
+});
+
+test('modo de produção não recebe DATABASE_URL_TEST; modo de teste recebe, sem senha no arquivo', () => {
+  const production = pm2AppConfig('102043', 2043, '/data/mls-base', undefined, false);
+  assert.equal(production.includes('DATABASE_URL_TEST'), false);
+
+  const testMode = pm2AppConfig('102043', 2043, '/data/mls-base', undefined, true);
+  assert.match(testMode, /DATABASE_URL_TEST:/u);
+  assert.match(testMode, /readFileSync\("\/data\/mls-base\/\.env"/u);
+  assert.match(testMode, /\/collab_test'/u);
+  assert.equal(testMode.includes('PGPASSWORD'), true);
+  assert.equal(testMode.includes('super-secret'), false);
+});
+
+test('ensureProjectApp escreve DATABASE_URL_TEST só quando o projeto declara modo de teste', () => {
+  withRoot((root) => {
+    const projectDir = join(root, 'mls-102043', 'l5');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, 'project.json'), JSON.stringify({ appEnv: 'production' }));
+    assert.equal(declaredTestMode(root, '102043'), false);
+    ensureProjectApp({ root, projectId: '102043', remoteBase: root });
+    const productionText = readFileSync(join(root, 'pm2.apps.d', 'app2043.config.js'), 'utf8');
+    assert.equal(productionText.includes('DATABASE_URL_TEST'), false);
+
+    writeFileSync(join(projectDir, 'project.json'), JSON.stringify({ appEnv: 'presentation' }));
+    assert.equal(declaredTestMode(root, '102043'), true);
+    ensureProjectApp({ root, projectId: '102043', remoteBase: root });
+    const testText = readFileSync(join(root, 'pm2.apps.d', 'app2043.config.js'), 'utf8');
+    assert.match(testText, /DATABASE_URL_TEST:/u);
+    assert.equal(testText.includes('super-secret'), false);
+  });
+});
+
+test('a expressão monta a URL do banco de teste com o que o .env já tem', () => {
+  withRoot((root) => {
+    writeFileSync(join(root, '.env'), 'PGHOST=127.0.0.1\nPGPORT=5432\nPGUSER=postgres\nPGPASSWORD=pw\nPGDATABASE=mdm\n');
+    const script = `process.stdout.write(String(${databaseUrlTestExpr(root)}))`;
+    const run = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+    assert.equal(run.status, 0);
+    assert.equal(run.stdout, 'postgres://postgres:pw@127.0.0.1:5432/collab_test');
+    assert.equal(run.stdout.includes('/mdm'), false);
   });
 });
