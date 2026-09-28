@@ -1,6 +1,6 @@
-# Skill: agentChangeFrontend (CF) — generating `l2` from `l4`
+# Skill: agentMaterializeL2 (CF) — generating `l2` from `l4`
 
-What you must know before changing the CF (`mls-102020/l2/agentChangeFrontend`). Read
+What you must know before changing the CF (`mls-102020/l2/agentMaterializeL2`). Read
 [`certificacao.md`](certificacao.md) before reporting any change as done.
 
 ## The three genomes

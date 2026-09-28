@@ -42,7 +42,7 @@ python3 -c "import json;d=json.load(open('mls-$P/l4/$M/pipeline/trace/l1/cb-heal
       is a host state, not a degradation. Family counts only compare **within the same host**.
 - [ ] The task closes as `completed`.
 
-## agentChangeFrontend (l2)
+## agentMaterializeL2 (l2)
 
 ```bash
 for g in page11 page21 page31; do echo "$g: $(ls mls-$P/l2/$M/web/desktop/$g/*.defs.ts 2>/dev/null | wc -l)"; done

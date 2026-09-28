@@ -2,7 +2,7 @@
 
 > **Owner of the executor:** `mls-102034/l1/monitor/layer_3_usecases/testsUsecases.ts`.
 > **Owner of the frontend contract:** `mls-102034/l2/monitor/shared/contracts/tests.ts`.
-> **Owner of the generator:** the `agentChangeFrontend` (CF) in `mls-102020` — it emits one
+> **Owner of the generator:** the `agentMaterializeL2` (CF) in `mls-102020` — it emits one
 > `<page>.test.ts` per page under `l2/<module>/web/<device>/<template>/`.
 > Read this **before** designing or changing a generated test case. Every mechanic below was
 > measured in the executor (02/09/2026), not inferred from the case format.

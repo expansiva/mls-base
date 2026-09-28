@@ -9,7 +9,7 @@ read from `/_102034_/l4/organization/ontology/*`. NS5 does not copy or re-parse 
 
 NS5 writes **l4 sources only**. It never emits derived copies (operations, workspaces, usecases,
 contracts, landings, site maps) and **never** dispatches `agentChangeBackend` or
-`agentChangeFrontend`. There is no `/nochain` flag: handoff does not exist.
+`agentMaterializeL2`. There is no `/nochain` flag: handoff does not exist.
 
 ## What it writes
 

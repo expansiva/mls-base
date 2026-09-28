@@ -1,7 +1,7 @@
 # Skill: Agent Testing — every step gets a `.test.ts`
 
 Applies to **every agent** in the platform — `agentNewSolution`, `agentChangeBackend`,
-`agentChangeFrontend`, and any future `agent*`. The method below is agent-agnostic; the agent-specific
+`agentMaterializeL2`, and any future `agent*`. The method below is agent-agnostic; the agent-specific
 names (step ids, tool names, gate functions) are placeholders you fill per agent.
 
 ## Rule (definition of done)

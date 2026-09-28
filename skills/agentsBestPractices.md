@@ -5,7 +5,7 @@ maintainable, and understandable by an LLM as it grows. Guidance only — no sou
 Lessons come from three generations of agents: the v1/v2 new-solution agents (flat folders that
 became unmaintainable), today's `agentNewSolution` (the reference pattern, ex-v3/ns4), and the
 audits of `agentChangeBackend`
-and `agentChangeFrontend` (flat helpers, whole-layer tool calls and prompts that grew past what a
+and `agentMaterializeL2` (flat helpers, whole-layer tool calls and prompts that grew past what a
 model can answer in one shot — the anti-patterns this skill exists to prevent).
 
 Engine mechanics (hooks, intents, scheduling, parallel system, auto-completion traps) live in
@@ -19,7 +19,7 @@ Engine mechanics (hooks, intents, scheduling, parallel system, auto-completion t
   gates, model aliases. The code is then validated against it.
 - Keep it true forever. A flow.json that describes an aspirational design while the code does
   something else is worse than none — it actively misleads every future LLM session
-  (this happened to agentChangeFrontend: its `steps[]` listed agents that never existed).
+  (this happened to agentMaterializeL2: its `steps[]` listed agents that never existed).
 - When behavior must change, change the spec first, then the code. Record the decision.
 - Document in flow.json the runtime-generated planIds too (repair rounds, fan-out groups), as naming
   conventions — otherwise nobody can tell a real step from a dynamic one.

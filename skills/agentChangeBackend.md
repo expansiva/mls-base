@@ -112,8 +112,8 @@ The trace lives under the layer (`trace/l1`) so a CF rebuild cannot delete it an
 Stale trace resurrects behaviour: three separate defects on 30/08 came from plans left in an old
 trace folder.
 
-`/fast` after a successful run dispatches agentChangeFrontend. `/fast /nochain` completes the
-backend run and records `handoff: suppressed by /nochain — next: @@agentChangeFrontend /rebuild all <module>`
+`/fast` after a successful run dispatches agentMaterializeL2. `/fast /nochain` completes the
+backend run and records `handoff: suppressed by /nochain — next: @@agentMaterializeL2 /rebuild all <module>`
 instead of dispatching. The flag is on the invocation, never inferred from CLI vs browser.
 
 ## Authority and person-scope (n09, 2026-09-09)

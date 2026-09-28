@@ -9,7 +9,7 @@ into a later materializer lives under `agentDefsL1/skills/`.
 `agentDefsL1` reads the canonical L4, the approved planning pool and the L1 inventory,
 then writes declarative L1 defs. It does not materialize `.ts` files, change L4, write
 `effort.json`, `backend.json`, `todoBackend` or the planner `pipeline.json`, and it does
-not dispatch `agentCbMaterialize`, `agentChangeBackend` or `agentChangeFrontend`.
+not dispatch `agentCbMaterialize`, `agentChangeBackend` or `agentMaterializeL2`.
 
 Invoke it as `@@agentDefsL1 <lowerCamel> /run`. `/resume` continues an intact checkpoint
 and does not rewrite it. `/help` writes nothing.
