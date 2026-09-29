@@ -157,4 +157,6 @@ authority. Unrestricted `fieldsOnly` becomes `fullRecord`; `anchorEntity` only o
 Live proof (`@@newSolution5 … /fast /module <name>` on `mls-102047`) is owned by the
 supervisor, not the executing session.
 
+p4_20 (29/09): every step that writes a `.defs.ts` compiles it through the Studio compiler (`helpers/ns5Compile.ts` → `solution/studioCompile.ts`, the same helper as the M2); errors go to the step's repair, `unavailable` is never clean, and finalize80 runs the oracle only when every `steps.<step>.compile` is `clean`. The emitter writes `as const satisfies Ns5Readonly<T>` (`solution/types.ts`): the Studio compiler is TypeScript 5.0.2, which refuses `as const` against a mutable array (TS1360).
+
 *Written 11/09/2026 (ns5_10); form closed 12/09/2026 (ns5_33 T6, leva final 11/12); flow v3 judge35 19/09/2026 (ns5_62); judge additive 20/09/2026 (ns5_66).*
