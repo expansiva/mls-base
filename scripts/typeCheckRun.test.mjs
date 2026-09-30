@@ -14,6 +14,9 @@ const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const TYPE_ERR = 'mls-900074/l2/bad.ts(1,1): error TS2345: \'"LoadMonaco"\' is not assignable to \'TypeEvent\'.';
 const IMPORT_ERR = 'mls-900074/l2/bad.ts(2,1): error TS2307: Cannot find module \'foo\'.';
+// No l1/l2 in the path on purpose: a tsconfig error lands in `other`, which the
+// marker does not break down per layer.
+const EMIT_ERR = 'error TS6053: File \'x.ts\' not found.';
 
 function twoPassOutput({ codeErrors, codeLines = [] }) {
   return [
@@ -67,6 +70,19 @@ function spawnImportError(_root, tsconfigPath) {
     fatal: false,
     output: layer === 'l2' ? IMPORT_ERR : '',
   };
+}
+
+function spawnEmitError(_root, tsconfigPath) {
+  const layer = /\.l2\.json$/.test(tsconfigPath) ? 'l2' : 'l1';
+  return {
+    status: layer === 'l2' ? 2 : 0,
+    fatal: false,
+    output: layer === 'l2' ? EMIT_ERR : '',
+  };
+}
+
+function spawnCrash() {
+  return { status: 1, fatal: true, output: '' };
 }
 
 test('known type error: same verdict on dist path and gate path', () => {
@@ -134,13 +150,46 @@ test('absent and permissive do not block; strict does; report is per layer', () 
   });
 });
 
-test('broken import blocks even when status is permissive', () => {
+// rt34 (Wagner, 30/09/2026): permissive stopped blocking on broken imports.
+// The count stays in the report, and one loud line says the release went out
+// with code that may not load.
+test('broken import is tolerated in permissive, on the dist path and on the gate path', () => {
   withFixture({ status: 'permissive' }, ({ root, id }) => {
     const dist = typeCheckProject({ root, projectId: id, spawnTsc: spawnImportError });
     const gate = evaluateBuild(0, dist.marker);
-    assert.equal(dist.verdict.block, true);
-    assert.equal(gate.ok, false);
+    assert.equal(dist.verdict.block, false);
+    assert.equal(gate.ok, true);
     assert.equal(dist.summary.l2.blocking, 1);
+    assert.equal(dist.summary.l2.import, 1);
+    assert.match(dist.reportLine, /l2: type=0 blocking=1/u);
+    assert.match(dist.toleratedLog, /TOLERATED 1 blocking tsc error\(s\) \(syntax=0 import=1\)/u);
+  });
+  withFixture({ status: 'strict' }, ({ root, id }) => {
+    const strict = typeCheckProject({ root, projectId: id, spawnTsc: spawnImportError });
+    assert.equal(strict.verdict.block, true);
+    assert.equal(strict.toleratedLog, '');
+    assert.equal(evaluateBuild(0, strict.marker).ok, false);
+  });
+});
+
+test('emit failure blocks in permissive too, and the gate reads it from the marker', () => {
+  withFixture({ status: 'permissive' }, ({ root, id }) => {
+    const dist = typeCheckProject({ root, projectId: id, spawnTsc: spawnEmitError });
+    assert.equal(dist.verdict.block, true);
+    assert.equal(dist.verdict.emit, 1);
+    assert.equal(dist.toleratedLog, '');
+    const gate = evaluateBuild(0, dist.marker);
+    assert.equal(gate.ok, false);
+    assert.equal(dist.verdict.block, !gate.ok);
+  });
+});
+
+test('a tsc crash blocks in permissive and travels in the marker', () => {
+  withFixture({ status: 'permissive' }, ({ root, id }) => {
+    const dist = typeCheckProject({ root, projectId: id, spawnTsc: spawnCrash });
+    assert.equal(dist.verdict.block, true);
+    assert.equal(dist.verdict.fatal, true);
+    assert.equal(evaluateBuild(0, dist.marker).ok, false);
   });
 });
 

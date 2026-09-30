@@ -107,6 +107,7 @@ async function runTsc(_tsconfigPath, ids, compilerOptions) {
     const report = typeCheckProject({ root: ROOT, projectId: id });
     if (report.overrideLog) log(report.overrideLog);
     log(`typeCheck ${report.reportLine}`);
+    if (report.toleratedLog) log(report.toleratedLog);
     for (const line of report.excerpt) log(`typeCheck ${line}`);
     log(report.marker);
     if (report.verdict.block) blocked.push(report);
@@ -115,7 +116,7 @@ async function runTsc(_tsconfigPath, ids, compilerOptions) {
     const first = blocked[0];
     throw new Error([
       `TypeScript typeCheck blocked mls-${first.projectId} (status=${first.policy.status}).`,
-      'Status governs type errors; syntax, broken imports and emit failures always block.',
+      'permissive tolerates type, syntax and broken-import errors; emit/config failures and a tsc crash block in both modes (rt34).',
       first.excerpt.join('\n') || first.reportLine,
     ].filter(Boolean).join('\n'));
   }

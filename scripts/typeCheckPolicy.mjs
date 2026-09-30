@@ -4,9 +4,18 @@
 //   "typeCheck": { "status": "permissive" | "strict", "reason": "<one line>" }
 // Absent or unreadable ⇒ permissive (old projects must not start blocking).
 //
-// The status governs TYPE errors only. Syntax (TS1xxx), broken imports
-// (TS2307) and emit/config failures (TS6xxx, tsc crash) always block —
-// those stop the app from booting (rule 5d: the target outranks the gate).
+// In `strict` every tsc diagnostic blocks. In `permissive` no diagnostic
+// ABOUT THE CODE blocks — type, syntax (TS1xxx) and broken imports (TS2307)
+// are counted, logged and tolerated (rt34, Wagner 30/09/2026).
+//
+// Emit/config failures (TS6xxx) and a tsc crash keep blocking in BOTH modes:
+// they do not say "the code has an error", they say "the check did not run".
+// Tolerating those is not being permissive, it is publishing with no gate at
+// all and not knowing it.
+//
+// When `permissive` tolerates a syntax or import error the report says so in
+// one line (`formatToleratedLog`): the module may fail to load at runtime,
+// far from the cause, so the log has to be louder, not quieter.
 //
 // COLLAB_FAIL_ON_TSC_ERRORS is a local override, never the source of the
 // decision. When it is set the log must say so out loud.
@@ -19,8 +28,15 @@ export const DEFAULT_TYPE_CHECK_STATUS = 'permissive';
 
 const TSC_ERROR_RE = /\berror TS(\d+)/u;
 const LAYER_RE = /(?:^|\/|\\)l([12])(?:\/|\\)/u;
+// `emit` and `fatal` were added by rt34: the gate rebuilds the verdict from the
+// marker alone, so the two things that still block in `permissive` have to
+// travel in it. They are TOTALS, not per layer, because a tsconfig error or a
+// tsc crash has no `l1/`l2` in its path and would otherwise be counted in
+// `other` and never reach the marker. Both groups are optional so a marker
+// written by an older tree still parses instead of making the gate fall back
+// to the buildCI branch.
 const MARKER_RE =
-  /##typeCheck project=(\d+) status=(permissive|strict) l1\.type=(\d+) l1\.blocking=(\d+) l2\.type=(\d+) l2\.blocking=(\d+)##/gu;
+  /##typeCheck project=(\d+) status=(permissive|strict) l1\.type=(\d+) l1\.blocking=(\d+) l2\.type=(\d+) l2\.blocking=(\d+)(?: emit=(\d+))?(?: fatal=([01]))?##/gu;
 
 /** @typedef {'permissive' | 'strict'} TypeCheckStatus */
 /** @typedef {'type' | 'syntax' | 'import' | 'emit'} DiagnosticKind */
@@ -103,7 +119,14 @@ export function layerOfDiagnostic(line) {
 }
 
 function emptyLayer() {
-  return { type: 0, blocking: 0, lines: /** @type {string[]} */ ([]) };
+  return {
+    type: 0,
+    syntax: 0,
+    import: 0,
+    emit: 0,
+    blocking: 0,
+    lines: /** @type {string[]} */ ([]),
+  };
 }
 
 /**
@@ -121,8 +144,10 @@ export function summarizeTscOutput(output) {
     const kind = classifyTscCode(Number(match[1]));
     const layer = layerOfDiagnostic(line);
     const bucket = summary[layer];
+    bucket[kind] += 1;
+    // `blocking` stays the syntax+import+emit total: the marker, the report
+    // and gitPostReceive all read it. What changed is who acts on it.
     if (isBlockingKind(kind)) bucket.blocking += 1;
-    else bucket.type += 1;
     bucket.lines.push(line);
   }
   return summary;
@@ -131,12 +156,18 @@ export function summarizeTscOutput(output) {
 export function totalsOf(summary) {
   const layers = [summary?.l1, summary?.l2, summary?.other];
   let type = 0;
+  let syntax = 0;
+  let imports = 0;
+  let emit = 0;
   let blocking = 0;
   for (const layer of layers) {
     type += layer?.type ?? 0;
+    syntax += layer?.syntax ?? 0;
+    imports += layer?.import ?? 0;
+    emit += layer?.emit ?? 0;
     blocking += layer?.blocking ?? 0;
   }
-  return { type, blocking };
+  return { type, syntax, import: imports, emit, blocking };
 }
 
 /**
@@ -145,22 +176,37 @@ export function totalsOf(summary) {
  * @param {{ fatal?: boolean }} [opts]
  */
 export function verdictFor(policy, summary, opts = {}) {
-  const { type, blocking } = totalsOf(summary);
+  const { type, emit, blocking } = totalsOf(summary);
   const fatal = Boolean(opts.fatal);
-  const block = fatal || blocking > 0 || (policy.status === 'strict' && type > 0);
+  const strict = policy.status === 'strict';
+  // strict: any diagnostic blocks (stated with `type + blocking` so a summary
+  // rebuilt from a marker, which has no syntax/import split, decides the same).
+  // permissive: only "the check did not run" blocks — emit and a tsc crash.
+  const block = fatal || emit > 0 || (strict && type + blocking > 0);
+  const tolerated = strict ? 0 : Math.max(0, blocking - emit);
   return {
     block,
     type,
     blocking,
+    emit,
+    tolerated,
     fatal,
     status: policy.status,
   };
 }
 
-export function formatTypeCheckMarker(projectId, policy, summary) {
+/**
+ * @param {string} projectId
+ * @param {{ status: TypeCheckStatus }} policy
+ * @param {object} summary
+ * @param {{ fatal?: boolean }} [opts]
+ */
+export function formatTypeCheckMarker(projectId, policy, summary, opts = {}) {
   const l1 = summary?.l1 ?? emptyLayer();
   const l2 = summary?.l2 ?? emptyLayer();
-  return `##typeCheck project=${projectId} status=${policy.status} l1.type=${l1.type} l1.blocking=${l1.blocking} l2.type=${l2.type} l2.blocking=${l2.blocking}##`;
+  const { emit } = totalsOf(summary);
+  const fatal = opts.fatal ? 1 : 0;
+  return `##typeCheck project=${projectId} status=${policy.status} l1.type=${l1.type} l1.blocking=${l1.blocking} l2.type=${l2.type} l2.blocking=${l2.blocking} emit=${emit} fatal=${fatal}##`;
 }
 
 export function formatTypeCheckReport(projectId, policy, summary) {
@@ -168,6 +214,25 @@ export function formatTypeCheckReport(projectId, policy, summary) {
   const l2 = summary?.l2 ?? emptyLayer();
   const source = policy.override ? `overridden` : policy.declared === 'absent' ? 'absent→permissive' : policy.declared;
   return `mls-${projectId} status=${policy.status} (${source}) l1: type=${l1.type} blocking=${l1.blocking} | l2: type=${l2.type} blocking=${l2.blocking}`;
+}
+
+/**
+ * One loud English line, printed only when `permissive` let through a
+ * diagnostic that used to block the release (syntax or broken import).
+ * The module may not load at runtime (`MODULE_ROUTER_NOT_FOUND`) far from the
+ * cause, so the release must not go out silently.
+ *
+ * @param {string} projectId
+ * @param {{ status: TypeCheckStatus }} policy
+ * @param {object} summary
+ * @returns {string} empty when there is nothing tolerated
+ */
+export function formatToleratedLog(projectId, policy, summary) {
+  if (policy?.status === 'strict') return '';
+  const totals = totalsOf(summary);
+  const tolerated = totals.syntax + totals.import;
+  if (tolerated < 1) return '';
+  return `typeCheck: mls-${projectId} permissive TOLERATED ${tolerated} blocking tsc error(s) (syntax=${totals.syntax} import=${totals.import}); the release is published with this code and the module may fail to load at runtime`;
 }
 
 /**
@@ -180,13 +245,18 @@ export function parseTypeCheckMarkers(text) {
   while ((match = re.exec(String(text)))) {
     const l1 = { type: Number(match[3]), blocking: Number(match[4]) };
     const l2 = { type: Number(match[5]), blocking: Number(match[6]) };
+    const emit = Number(match[7] ?? 0);
+    const fatal = match[8] === '1';
     const status = /** @type {TypeCheckStatus} */ (match[2]);
+    // `emit` is a total, so it rides in `other` where it does not disturb the
+    // per-layer counts the report and gitPostReceive print.
+    const other = { ...emptyLayer(), emit };
     out.push({
       projectId: match[1],
       status,
       l1,
       l2,
-      verdict: verdictFor({ status }, { l1, l2, other: emptyLayer() }),
+      verdict: verdictFor({ status }, { l1, l2, other }, { fatal }),
     });
   }
   return out;

@@ -145,8 +145,34 @@ test('typeCheck marker + strict + type errors is build=error', () => {
   assert.match(printed, /##gitBackend build=error project=mls-102025##/);
 });
 
-test('typeCheck marker + blocking import is build=error even when permissive', () => {
-  const marker = '##typeCheck project=102025 status=permissive l1.type=0 l1.blocking=0 l2.type=0 l2.blocking=1##';
+// rt34 (Wagner, 30/09/2026): a broken import no longer blocks in permissive.
+test('typeCheck marker + broken import is build=ok when permissive', () => {
+  const marker = '##typeCheck project=102025 status=permissive l1.type=0 l1.blocking=0 l2.type=0 l2.blocking=1 emit=0 fatal=0##';
+  const verdict = evaluateBuild(0, marker);
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.gate, 'typeCheck');
+  assert.equal(verdict.typeCheckStatus, 'permissive');
+});
+
+test('what permissive tolerated reaches the pusher, with the categories', () => {
+  const out = [
+    '[buildProjectsObj] typeCheck mls-102047 status=permissive (absent→permissive) l1: type=0 blocking=14 | l2: type=0 blocking=0',
+    '[buildProjectsObj] typeCheck: mls-102047 permissive TOLERATED 14 blocking tsc error(s) (syntax=0 import=14); the release is published with this code and the module may fail to load at runtime',
+    '##typeCheck project=102047 status=permissive l1.type=0 l1.blocking=14 l2.type=0 l2.blocking=0 emit=0 fatal=0##',
+  ].join('\n');
+  const verdict = evaluateBuild(0, out);
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.tolerated.length, 1);
+  assert.match(verdict.tolerated[0], /TOLERATED 14 blocking tsc error\(s\) \(syntax=0 import=14\)/u);
+  // A clean release says nothing extra.
+  assert.deepEqual(
+    evaluateBuild(0, '##typeCheck project=102047 status=permissive l1.type=0 l1.blocking=0 l2.type=0 l2.blocking=0 emit=0 fatal=0##').tolerated,
+    [],
+  );
+});
+
+test('typeCheck marker + emit failure is build=error even when permissive', () => {
+  const marker = '##typeCheck project=102025 status=permissive l1.type=0 l1.blocking=0 l2.type=0 l2.blocking=1 emit=1 fatal=0##';
   const verdict = evaluateBuild(0, marker);
   assert.equal(verdict.ok, false);
   assert.equal(verdict.gate, 'typeCheck');
@@ -159,8 +185,8 @@ test('typeCheck marker + blocking import is build=error even when permissive', (
 
 test('typeCheck blocking names every blocked project, never status=permissive', () => {
   const out = [
-    '##typeCheck project=102056 status=permissive l1.type=0 l1.blocking=1 l2.type=0 l2.blocking=0##',
-    '##typeCheck project=102025 status=permissive l1.type=0 l1.blocking=0 l2.type=0 l2.blocking=1##',
+    '##typeCheck project=102056 status=permissive l1.type=0 l1.blocking=1 l2.type=0 l2.blocking=0 emit=1 fatal=0##',
+    '##typeCheck project=102025 status=permissive l1.type=0 l1.blocking=0 l2.type=0 l2.blocking=0 emit=0 fatal=1##',
   ].join('\n');
   const verdict = evaluateBuild(0, out);
   assert.equal(verdict.ok, false);

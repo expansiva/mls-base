@@ -113,6 +113,17 @@ export function regionBeforePassMarker(text, pass) {
   return prev >= 0 ? before.slice(prev) : before;
 }
 
+// rt34: in `permissive` a broken import no longer blocks, so the one line that
+// says what went out tolerated has to reach the DEVELOPER who pushed — the ok
+// path only echoes gateMessage + the ok marker, and `typeWarn` counts type
+// errors only. The line itself is written by build.mjs / buildProjectsObj
+// (`formatToleratedLog`), so it is carried over verbatim, categories included.
+const TOLERATED_RE = /^.*permissive TOLERATED .*$/gmu;
+
+export function toleratedLines(text) {
+  return (String(text ?? '').match(TOLERATED_RE) ?? []).map((line) => line.trim());
+}
+
 function typeCheckFromMarkers(text) {
   const markers = parseTypeCheckMarkers(text);
   if (markers.length === 0) return null;
@@ -132,6 +143,7 @@ function typeCheckFromMarkers(text) {
     typeWarn: type,
     typeCheckStatus: status,
     excerptText: blocked.length > 0 ? text : '',
+    tolerated: toleratedLines(text),
     blocked,
   };
 }
@@ -162,6 +174,7 @@ export function evaluateBuild(code, out) {
       declWarn: declErrors,
       typeWarn: typeCheck.typeWarn,
       typeCheckStatus: typeCheck.typeCheckStatus,
+      tolerated: typeCheck.tolerated,
       excerptText: '',
     };
   }
@@ -888,6 +901,9 @@ async function main() {
   process.stderr.write(`${formatOkMarker(projectName, ts, verdict.declWarn)}\n`);
   if (verdict.declWarn > 0) {
     process.stderr.write(`declarations: ${verdict.declWarn} type errors (best-effort, does not block)\n`);
+  }
+  for (const line of verdict.tolerated ?? []) {
+    process.stderr.write(`${line}\n`);
   }
   if ((verdict.typeWarn ?? 0) > 0) {
     process.stderr.write(

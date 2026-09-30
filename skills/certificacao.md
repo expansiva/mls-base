@@ -76,10 +76,10 @@ The same release used to get two type verdicts: `build.mjs` emitted with `--noCh
 
 | status | effect |
 |---|---|
-| `permissive` (default if the field is **absent**) | type errors are reported per layer (`l1` = `tsconfig.backend.json`, `l2` = `tsconfig.frontend.json`) and do **not** block the gate or the release |
-| `strict` | type errors block **both** paths |
+| `permissive` (default if the field is **absent**) | **no diagnostic about the code blocks** — type, syntax (TS1xxx) and broken imports (`TS2307`) are counted per layer (`l1` = `tsconfig.backend.json`, `l2` = `tsconfig.frontend.json`), logged and let through (rt34, Wagner 30/09/2026) |
+| `strict` | **every** tsc diagnostic blocks **both** paths |
 
-Syntax errors (TS1xxx), broken imports (`TS2307`) and emit/tsc crashes **always** block. The status governs type errors only. Compile stays tolerant (decision #19, `compile.mjs`).
+Emit/config failures (TS6xxx) and a tsc crash block in **both** modes: they do not say "the code has an error", they say "the check did not run". When `permissive` lets a syntax or import error through, the report prints one line naming how many and of which category (`formatToleratedLog`) — the module may fail to load at runtime (`MODULE_ROUTER_NOT_FOUND`) far from the cause, so the log has to be louder. Compile stays tolerant (decision #19, `compile.mjs`).
 
 `COLLAB_FAIL_ON_TSC_ERRORS` is a local override and must log `typeCheck: overridden by COLLAB_FAIL_ON_TSC_ERRORS (declared: …)`. It is not the source of the decision.
 

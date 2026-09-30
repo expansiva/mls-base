@@ -122,6 +122,7 @@ for (const id of ids) {
     const report = typeCheckProject({ root: ROOT, projectId: id });
     if (report.overrideLog) console.log(`[buildProjectsObj] ${report.overrideLog}`);
     console.log(`[buildProjectsObj] typeCheck ${report.reportLine}`);
+    if (report.toleratedLog) console.log(`[buildProjectsObj] ${report.toleratedLog}`);
     for (const line of report.excerpt) console.log(`[buildProjectsObj] typeCheck ${line}`);
     console.log(report.marker);
   }

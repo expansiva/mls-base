@@ -14,6 +14,7 @@ import {
   formatOverrideLog,
   formatTypeCheckMarker,
   formatTypeCheckReport,
+  formatToleratedLog,
   readTypeCheckPolicy,
   summarizeTscOutput,
   verdictFor,
@@ -29,6 +30,9 @@ const LAYER_TSCONFIG = {
 function mergeSummaries(a, b) {
   const mergeLayer = (left, right) => ({
     type: (left?.type ?? 0) + (right?.type ?? 0),
+    syntax: (left?.syntax ?? 0) + (right?.syntax ?? 0),
+    import: (left?.import ?? 0) + (right?.import ?? 0),
+    emit: (left?.emit ?? 0) + (right?.emit ?? 0),
     blocking: (left?.blocking ?? 0) + (right?.blocking ?? 0),
     lines: [...(left?.lines ?? []), ...(right?.lines ?? [])],
   });
@@ -140,8 +144,9 @@ export function typeCheckProject({ root, projectId, env = process.env, spawnTsc 
     policy,
     summary,
     verdict,
-    marker: formatTypeCheckMarker(projectId, policy, summary),
+    marker: formatTypeCheckMarker(projectId, policy, summary, { fatal }),
     reportLine: formatTypeCheckReport(projectId, policy, summary),
+    toleratedLog: formatToleratedLog(projectId, policy, summary),
     overrideLog: formatOverrideLog(policy),
     excerpt: excerptLines(summary),
   };
