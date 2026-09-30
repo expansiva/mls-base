@@ -36,6 +36,7 @@ Cross-cutting:
   `.defs.ts` asked? Commands per agent.
 - [`executora.md`](executora.md) — how work is specified and handed to the executing session.
 - [`agentsBestPractices.md`](agentsBestPractices.md) — designing a new agent.
+- [`agentCodeIsPrivate.md`](agentCodeIsPrivate.md) — **no agent imports another agent's folder**; shared code is promoted to `l2/helpers/` (Wagner, 30/09/2026). Baseline of existing debt per owner.
 - [`agentTest.md`](agentTest.md) — every agent step gets a `.test.ts`.
 - [`monitorTests.md`](monitorTests.md) — how the GENERATED app's own cases run (two global phases,
   one immutable id pool, `<seedRef>`, what `inconclusive`/`knownFail` mean). **Read before designing
