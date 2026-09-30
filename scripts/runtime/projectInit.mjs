@@ -174,6 +174,34 @@ export function missingShellTemplates(configText) {
 }
 
 /**
+ * The VM host reads l5/config.json.projectSettings on every login, straight off disk, no
+ * rebuild (mls-102034/l1/server/layer_1_external/cbe/cbeLogin.ts:33-99). Without a valid
+ * block the project falls back to the default `vm` + `local/local/local` — a scaffold with
+ * no repo of its own. `url` needs at least 3 segments (the last 3 are branch/owner/repo),
+ * and its last segment must be this project's own id, or a renumbered scaffold silently
+ * points at whichever id the model happened to carry.
+ */
+export function missingProjectSettings(configText, id) {
+  if (configText === '') return 'l5/config.json missing';
+  let parsed;
+  try {
+    parsed = JSON.parse(configText);
+  } catch {
+    return 'l5/config.json invalid (JSON)';
+  }
+  const settings = parsed && typeof parsed === 'object' ? parsed.projectSettings : null;
+  if (!settings || typeof settings.driver !== 'string' || !settings.driver) {
+    return 'l5/config.json missing projectSettings.driver';
+  }
+  const segments = typeof settings.url === 'string' ? settings.url.split('/') : [];
+  if (segments.length < 3) return 'l5/config.json projectSettings.url has fewer than 3 segments';
+  if (segments[segments.length - 1] !== `mls-${id}`) {
+    return `l5/config.json projectSettings.url does not end in mls-${id}`;
+  }
+  return '';
+}
+
+/**
  * Register `/_<id>_/*` in the versioned tsconfig base (the typeCheck gate
  * extends tsconfig.backend.json → this file). Reuses addMissingTsconfigPaths;
  * returns the tsconfig path (and why) when the id is still absent.
@@ -421,6 +449,15 @@ function main() {
       `mls-${id} will not boot: ${shellProblem}.\n` +
         'The runtime reads config.shellTemplates[shellMode] at listen time; missing spa is a 502 with pm2 green. ' +
         `Fix the model (${MODEL_REPO_URL}) and run again.`,
+    );
+  }
+  const settingsProblem = missingProjectSettings(configText, id);
+  if (settingsProblem) {
+    abortCreate(
+      state.dir,
+      `mls-${id} will not know its own project: ${settingsProblem}.\n` +
+        'The VM login reads l5/config.json.projectSettings on every login, with no rebuild; without a valid ' +
+        `block the project falls back to the default (no repo of its own). Fix the model (${MODEL_REPO_URL}) and run again.`,
     );
   }
 

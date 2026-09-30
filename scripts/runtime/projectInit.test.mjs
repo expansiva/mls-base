@@ -13,6 +13,7 @@ import {
   gitManagedMarkerBody,
   isMacMetadata,
   mayRecreate,
+  missingProjectSettings,
   missingShellTemplates,
   missingWorkspaceDependencies,
   parseArgs,
@@ -47,7 +48,7 @@ function gitCommit(dir, message) {
   assert.equal(committed.status, 0, `${committed.stdout ?? ''}${committed.stderr ?? ''}`);
 }
 
-function writeModelTree(dir) {
+function writeModelTree(dir, { projectSettings = true } = {}) {
   mkdirSync(join(dir, 'l1', 'controleChamados'), { recursive: true });
   mkdirSync(join(dir, 'l2', 'controleChamados'), { recursive: true });
   mkdirSync(join(dir, 'l4', 'controleChamados'), { recursive: true });
@@ -118,6 +119,7 @@ function writeModelTree(dir) {
         regions: { header: { entrypoint: './_102033_/l2/shared/layout/aura-header.js' } },
       },
       publication: { defaultTarget: 'web', targets: { web: { serveStaticFromServer: true } } },
+      ...(projectSettings ? { projectSettings: { driver: 'vm', url: `local/local/mls-${MODEL_ID}` } } : {}),
     }, null, 2)}\n`,
   );
   writeFileSync(
@@ -138,10 +140,10 @@ function writeModelTree(dir) {
   );
 }
 
-function makeModelRepo(parent) {
+function makeModelRepo(parent, options) {
   const model = join(parent, `model-${MODEL_ID}`);
   mkdirSync(model, { recursive: true });
-  writeModelTree(model);
+  writeModelTree(model, options);
   gitCommit(model, `model ${MODEL_ID}`);
   return model;
 }
@@ -156,7 +158,7 @@ const FAKE_TSCONFIG = `{
 `;
 
 /** Um mls-base de mentira: scripts + um repo git local no papel do modelo (sem rede). */
-function withFakeRoot(fn) {
+function withFakeRoot(fn, options) {
   const root = mkdtempSync(join(tmpdir(), 'projinit-root-'));
   try {
     mkdirSync(join(root, 'scripts', 'runtime'), { recursive: true });
@@ -168,7 +170,7 @@ function withFakeRoot(fn) {
       readFileSync(join(MLS_BASE, 'scripts', 'syncTsconfigPaths.mjs')),
     );
     writeFileSync(join(root, 'tsconfig.json'), FAKE_TSCONFIG);
-    const model = makeModelRepo(root);
+    const model = makeModelRepo(root, options);
     return fn(root, model);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -241,6 +243,33 @@ test('missingShellTemplates: a chave que deixou o 102043 zumbi', () => {
   assert.equal(missingShellTemplates('{"shellTemplates":{"spa":"./x"}}'), '');
   assert.match(missingShellTemplates('{}'), /shellTemplates\.spa/u);
   assert.match(missingShellTemplates('{"shellTemplates":{}}'), /shellTemplates\.spa/u);
+});
+
+test('missingProjectSettings: o login da VM lê driver/url a cada login, sem o bloco cai no default sem repo', () => {
+  assert.equal(missingProjectSettings('{"projectSettings":{"driver":"vm","url":"local/local/mls-102044"}}', '102044'), '');
+  assert.match(missingProjectSettings('', '102044'), /missing/u);
+  assert.match(missingProjectSettings('{', '102044'), /invalid/u);
+  assert.match(missingProjectSettings('{}', '102044'), /projectSettings\.driver/u);
+  assert.match(missingProjectSettings('{"projectSettings":{"driver":""}}', '102044'), /projectSettings\.driver/u);
+  assert.match(
+    missingProjectSettings('{"projectSettings":{"driver":"vm","url":"local/mls-102044"}}', '102044'),
+    /fewer than 3 segments/u,
+  );
+  assert.match(
+    missingProjectSettings('{"projectSettings":{"driver":"vm","url":"local/local/mls-102039"}}', '102044'),
+    /does not end in mls-102044/u,
+  );
+});
+
+test('controle: o l5/config.json real do mls-102039 do disco passa a guarda depois de renumerado', () => {
+  withDir((dir) => {
+    mkdirSync(join(dir, 'l5'), { recursive: true });
+    writeFileSync(join(dir, 'l5', 'config.json'), readFileSync(join(MODEL_ON_DISK, 'l5', 'config.json')));
+    renumberModel(dir, MODEL_ID, '102099');
+    const renumbered = readFileSync(join(dir, 'l5', 'config.json'), 'utf8');
+    assert.equal(missingProjectSettings(renumbered, '102099'), '');
+    assert.equal(JSON.parse(renumbered).projectSettings.url, 'local/local/mls-102099');
+  });
 });
 
 test('gitManagedMarkerBody diz quem é dono da história e o que o publish NÃO pode fazer', () => {
@@ -407,6 +436,7 @@ test('ponta a ponta: nasce com main + vm-baseline, sem git do modelo, zero 10203
     assert.ok(config.workspaceDependencies.includes('102044'));
     assert.equal(config.defaultProjectId, '102044');
     assert.ok(config.shellTemplates?.spa);
+    assert.deepEqual(config.projectSettings, { driver: 'vm', url: 'local/local/mls-102044' });
     assert.equal(existsSync(join(dir, 'l1', 'controleChamados')), true);
     assert.equal(existsSync(join(dir, 'l2', 'controleChamados')), true);
     assert.equal(existsSync(join(dir, 'l4', 'controleChamados')), true);
@@ -574,6 +604,16 @@ test('um modelo sem shellTemplates.spa é RECUSADO — é o 502 do 102043', () =
     assert.match(result.out, /will not boot/u);
     assert.match(result.out, /shellTemplates\.spa/u);
   });
+});
+
+test('um modelo sem projectSettings é RECUSADO — é o default sem repo do cbeLogin (sites_01)', () => {
+  withFakeRoot((root, model) => {
+    const result = runInit(root, fromModelArgs('102044', model));
+    assert.equal(result.code, 1);
+    assert.match(result.out, /will not know its own project/u);
+    assert.match(result.out, /projectSettings\.driver/u);
+    assert.equal(existsSync(join(root, 'mls-102044')), false);
+  }, { projectSettings: false });
 });
 
 test('clone do modelo em disco: zero 102039, sem git do modelo, validateClientConfig sem shellTemplates', () => {
