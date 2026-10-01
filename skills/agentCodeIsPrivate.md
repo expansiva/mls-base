@@ -40,7 +40,7 @@ turns "who depends on my internals" from a grep into a folder boundary.
 | `102020/agentMaterializeL2` (L2) | 13 | 0 | `l2/aura/agentManagePage*`, `agentManageLanguages` |
 | `102021/agentPlannerL1` (L1) | 10 | 6 | agentDefsL1 |
 | `102020/agentPlannerL2` (L2) | 9 | 3 | agentDefsL1 (`regenHead.ts`, `gate.test.ts`), planners L1/L4 |
-| `102021/agentMaterializeL1` (L1) | 8 | 2 | agentDefsL1 (`d1Artifact.ts`, `d1Identity.ts`) |
+| `102021/agentMaterializeL1` (L1) | 6 | 2 | agentDefsL1 (`d1Artifact.ts`, `d1Identity.ts`) |
 | `102020/agentDefsL2` (L2) | 5 | 0 | agentMaterializeL2 (`sha256Text`), agentDefsL1 `regenHead.ts` |
 | `102021/agentChangeBackend` (L1) | 1 | 1 | agentPlannerL1 test |
 | `102035/agentReviewSolution` (L4) | 1 | 0 | `l2/newRelease/helpers/reviewRun.ts` |
