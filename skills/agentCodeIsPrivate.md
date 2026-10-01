@@ -38,15 +38,17 @@ turns "who depends on my internals" from a grep into a folder boundary.
 | `102035/agentNewSolution5` (L4) | 50 | 22 | `l2/solution`, `l2/newRelease`, agentReviewSolution, planners L1/L2 tests |
 | `102021/agentDefsL1` (L1) | 16 | 16 | agentMaterializeL1 tests |
 | `102020/agentMaterializeL2` (L2) | 13 | 0 | `l2/aura/agentManagePage*`, `agentManageLanguages` |
-| `102021/agentPlannerL1` (L1) | 10 | 6 | agentDefsL1 |
-| `102020/agentPlannerL2` (L2) | 9 | 3 | agentDefsL1 (`regenHead.ts`, `gate.test.ts`), planners L1/L4 |
+| `102021/agentPlannerL1` (L1) | 3 | 3 | agentDefsL1 (`fidelity.test.ts`, `agentD1Finalize.test.ts`), agentPlannerL4 test |
+| `102020/agentPlannerL2` (L2) | 2 | 2 | agentPlannerL1 `p1Core.test.ts`, agentPlannerL4 `plCore.test.ts` |
 | `102021/agentMaterializeL1` (L1) | 6 | 2 | agentDefsL1 (`d1Artifact.ts`, `d1Identity.ts`) |
-| `102020/agentDefsL2` (L2) | 5 | 0 | agentMaterializeL2 (`sha256Text`), agentDefsL1 `regenHead.ts` |
 | `102021/agentChangeBackend` (L1) | 1 | 1 | agentPlannerL1 test |
 | `102035/agentReviewSolution` (L4) | 1 | 0 | `l2/newRelease/helpers/reviewRun.ts` |
 
+`agentPlannerL1`, `agentPlannerL2` and `agentDefsL2` were remeasured on 01/10/2026 (d1_46).
+`agentDefsL2` is zero, so its row is gone. The other rows stay at the 30/09 measurement.
+
 To re-measure, scan every `mls-*/l2/**/*.ts` for imports whose `/_<p>_/l2/<agent>/` differs from the
-importing file's own agent folder. The measurement ignores `.generated/`.
+importing file's own agent folder. The measurement ignores `.generated/`, `dist` and `node_modules`.
 
 ## How to apply
 
