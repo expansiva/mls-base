@@ -49,6 +49,9 @@ turns "who depends on my internals" from a grep into a folder boundary.
 
 To re-measure, scan every `mls-*/l2/**/*.ts` for imports whose `/_<p>_/l2/<agent>/` differs from the
 importing file's own agent folder. The measurement ignores `.generated/`, `dist` and `node_modules`.
+Count only real `import`/`from`/`import()` statements: a path inside a string literal (for example a
+negative case of an import guard, `agentPlannerL2/helpers/p2CreateAgentGraph.test.ts:147`) is not an import.
+The 30/09 table counted that string once under `agentNewSolution5`.
 
 ## How to apply
 
