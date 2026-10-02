@@ -36,12 +36,12 @@ turns "who depends on my internals" from a grep into a folder boundary.
 | provider (owner) | cross-agent imports | test/fixture | importers |
 |---|---:|---:|---|
 | `102035/agentNewSolution5` (L4) | 50 | 22 | `l2/solution`, `l2/newRelease`, agentReviewSolution, planners L1/L2 tests |
-| `102021/agentDefsL1` (L1) | 16 | 16 | agentMaterializeL1 tests |
+| `102021/agentDefsL1` (L1) | 5 | 5 | 02/10: agentMaterializeL1 tests (`d1TestHost` ×2), `helpers/l1Defs/definition.test.ts` ×2, agentDefsL2 `d2PageRequests.test.ts` |
 | `102020/agentMaterializeL2` (L2) | 13 | 0 | `l2/aura/agentManagePage*`, `agentManageLanguages` |
-| `102021/agentPlannerL1` (L1) | 3 | 3 | agentDefsL1 (`fidelity.test.ts`, `agentD1Finalize.test.ts`), agentPlannerL4 test |
+| `102021/agentPlannerL1` (L1) | 2 | 2 | 02/10: agentDefsL1 (`fidelity.test.ts`, `agentD1Finalize.test.ts`) |
 | `102020/agentPlannerL2` (L2) | 2 | 2 | agentPlannerL1 `p1Core.test.ts`, agentPlannerL4 `plCore.test.ts` |
-| `102021/agentMaterializeL1` (L1) | 6 | 2 | agentDefsL1 (`d1Artifact.ts`, `d1Identity.ts`) |
-| `102021/agentChangeBackend` (L1) | 1 | 1 | agentPlannerL1 test |
+| `102021/agentMaterializeL1` (L1) | 5 | 2 | 02/10: runtime monitor `102034/l1/monitor/layer_3_usecases/testsUsecases.ts` ×3 (production) + `testsCatalog.test.ts`, `helpers/l1Defs/definition.test.ts` |
+| `102021/agentChangeBackend` (L1) | 0 | 0 | 02/10: the one hit is a string literal in the negative case of `p1CreateAgentGraph.test.ts`, not an import |
 | `102035/agentReviewSolution` (L4) | 1 | 0 | `l2/newRelease/helpers/reviewRun.ts` |
 
 `agentPlannerL1`, `agentPlannerL2` and `agentDefsL2` were remeasured on 01/10/2026 (d1_46).
