@@ -14,11 +14,17 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export const COMPILE_LEVELS = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
 export const SHIP_LEVELS = ['l2'];
+
+// Plataforma (opt-in) publica l4; cliente e projeto sem projectType ficam só com l2.
+export function shipLevelsFor(projectType) {
+  if (projectType === 'master backend' || projectType === 'lib') return ['l2', 'l4'];
+  return ['l2'];
+}
 
 export function log(stage, msg) {
   console.log(`[buildCI:${stage}] ${msg}`);
@@ -38,10 +44,10 @@ async function readOrgName(targetDir) {
   const projectJsonPath = join(targetDir, 'l5', 'project.json');
   if (!existsSync(projectJsonPath)) {
     log('target', `l5/project.json not found — orgName empty (callWork will be skipped)`);
-    return '';
+    return { orgName: '', projectType: undefined };
   }
   const info = JSON.parse(await readFile(projectJsonPath, 'utf8'));
-  return info.orgName ?? '';
+  return { orgName: info.orgName ?? '', projectType: info.projectType };
 }
 
 async function main() {
@@ -53,8 +59,10 @@ async function main() {
   log('start', `target=mls-${id} root=${ROOT}`);
 
   // Step 1 — target resolution
-  const orgName = await readOrgName(targetDir);
+  const { orgName, projectType } = await readOrgName(targetDir);
   log('target', `orgName=${orgName || '(empty)'}`);
+  const shipLevels = shipLevelsFor(projectType);
+  log('target', `ship levels: ${shipLevels.join(',')} (projectType=${projectType ?? ''})`);
   // Step 2 — dependency closure + clones
   const { resolveDeps } = await import('./resolveDeps.mjs');
   const projects = await resolveDeps({ root: ROOT, targetId: id, orgName, levels: COMPILE_LEVELS, log });
@@ -89,7 +97,7 @@ async function main() {
   await writeImportsMap({ stageRoot, targetDir, log });
   // Step 8 — compiled.zip + source.zip -> mls-<id>/obj/
   const { pack } = await import('./pack.mjs');
-  await pack({ stageRoot, targetDir, targetId: id, shipLevels: SHIP_LEVELS, levels: COMPILE_LEVELS, log });
+  await pack({ stageRoot, targetDir, targetId: id, shipLevels, levels: COMPILE_LEVELS, log });
 
   // Step 9 — callWork: DISABLED during the testing phase (decision #13 of
   // taskNewBuildCI.md). Only uncomment in Step 11 (production).
@@ -101,7 +109,9 @@ async function main() {
   log('done', `build of mls-${id} finished`);
 }
 
-main().catch((error) => {
-  console.error(`[buildCI] aborted: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`[buildCI] aborted: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}
