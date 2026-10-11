@@ -363,6 +363,20 @@ test('assertPlatformPersistence: master sem platform lança', () => {
   );
 });
 
+test('l5/config.json: alphaAllAuthorities true chega igual ao config gravado na release', () => {
+  const l5 = {
+    alphaAllAuthorities: true,
+    projects: { 102034: { type: 'master backend', modules: [], persistenceModules: [] } },
+  };
+  const { config } = withMasterRuntimeManifest(l5, () => ({
+    modules: [{ moduleId: 'mdm' }],
+    persistenceModules: [{ moduleId: 'platform' }],
+  }));
+  const written = JSON.parse(`${JSON.stringify(config, null, 2)}\n`);
+  assert.equal(written.alphaAllAuthorities, true);
+  assert.equal(written.alphaAllAuthorities, l5.alphaAllAuthorities);
+});
+
 test('withMasterRuntimeManifest: arquivos reais — 102047 sem differed, plataforma presente', () => {
   const real = JSON.parse(readFileSync(join(MLS_BASE, 'mls-102047', 'l5', 'config.json'), 'utf8'));
   const out = withMasterRuntimeManifest(real, readMasterRuntimeManifest);
