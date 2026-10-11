@@ -26,14 +26,14 @@ import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 export const APPS_DIR = 'pm2.apps.d';
 export const PM2_CONFIG = 'pm2.config.js';
 
-/** Banco de teste já existente na VM. Não é credencial nova — user/senha/host vêm do `.env`. */
-export const TEST_DATABASE_NAME = 'collab_test';
+/** Banco de teste do app, criado pelo migrate com o usuário do app (collab_test é do postgres no provisionamento e não serve). user/senha/host vêm do `.env`. */
+export const TEST_DATABASE_NAME = 'collab_app_test';
 
 const TEST_APP_ENVS = new Set(['development', 'presentation']);
 
 /**
  * Expressão (sem segredo) que o pm2 avalia ao carregar o config: lê o `.env` da VM
- * e monta `postgres://…@host:port/collab_test`. Valor não fica no arquivo.
+ * e monta `postgres://…@host:port/collab_app_test`. Valor não fica no arquivo.
  */
 export function databaseUrlTestExpr(remoteBase) {
   const envPath = JSON.stringify(`${String(remoteBase).replace(/\/+$/u, '')}/.env`);

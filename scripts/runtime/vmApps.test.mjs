@@ -181,7 +181,7 @@ test('modo de produção não recebe DATABASE_URL_TEST; modo de teste recebe, se
   const testMode = pm2AppConfig('102043', 2043, '/data/mls-base', undefined, true);
   assert.match(testMode, /DATABASE_URL_TEST:/u);
   assert.match(testMode, /readFileSync\("\/data\/mls-base\/\.env"/u);
-  assert.match(testMode, /\/collab_test'/u);
+  assert.match(testMode, /\/collab_app_test'/u);
   assert.equal(testMode.includes('PGPASSWORD'), true);
   assert.equal(testMode.includes('super-secret'), false);
 });
@@ -211,7 +211,7 @@ test('a expressão monta a URL do banco de teste com o que o .env já tem', () =
     const script = `process.stdout.write(String(${databaseUrlTestExpr(root)}))`;
     const run = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
     assert.equal(run.status, 0);
-    assert.equal(run.stdout, 'postgres://postgres:pw@127.0.0.1:5432/collab_test');
+    assert.equal(run.stdout, 'postgres://postgres:pw@127.0.0.1:5432/collab_app_test');
     assert.equal(run.stdout.includes('/mdm'), false);
   });
 });

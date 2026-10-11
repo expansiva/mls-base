@@ -358,7 +358,7 @@ test('migrate recebe DATABASE_URL_TEST só no modo de teste', () => {
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(join(projectDir, 'project.json'), `${JSON.stringify({ appEnv: 'presentation' })}\n`);
     const url = databaseUrlTestFor(root);
-    assert.match(url, /\/collab_test$/);
+    assert.match(url, /\/collab_app_test$/);
     assert.equal(envForMigrate(root, '102047')?.DATABASE_URL_TEST, url);
 
     writeFileSync(join(projectDir, 'project.json'), `${JSON.stringify({ appEnv: 'production' })}\n`);
