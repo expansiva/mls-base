@@ -334,6 +334,21 @@ test('T5: releasesInUse ignora um current* que não é symlink (e não quebra)',
   }
 });
 
+test('migrate leva COLLAB_PROJECT_ID do --client e não leva sem --client', () => {
+  const src = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
+  assert.match(src, /COLLAB_PROJECT_ID=\$\{clientId\} node '\$\{migrateJs\}'/);
+  assert.match(src, /clientId && \/\^\\d\+\$\/\.test\(clientId\)/);
+  assert.match(src, /--- migrate sem client: usa o modo da raiz da release/);
+  const withClient = src.includes("run(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir)");
+  const withoutClient = src.includes("run(`node '${migrateJs}'`, releaseDir)");
+  assert.equal(withClient, true);
+  assert.equal(withoutClient, true);
+  const cmdWith = `COLLAB_PROJECT_ID=102047 node '/tmp/migrate.js'`;
+  const cmdWithout = `node '/tmp/migrate.js'`;
+  assert.match(cmdWith, /COLLAB_PROJECT_ID=102047 /);
+  assert.doesNotMatch(cmdWithout, /COLLAB_PROJECT_ID=/);
+});
+
 test('T6: uma falha no pm2 só é lançada DEPOIS do refresh dos objs', () => {
   // O bug real (VM, app2046 órfão): o reload falhava, addNewVersion abortava e
   // o buildProjectsObj dos extras nunca rodava — nenhum versionRef se movia.

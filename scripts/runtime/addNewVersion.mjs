@@ -284,8 +284,14 @@ function main() {
   } else if (migrateJs && existsSync(migrateJs)) {
     // Same script `pnpm migrate` / scripts/runMigrate.mjs would run after `current` switches;
     // running it from the new release first keeps a failed migrate from activating.
+    // COLLAB_PROJECT_ID matches vmApps.mjs so the migrate hits the same database the app uses.
     console.log(`--- migrate (mls-base master backend ${masterBackendId})`);
-    run(`node '${migrateJs}'`, releaseDir);
+    if (clientId && /^\d+$/.test(clientId)) {
+      run(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir);
+    } else {
+      console.log('--- migrate sem client: usa o modo da raiz da release');
+      run(`node '${migrateJs}'`, releaseDir);
+    }
   } else {
     console.log(`--- migrate skipped (${migrateJs || 'no master backend in config.json'} not found)`);
   }
