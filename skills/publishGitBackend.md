@@ -54,6 +54,8 @@ Confirmation is human by design — `clone` never answers it and never force-pus
 born with `vm:init` carries `.collab-git` inside `vm-baseline`, so later pushes are
 fast-forward and do not ask.
 
+**A publish with no content change makes no release, and that is intended** (nothing to rebuild). To force one, make an empty commit (`git commit --allow-empty`) before `pnpm publish:git`. The migrate of the publish runs with the app's `COLLAB_PROJECT_ID` and, in a test mode (`development`/`presentation`), the same `DATABASE_URL_TEST` pm2 gives the app (rt54); it prints `[migrate] projeto <id>, appEnv=<modo>, banco <nome>` so the target database is never silent.
+
 ## Supervisor cycle (preferred)
 
 The LLM session that made the changes **commits them**, then `publishGit` only pushes. That is
