@@ -237,6 +237,7 @@ function composeGeneratedConfig(clientId) {
     }
     const composer = `mls-${master.masterProject}/l2/${master.agentFolder}/nodejsSaveConfigJson.ts`;
     if (existsSync(resolve(ROOT, composer))) run('pnpm', ['exec', 'tsx', composer, clientId]);
+    else log(`composer ausente: ${composer} (agentFolder=${master.agentFolder})`);
   }
 }
 
@@ -268,25 +269,51 @@ function projectDir(id) {
   return projectRoots.get(id) ?? resolve(ROOT, `mls-${id}`);
 }
 
-// The backend composer that merged mls-<master>/masterModules.json into the client l5/config.json
-// is gone (15a2767, 10/09), so a client whose config never carried the master's modules/
-// persistenceModules gets an empty platform registry (no _schema_migrations, mdm_*, monitor_*).
-// Fill only the gaps, in memory: the client's l5/config.json in git is never rewritten here.
+// Master modules always come from mls-<master>/masterModules.json. The copy in the
+// client's l5/config.json is ignored (git is never rewritten here).
 export function withMasterRuntimeManifest(config, readManifest) {
   const entry = Object.entries(config?.projects ?? {}).find(([, project]) => project?.type === 'master backend');
-  if (!entry) return { config, filled: [] };
+  if (!entry) return { config, replaced: [], differed: [] };
   const [masterId, master] = entry;
   const manifest = readManifest(masterId);
-  const filled = [];
+  if (manifest == null || typeof manifest !== 'object') {
+    throw new Error(`masterModules.json de ${masterId} ausente ou inválido: manifesto vazio`);
+  }
+  const replaced = [];
+  const differed = [];
   const merged = { ...master };
   for (const key of ['modules', 'persistenceModules']) {
-    if (!(master[key] ?? []).length && manifest?.[key]?.length) {
-      merged[key] = manifest[key];
-      filled.push(key);
+    const fromManifest = manifest[key] ?? [];
+    const current = master[key] ?? [];
+    merged[key] = fromManifest;
+    replaced.push(key);
+    if (current.length > 0 && JSON.stringify(current) !== JSON.stringify(fromManifest)) {
+      differed.push(key);
     }
   }
-  if (filled.length === 0) return { config, filled };
-  return { config: { ...config, projects: { ...config.projects, [masterId]: merged } }, filled };
+  return { config: { ...config, projects: { ...config.projects, [masterId]: merged } }, replaced, differed };
+}
+
+export function assertPlatformPersistence(config) {
+  const master = Object.values(config?.projects ?? {}).find((project) => project?.type === 'master backend');
+  if (!master) return;
+  const hasPlatform = (master.persistenceModules ?? []).some((mod) => mod?.moduleId === 'platform');
+  if (!hasPlatform) {
+    throw new Error("master persistenceModules missing moduleId 'platform'");
+  }
+}
+
+export function readMasterRuntimeManifest(masterId) {
+  const path = resolve(ROOT, `mls-${masterId}`, 'masterModules.json');
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('não é um objeto JSON');
+    }
+    return parsed;
+  } catch (err) {
+    throw new Error(`masterModules.json de ${masterId} ausente ou inválido: ${err.message}`);
+  }
 }
 
 export function setProjectRoot(id, absPath) {
@@ -710,10 +737,10 @@ async function main() {
   const configPath = clientConfigPath(clientId);
   if (!existsSync(configPath)) throw new Error(`generated config not found: ${configPath}`);
   const composed = JSON.parse(await readFile(configPath, 'utf8'));
-  const { config: clientConfig, filled } = withMasterRuntimeManifest(composed, (masterId) => {
-    try { return JSON.parse(readFileSync(resolve(ROOT, `mls-${masterId}`, 'masterModules.json'), 'utf8')); } catch { return null; }
-  });
-  if (filled.length > 0) log(`master manifest filled ${filled.join(', ')} (client config had none)`);
+  const { config: clientConfig, replaced, differed } = withMasterRuntimeManifest(composed, readMasterRuntimeManifest);
+  if (replaced.length > 0) log(`master manifest replaced ${replaced.join(', ')}`);
+  if (differed.length > 0) log(`master manifest differed ${differed.join(', ')} (client copy ignored)`);
+  assertPlatformPersistence(clientConfig);
 
   // The project set comes from the generated client config (only what the app needs),
   // with each project's source root resolved from its `root` field.
@@ -733,8 +760,7 @@ async function main() {
     run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local', ...ids]);
     await validateServerOutput(clientConfig);
     // make the chosen client config discoverable at the projects-dir root
-    if (filled.length > 0) await writeFile(resolve(ROOT, 'config.json'), `${JSON.stringify(clientConfig, null, 2)}\n`, 'utf8');
-    else await cp(configPath, resolve(ROOT, 'config.json'));
+    await writeFile(resolve(ROOT, 'config.json'), `${JSON.stringify(clientConfig, null, 2)}\n`, 'utf8');
     log('copied generated client config to project root');
   }
 

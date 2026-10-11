@@ -13,6 +13,8 @@ import {
   rewriteLocalDistAbsoluteImports,
   setProjectRoot,
   withMasterRuntimeManifest,
+  assertPlatformPersistence,
+  readMasterRuntimeManifest,
 } from './build.mjs';
 
 const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -289,19 +291,85 @@ test('T5: real collabNotification.wav copies at 13934 bytes', async () => {
   }
 });
 
-test('withMasterRuntimeManifest: preenche só o que falta no master backend', () => {
+test('withMasterRuntimeManifest: forma 102056 (só root/type) recebe o manifesto', () => {
   const manifest = { modules: [{ moduleId: 'mdm' }], persistenceModules: [{ moduleId: 'platform' }] };
-  const base = { projects: { 1: { type: 'client' }, 2: { root: '../mls-2', type: 'master backend' } } };
-  const out = withMasterRuntimeManifest(base, (id) => (id === '2' ? manifest : null));
-  assert.deepEqual(out.filled, ['modules', 'persistenceModules']);
-  assert.deepEqual(out.config.projects[2].persistenceModules, manifest.persistenceModules);
-  assert.equal(base.projects[2].persistenceModules, undefined);
+  const base = { projects: { 102056: { type: 'client' }, 102034: { root: '../mls-102034', type: 'master backend' } } };
+  const out = withMasterRuntimeManifest(base, (id) => (id === '102034' ? manifest : null));
+  assert.deepEqual(out.replaced, ['modules', 'persistenceModules']);
+  assert.deepEqual(out.differed, []);
+  assert.deepEqual(out.config.projects[102034].modules, manifest.modules);
+  assert.deepEqual(out.config.projects[102034].persistenceModules, manifest.persistenceModules);
+  assert.equal(base.projects[102034].persistenceModules, undefined);
+});
 
-  const complete = { projects: { 2: { type: 'master backend', modules: [{ moduleId: 'x' }], persistenceModules: [{ moduleId: 'y' }] } } };
+test('withMasterRuntimeManifest: cópia igual à 102047 não marca differed', () => {
+  const manifest = { modules: [{ moduleId: 'mdm' }], persistenceModules: [{ moduleId: 'platform' }] };
+  const complete = {
+    projects: {
+      102034: { type: 'master backend', modules: manifest.modules, persistenceModules: manifest.persistenceModules },
+    },
+  };
   const same = withMasterRuntimeManifest(complete, () => manifest);
-  assert.deepEqual(same.filled, []);
-  assert.equal(same.config, complete);
+  assert.deepEqual(same.replaced, ['modules', 'persistenceModules']);
+  assert.deepEqual(same.differed, []);
+  assert.deepEqual(same.config.projects[102034].modules, manifest.modules);
+});
 
-  assert.deepEqual(withMasterRuntimeManifest(base, () => null).filled, []);
-  assert.deepEqual(withMasterRuntimeManifest({ projects: { 1: { type: 'client' } } }, () => manifest).filled, []);
+test('withMasterRuntimeManifest: cópia diferente cede ao manifesto e marca differed', () => {
+  const manifest = { modules: [{ moduleId: 'mdm' }], persistenceModules: [{ moduleId: 'platform' }] };
+  const stale = {
+    projects: {
+      102034: {
+        type: 'master backend',
+        modules: [{ moduleId: 'old' }],
+        persistenceModules: [{ moduleId: 'old' }],
+      },
+    },
+  };
+  const out = withMasterRuntimeManifest(stale, () => manifest);
+  assert.deepEqual(out.replaced, ['modules', 'persistenceModules']);
+  assert.deepEqual(out.differed, ['modules', 'persistenceModules']);
+  assert.deepEqual(out.config.projects[102034].persistenceModules, manifest.persistenceModules);
+});
+
+test('withMasterRuntimeManifest: manifesto ausente ou inválido lança', () => {
+  const base = { projects: { 102034: { type: 'master backend' } } };
+  assert.throws(
+    () => withMasterRuntimeManifest(base, () => null),
+    /masterModules.json de 102034 ausente ou inválido/,
+  );
+  assert.throws(
+    () => readMasterRuntimeManifest('000000'),
+    /masterModules.json de 000000 ausente ou inválido/,
+  );
+  assert.deepEqual(
+    withMasterRuntimeManifest({ projects: { 1: { type: 'client' } } }, () => ({ modules: [] })).replaced,
+    [],
+  );
+});
+
+test('assertPlatformPersistence: master sem platform lança', () => {
+  const manifest = { modules: [{ moduleId: 'mdm' }], persistenceModules: [{ moduleId: 'mdm' }] };
+  const out = withMasterRuntimeManifest(
+    { projects: { 102034: { type: 'master backend' } } },
+    () => manifest,
+  );
+  assert.throws(() => assertPlatformPersistence(out.config), /platform/);
+  assertPlatformPersistence(
+    withMasterRuntimeManifest(
+      { projects: { 102034: { type: 'master backend' } } },
+      () => ({ persistenceModules: [{ moduleId: 'platform' }] }),
+    ).config,
+  );
+});
+
+test('withMasterRuntimeManifest: arquivos reais — 102047 sem differed, plataforma presente', () => {
+  const real = JSON.parse(readFileSync(join(MLS_BASE, 'mls-102047', 'l5', 'config.json'), 'utf8'));
+  const out = withMasterRuntimeManifest(real, readMasterRuntimeManifest);
+  assert.deepEqual(out.differed, []);
+  assertPlatformPersistence(out.config);
+  const shape102056 = { ...real, projects: { ...real.projects, 102034: { root: '../mls-102034', type: 'master backend' } } };
+  const filled = withMasterRuntimeManifest(shape102056, readMasterRuntimeManifest);
+  assert.deepEqual(filled.config.projects[102034].persistenceModules, out.config.projects[102034].persistenceModules);
+  assertPlatformPersistence(filled.config);
 });
