@@ -73,11 +73,23 @@ test('withCredentialHelper acrescenta ao GIT_CONFIG_COUNT existente, sem sobresc
     '/x/helper.mjs',
     '/usr/bin/node',
   );
-  assert.equal(env.GIT_CONFIG_COUNT, '2');
+  assert.equal(env.GIT_CONFIG_COUNT, '3');
   assert.equal(env.GIT_CONFIG_KEY_0, 'a.b');
+  assert.equal(env.GIT_CONFIG_VALUE_0, 'c');
+  assert.equal(env.GIT_CONFIG_KEY_1, 'credential.helper');
+  assert.equal(env.GIT_CONFIG_VALUE_1, '');
+  assert.equal(env.GIT_CONFIG_KEY_2, 'credential.helper');
+  assert.equal(env.GIT_CONFIG_VALUE_2, credentialHelperValue('/x/helper.mjs', '/usr/bin/node'));
+  assert.equal(env.GIT_TERMINAL_PROMPT, '0');
+});
+
+test('withCredentialHelper põe o valor vazio antes do helper, para o keychain não responder', () => {
+  const env = withCredentialHelper({}, '/x/helper.mjs', '/usr/bin/node');
+  assert.equal(env.GIT_CONFIG_COUNT, '2');
+  assert.equal(env.GIT_CONFIG_KEY_0, 'credential.helper');
+  assert.equal(env.GIT_CONFIG_VALUE_0, '');
   assert.equal(env.GIT_CONFIG_KEY_1, 'credential.helper');
   assert.equal(env.GIT_CONFIG_VALUE_1, credentialHelperValue('/x/helper.mjs', '/usr/bin/node'));
-  assert.equal(env.GIT_TERMINAL_PROMPT, '0');
 });
 
 test('credentialHelperValue começa com ! para o git executar o comando como está', () => {

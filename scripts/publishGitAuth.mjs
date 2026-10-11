@@ -302,15 +302,22 @@ export function credentialHelperValue(scriptPath, nodeExec = process.execPath) {
   return `!${JSON.stringify(nodeExec)} ${JSON.stringify(scriptPath)}`;
 }
 
-/** As variáveis `GIT_CONFIG_*` que carregam o helper, mescladas com o que já houver no env. */
+/**
+ * As variáveis `GIT_CONFIG_*` que carregam o helper, mescladas com o que já houver no env.
+ *
+ * O valor vazio vem primeiro: o git zera a lista (osxkeychain inclusive) e só o helper do
+ * publishGit responde. Sem isso o keychain entrega o JWT que ele mesmo guardou, já vencido.
+ */
 export function withCredentialHelper(env, scriptPath, nodeExec = process.execPath) {
   const existing = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10);
   const count = Number.isFinite(existing) && existing > 0 ? existing : 0;
   return {
     ...env,
-    GIT_CONFIG_COUNT: String(count + 1),
+    GIT_CONFIG_COUNT: String(count + 2),
     [`GIT_CONFIG_KEY_${count}`]: 'credential.helper',
-    [`GIT_CONFIG_VALUE_${count}`]: credentialHelperValue(scriptPath, nodeExec),
+    [`GIT_CONFIG_VALUE_${count}`]: '',
+    [`GIT_CONFIG_KEY_${count + 1}`]: 'credential.helper',
+    [`GIT_CONFIG_VALUE_${count + 1}`]: credentialHelperValue(scriptPath, nodeExec),
     // Sem isto o git abre um prompt e pendura o script quando o token não serve.
     GIT_TERMINAL_PROMPT: '0',
   };

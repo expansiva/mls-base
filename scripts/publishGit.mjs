@@ -25,7 +25,7 @@
 //   pnpm publishGit 102044 local
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +35,7 @@ import {
 } from './publishGitDeps.mjs';
 import { homedir } from 'node:os';
 import {
-  AUTH_EXIT, httpsUrl, isAuthFailure, readSession, tokenState, withCredentialHelper, writeToken,
+  AUTH_EXIT, httpsUrl, isAuthFailure, isPublishHost, readSession, tokenState, withCredentialHelper, writeToken,
   credentialHelperValue, resolvePushToken,
 } from './publishGitAuth.mjs';
 import { runRedirectLogin } from './publishGitLogin.mjs';
@@ -514,7 +514,7 @@ async function confirmAlign() {
  * O access vale 1h e o refresh 30 dias: quem faz login hoje só refaz em 30 dias, porque a renovação
  * acontece dentro do `git push` (credential helper), não aqui.
  */
-async function runLogin({ installHelper, paste }) {
+async function runLogin({ installHelper, paste, flagConf = {} }) {
   const current = readSession();
   if (current.access) {
     process.stderr.write(
@@ -524,6 +524,7 @@ async function runLogin({ installHelper, paste }) {
     );
   }
 
+  if (installHelper) reportHelperSetup(installHelper, flagConf);
   if (!paste) {
     try {
       const saved = await runRedirectLogin({});
@@ -536,7 +537,7 @@ async function runLogin({ installHelper, paste }) {
         // Sem refresh o "login uma vez" não existe: melhor dizer agora que descobrir no push.
         process.stderr.write('[publishGit] warning: collab-auth did not return a refresh — it will ask for login again in 1h.\n');
       }
-      reportHelperSetup(installHelper);
+      if (!installHelper) reportHelperSetup(false, flagConf);
       return 0;
     } catch (error) {
       process.stderr.write(`[publishGit] browser login failed: ${error.message}\n`);
@@ -564,23 +565,93 @@ async function runLogin({ installHelper, paste }) {
   }
   const saved = writeToken(token);
   process.stderr.write(`[publishGit] token stored at ${saved.path} (mode 600): ${email || '(no email)'} until ${expiresAt}\n`);
-  reportHelperSetup(installHelper);
+  if (!installHelper) reportHelperSetup(false, flagConf);
   return 0;
 }
 
-function reportHelperSetup(installHelper) {
+/** Hostname https de um GIT_URL, ou '' se não for https. */
+function httpsOrigin(gitUrl) {
+  const raw = String(gitUrl ?? '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(/^https?:\/\//iu.test(raw) ? raw : `https://${raw}`);
+    if (url.protocol !== 'https:') return '';
+    return url.hostname;
+  } catch {
+    return '';
+  }
+}
+
+/** Hosts próprios (fora de `*.collabcodes.com`) declarados em `--git-url` ou em `servers/*.conf`. */
+function ownHostOrigins(flagConf = {}) {
+  const origins = [];
+  const add = (value) => {
+    const origin = httpsOrigin(value);
+    if (!origin || origin === 'collabcodes.com' || origin.endsWith('.collabcodes.com')) return;
+    if (!origins.includes(origin)) origins.push(origin);
+  };
+  add(flagConf.GIT_URL);
+  const dir = join(ROOT, 'servers');
+  if (!existsSync(dir)) return origins;
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.conf') || name.endsWith('.example')) continue;
+    add(parseKeyValueFile(join(dir, name)).GIT_URL);
+  }
+  return origins;
+}
+
+function writeScopedHelper(url, helperValue) {
+  const key = `credential.${url}.helper`;
+  gitSync(ROOT, ['config', '--global', '--unset-all', key]);
+  const blank = gitSync(ROOT, ['config', '--global', '--add', key, '']);
+  if (blank.code !== 0) {
+    fail(`[publishGit] could not register the credential helper:\n${blank.out.trim()}`);
+  }
+  const set = gitSync(ROOT, ['config', '--global', '--add', key, helperValue]);
+  if (set.code !== 0) {
+    fail(`[publishGit] could not register the credential helper:\n${set.out.trim()}`);
+  }
+}
+
+/** Hosts collab que o osxkeychain já guardou. Não devolve senha. */
+function storedCollabHosts() {
+  if (process.platform !== 'darwin') return [];
+  const dump = spawnSync('security', ['dump-keychain'], { encoding: 'utf8' });
+  const hosts = new Set();
+  for (const match of String(dump.stdout ?? '').matchAll(/"([a-z0-9.-]+\.(?:collabcodes\.com|collab\.codes))"/giu)) {
+    const host = match[1].toLowerCase();
+    if (isPublishHost(host)) hosts.add(host);
+  }
+  return [...hosts];
+}
+
+function eraseOsxKeychain(host) {
+  spawnSync('git', ['credential-osxkeychain', 'erase'], {
+    input: `protocol=https\nhost=${host}\n\n`,
+    encoding: 'utf8',
+  });
+}
+
+function reportHelperSetup(installHelper, flagConf = {}) {
   const helperScript = join(ROOT, 'scripts', 'publishGitCredential.mjs');
+  const helperValue = credentialHelperValue(helperScript);
   if (installHelper) {
-    // Mexe no git config GLOBAL do usuário — por isso só com a flag explícita.
-    const set = gitSync(ROOT, ['config', '--global', 'credential.helper', credentialHelperValue(helperScript)]);
-    if (set.code !== 0) fail(`[publishGit] could not register the credential helper:\n${set.out.trim()}`);
-    process.stderr.write('[publishGit] credential helper registered in the global git config (raw `git clone` now works).\n');
+    // Escopo de host: o valor vazio zera os helpers (osxkeychain) só para as VMs collab.
+    // O valor tem `!` e aspas; o pattern do --unset é regex e casa o script, não o texto cru.
+    gitSync(ROOT, ['config', '--global', '--unset-all', 'credential.helper', 'publishGitCredential\\.mjs']);
+    writeScopedHelper('https://*.collabcodes.com', helperValue);
+    for (const host of ownHostOrigins(flagConf)) writeScopedHelper(`https://${host}`, helperValue);
+    for (const host of storedCollabHosts()) eraseOsxKeychain(host);
+    process.stderr.write(
+      '[publishGit] credential helper registered for *.collabcodes.com (raw `git clone` now works; GitHub unchanged).\n',
+    );
     return;
   }
   process.stderr.write(
     '[publishGit] --git-url publish already uses the session with nothing extra.\n'
     + '            For a raw `git clone` to work without typing a token, run once:\n'
-    + `            git config --global credential.helper '${credentialHelperValue(helperScript)}'\n`
+    + '            git config --global --add credential.https://*.collabcodes.com.helper \'\'\n'
+    + `            git config --global --add credential.https://*.collabcodes.com.helper '${helperValue}'\n`
     + '            (or repeat this login with --install-helper)\n',
   );
 }
@@ -819,7 +890,7 @@ export function makeRebuildCommit(repo, changedDeps) {
 async function main() {
   const { id, profile, command, align, autocommit, noDeps, installHelper, paste, flagConf } = parseArgs(process.argv.slice(2));
   if (command === 'login') {
-    process.exit(await runLogin({ installHelper, paste }));
+    process.exit(await runLogin({ installHelper, paste, flagConf }));
   }
   const projectName = `mls-${id}`;
   const repo = join(ROOT, projectName);
