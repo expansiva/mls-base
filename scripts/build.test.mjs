@@ -12,6 +12,7 @@ import {
   rewriteAbsoluteImportSource,
   rewriteLocalDistAbsoluteImports,
   setProjectRoot,
+  withMasterRuntimeManifest,
 } from './build.mjs';
 
 const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -286,4 +287,21 @@ test('T5: real collabNotification.wav copies at 13934 bytes', async () => {
   } finally {
     rmSync(destRoot, { recursive: true, force: true });
   }
+});
+
+test('withMasterRuntimeManifest: preenche só o que falta no master backend', () => {
+  const manifest = { modules: [{ moduleId: 'mdm' }], persistenceModules: [{ moduleId: 'platform' }] };
+  const base = { projects: { 1: { type: 'client' }, 2: { root: '../mls-2', type: 'master backend' } } };
+  const out = withMasterRuntimeManifest(base, (id) => (id === '2' ? manifest : null));
+  assert.deepEqual(out.filled, ['modules', 'persistenceModules']);
+  assert.deepEqual(out.config.projects[2].persistenceModules, manifest.persistenceModules);
+  assert.equal(base.projects[2].persistenceModules, undefined);
+
+  const complete = { projects: { 2: { type: 'master backend', modules: [{ moduleId: 'x' }], persistenceModules: [{ moduleId: 'y' }] } } };
+  const same = withMasterRuntimeManifest(complete, () => manifest);
+  assert.deepEqual(same.filled, []);
+  assert.equal(same.config, complete);
+
+  assert.deepEqual(withMasterRuntimeManifest(base, () => null).filled, []);
+  assert.deepEqual(withMasterRuntimeManifest({ projects: { 1: { type: 'client' } } }, () => manifest).filled, []);
 });

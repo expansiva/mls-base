@@ -268,6 +268,27 @@ function projectDir(id) {
   return projectRoots.get(id) ?? resolve(ROOT, `mls-${id}`);
 }
 
+// The backend composer that merged mls-<master>/masterModules.json into the client l5/config.json
+// is gone (15a2767, 10/09), so a client whose config never carried the master's modules/
+// persistenceModules gets an empty platform registry (no _schema_migrations, mdm_*, monitor_*).
+// Fill only the gaps, in memory: the client's l5/config.json in git is never rewritten here.
+export function withMasterRuntimeManifest(config, readManifest) {
+  const entry = Object.entries(config?.projects ?? {}).find(([, project]) => project?.type === 'master backend');
+  if (!entry) return { config, filled: [] };
+  const [masterId, master] = entry;
+  const manifest = readManifest(masterId);
+  const filled = [];
+  const merged = { ...master };
+  for (const key of ['modules', 'persistenceModules']) {
+    if (!(master[key] ?? []).length && manifest?.[key]?.length) {
+      merged[key] = manifest[key];
+      filled.push(key);
+    }
+  }
+  if (filled.length === 0) return { config, filled };
+  return { config: { ...config, projects: { ...config.projects, [masterId]: merged } }, filled };
+}
+
 export function setProjectRoot(id, absPath) {
   if (absPath == null) projectRoots.delete(id);
   else projectRoots.set(id, absPath);
@@ -688,7 +709,11 @@ async function main() {
   const clientRoot = resolve(ROOT, `mls-${clientId}`);
   const configPath = clientConfigPath(clientId);
   if (!existsSync(configPath)) throw new Error(`generated config not found: ${configPath}`);
-  const clientConfig = JSON.parse(await readFile(configPath, 'utf8'));
+  const composed = JSON.parse(await readFile(configPath, 'utf8'));
+  const { config: clientConfig, filled } = withMasterRuntimeManifest(composed, (masterId) => {
+    try { return JSON.parse(readFileSync(resolve(ROOT, `mls-${masterId}`, 'masterModules.json'), 'utf8')); } catch { return null; }
+  });
+  if (filled.length > 0) log(`master manifest filled ${filled.join(', ')} (client config had none)`);
 
   // The project set comes from the generated client config (only what the app needs),
   // with each project's source root resolved from its `root` field.
@@ -708,7 +733,8 @@ async function main() {
     run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local', ...ids]);
     await validateServerOutput(clientConfig);
     // make the chosen client config discoverable at the projects-dir root
-    await cp(configPath, resolve(ROOT, 'config.json'));
+    if (filled.length > 0) await writeFile(resolve(ROOT, 'config.json'), `${JSON.stringify(clientConfig, null, 2)}\n`, 'utf8');
+    else await cp(configPath, resolve(ROOT, 'config.json'));
     log('copied generated client config to project root');
   }
 
