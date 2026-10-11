@@ -24,11 +24,14 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pathIdsOf, versionedTsconfigPathsFile } from '../syncTsconfigPaths.mjs';
 import { collectReleaseStamp, writeReleaseStamp } from './releaseStamp.mjs';
+import { databaseUrlTestFor, declaredTestMode } from './vmApps.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const run = (cmd, cwd = ROOT) => {
+const run = (cmd, cwd = ROOT, env) => {
   try {
-    return execSync(cmd, { cwd, stdio: 'inherit' });
+    const options = { cwd, stdio: 'inherit' };
+    if (env) options.env = { ...process.env, ...env };
+    return execSync(cmd, options);
   } catch (error) {
     const status = typeof error?.status === 'number' ? error.status : 1;
     throw new Error(`Command failed (${status}): ${cmd}`);
@@ -200,6 +203,14 @@ export function releasesInUse(root) {
   return inUse;
 }
 
+/** Env extra do migrate. A URL fica só aqui — nunca no comando nem no log. */
+export function envForMigrate(root, clientId) {
+  if (!(clientId && /^\d+$/.test(clientId) && declaredTestMode(root, clientId))) return undefined;
+  const url = databaseUrlTestFor(root);
+  if (!url) return undefined;
+  return { DATABASE_URL_TEST: url };
+}
+
 /**
  * Aliases `current-<id>` that this release should flip. Empty string → none
  * (the global `current` still flips in activateCurrent). Comma-separated so
@@ -287,7 +298,8 @@ function main() {
     // COLLAB_PROJECT_ID matches vmApps.mjs so the migrate hits the same database the app uses.
     console.log(`--- migrate (mls-base master backend ${masterBackendId})`);
     if (clientId && /^\d+$/.test(clientId)) {
-      run(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir);
+      const migrateEnv = envForMigrate(ROOT, clientId);
+      run(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir, migrateEnv);
     } else {
       console.log('--- migrate sem client: usa o modo da raiz da release');
       run(`node '${migrateJs}'`, releaseDir);

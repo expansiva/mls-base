@@ -19,6 +19,7 @@
 // git não fiquem trocando o arquivo um do outro.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 
@@ -53,6 +54,16 @@ export function databaseUrlTestExpr(remoteBase) {
     const port = env.PGPORT || '5432';
     return 'postgres://' + encodeURIComponent(user) + ':' + encodeURIComponent(password) + '@' + host + ':' + port + '/${TEST_DATABASE_NAME}';
   })()`;
+}
+
+/** Avalia `databaseUrlTestExpr` (o mesmo texto que o pm2 carrega). Sem URL, `''`. */
+export function databaseUrlTestFor(root) {
+  try {
+    const value = new Function('require', 'return ' + databaseUrlTestExpr(root))(createRequire(import.meta.url));
+    return typeof value === 'string' ? value : '';
+  } catch {
+    return '';
+  }
 }
 
 /** `l5/project.json` declarou modo de teste? Ausente não conta — o legado continua. */

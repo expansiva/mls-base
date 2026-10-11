@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { trackedDirtyPaths } from './gitPostReceive.mjs';
 import { collectReleaseStamp, writeReleaseStamp } from './releaseStamp.mjs';
-import { APPS_DIR, PM2_CONFIG, ensureProjectApp } from './vmApps.mjs';
+import { APPS_DIR, PM2_CONFIG, databaseUrlTestFor, ensureProjectApp } from './vmApps.mjs';
 import {
   VM_TSCONFIG,
   activateCurrent,
@@ -16,6 +16,7 @@ import {
   extrasOutsideFecho,
   fechoProjectIds,
   pm2ConfigRel,
+  envForMigrate,
   parseReleaseAliases,
   releasesInUse,
   skipPm2,
@@ -339,7 +340,7 @@ test('migrate leva COLLAB_PROJECT_ID do --client e não leva sem --client', () =
   assert.match(src, /COLLAB_PROJECT_ID=\$\{clientId\} node '\$\{migrateJs\}'/);
   assert.match(src, /clientId && \/\^\\d\+\$\/\.test\(clientId\)/);
   assert.match(src, /--- migrate sem client: usa o modo da raiz da release/);
-  const withClient = src.includes("run(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir)");
+  const withClient = src.includes("run(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir, migrateEnv)");
   const withoutClient = src.includes("run(`node '${migrateJs}'`, releaseDir)");
   assert.equal(withClient, true);
   assert.equal(withoutClient, true);
@@ -347,6 +348,27 @@ test('migrate leva COLLAB_PROJECT_ID do --client e não leva sem --client', () =
   const cmdWithout = `node '/tmp/migrate.js'`;
   assert.match(cmdWith, /COLLAB_PROJECT_ID=102047 /);
   assert.doesNotMatch(cmdWithout, /COLLAB_PROJECT_ID=/);
+});
+
+test('migrate recebe DATABASE_URL_TEST só no modo de teste', () => {
+  const root = mkdtempSync(join(tmpdir(), 'addversion-dburl-'));
+  try {
+    writeFileSync(join(root, '.env'), 'PGUSER=migrate_user\nPGPASSWORD=migrate_secret\n');
+    const projectDir = join(root, 'mls-102047', 'l5');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, 'project.json'), `${JSON.stringify({ appEnv: 'presentation' })}\n`);
+    const url = databaseUrlTestFor(root);
+    assert.match(url, /\/collab_test$/);
+    assert.equal(envForMigrate(root, '102047')?.DATABASE_URL_TEST, url);
+
+    writeFileSync(join(projectDir, 'project.json'), `${JSON.stringify({ appEnv: 'production' })}\n`);
+    assert.equal(envForMigrate(root, '102047'), undefined);
+
+    rmSync(join(projectDir, 'project.json'));
+    assert.equal(envForMigrate(root, '102047'), undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('T6: uma falha no pm2 só é lançada DEPOIS do refresh dos objs', () => {
