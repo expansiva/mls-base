@@ -15,6 +15,8 @@ import {
   withMasterRuntimeManifest,
   assertPlatformPersistence,
   readMasterRuntimeManifest,
+  snapshotClientFiles,
+  withClientFilesRestored,
 } from './build.mjs';
 
 const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -361,6 +363,82 @@ test('assertPlatformPersistence: master sem platform lança', () => {
       () => ({ persistenceModules: [{ moduleId: 'platform' }] }),
     ).config,
   );
+});
+
+const CLIENT_FILES = ['l5/config.json', 'mlsDep.json'];
+
+function captureBuildLog(fn) {
+  const lines = [];
+  const orig = console.log;
+  console.log = (...args) => { lines.push(args.join(' ')); };
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => { console.log = orig; })
+    .then((value) => ({ value, lines }));
+}
+
+test('snapshotClientFiles: compositor altera os dois e a etapa seguinte lança → bytes originais', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt60-'));
+  const config = join(root, 'l5', 'config.json');
+  const dep = join(root, 'mlsDep.json');
+  mkdirSync(dirname(config), { recursive: true });
+  const configBytes = Buffer.from('{"studio":1}\n');
+  const depBytes = Buffer.from('{"deps":["102034"]}\n');
+  writeFileSync(config, configBytes);
+  writeFileSync(dep, depBytes);
+  const { lines } = await captureBuildLog(() => assert.rejects(
+    withClientFilesRestored(root, CLIENT_FILES, async () => {
+      writeFileSync(config, '{"composed":true}\n');
+      writeFileSync(dep, '{"composed":true}\n');
+      throw new Error('migrate failed');
+    }),
+    /migrate failed/,
+  ));
+  assert.deepEqual(readFileSync(config), configBytes);
+  assert.deepEqual(readFileSync(dep), depBytes);
+  assert.ok(lines.some((line) => line.includes('client files restored after compose: l5/config.json, mlsDep.json')));
+  const restore = snapshotClientFiles(root, CLIENT_FILES);
+  restore();
+  restore();
+  assert.deepEqual(readFileSync(config), configBytes);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('snapshotClientFiles: arquivo ausente antes fica ausente depois', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt60-'));
+  const config = join(root, 'l5', 'config.json');
+  const dep = join(root, 'mlsDep.json');
+  await withClientFilesRestored(root, CLIENT_FILES, async () => {
+    mkdirSync(dirname(config), { recursive: true });
+    writeFileSync(config, '{"composed":true}\n');
+    writeFileSync(dep, '{"composed":true}\n');
+  });
+  assert.equal(existsSync(config), false);
+  assert.equal(existsSync(dep), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('snapshotClientFiles: caminho sem erro restaura o worktree e o config da release fica composto', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt60-'));
+  const config = join(root, 'l5', 'config.json');
+  const dep = join(root, 'mlsDep.json');
+  const release = join(root, 'config.json');
+  mkdirSync(dirname(config), { recursive: true });
+  const configBytes = Buffer.from('{"studio":1}\n');
+  const depBytes = Buffer.from('{"deps":[]}\n');
+  writeFileSync(config, configBytes);
+  writeFileSync(dep, depBytes);
+  const composed = { projects: { 900001: { type: 'client' } }, composed: true };
+  await withClientFilesRestored(root, CLIENT_FILES, async () => {
+    writeFileSync(config, `${JSON.stringify(composed, null, 2)}\n`);
+    writeFileSync(dep, '{"deps":["102034"]}\n');
+    const inMemory = JSON.parse(readFileSync(config, 'utf8'));
+    writeFileSync(release, `${JSON.stringify(inMemory, null, 2)}\n`);
+  });
+  assert.deepEqual(readFileSync(config), configBytes);
+  assert.deepEqual(readFileSync(dep), depBytes);
+  assert.deepEqual(JSON.parse(readFileSync(release, 'utf8')), composed);
+  rmSync(root, { recursive: true, force: true });
 });
 
 test('l5/config.json: alphaAllAuthorities true chega igual ao config gravado na release', () => {

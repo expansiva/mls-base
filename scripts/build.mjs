@@ -20,7 +20,7 @@
 //                                             # publish: compile without recomposing config
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -209,6 +209,44 @@ function summarizeTypeScriptOutput(output) {
 function tailOutput(output) {
   const tail = output.split(/\r?\n/u).filter((line) => line.trim()).slice(-40).join('\n');
   return tail ? `Compiler output:\n${tail}` : '';
+}
+
+// Bytes, not git checkout: an uncommitted edit in l5/config.json must survive the build.
+export function snapshotClientFiles(clientRoot, relPaths) {
+  const snaps = relPaths.map((rel) => {
+    const abs = join(clientRoot, rel);
+    if (!existsSync(abs)) return { rel, abs, absent: true };
+    return { rel, abs, absent: false, bytes: readFileSync(abs) };
+  });
+  return function restore() {
+    const changed = [];
+    for (const snap of snaps) {
+      const nowAbsent = !existsSync(snap.abs);
+      if (snap.absent) {
+        if (!nowAbsent) {
+          unlinkSync(snap.abs);
+          changed.push(snap.rel);
+        }
+        continue;
+      }
+      const now = nowAbsent ? null : readFileSync(snap.abs);
+      if (nowAbsent || !now.equals(snap.bytes)) {
+        mkdirSync(dirname(snap.abs), { recursive: true });
+        writeFileSync(snap.abs, snap.bytes);
+        changed.push(snap.rel);
+      }
+    }
+    if (changed.length > 0) log(`client files restored after compose: ${changed.join(', ')}`);
+  };
+}
+
+export async function withClientFilesRestored(clientRoot, relPaths, fn) {
+  const restore = snapshotClientFiles(clientRoot, relPaths);
+  try {
+    return await fn();
+  } finally {
+    restore();
+  }
 }
 
 function composeGeneratedConfig(clientId) {
@@ -724,45 +762,52 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   const clientId = detectClientId(args.client);
-  if (args.useExistingConfig) {
-    log(`using existing client config for ${clientId} (composer skipped)`);
-  } else {
-    // Normally run the composers: the Studio-written l5/config.json lacks the
-    // master runtime manifest merge (masterModules.json -> 102034
-    // modules/persistenceModules). The publish client validates that merge
-    // before invoking this build with --use-existing-config.
-    composeGeneratedConfig(clientId);
-  }
   const clientRoot = resolve(ROOT, `mls-${clientId}`);
-  const configPath = clientConfigPath(clientId);
-  if (!existsSync(configPath)) throw new Error(`generated config not found: ${configPath}`);
-  const composed = JSON.parse(await readFile(configPath, 'utf8'));
-  const { config: clientConfig, replaced, differed } = withMasterRuntimeManifest(composed, readMasterRuntimeManifest);
-  if (replaced.length > 0) log(`master manifest replaced ${replaced.join(', ')}`);
-  if (differed.length > 0) log(`master manifest differed ${differed.join(', ')} (client copy ignored)`);
-  assertPlatformPersistence(clientConfig);
+  const { clientConfig, ids } = await withClientFilesRestored(
+    clientRoot,
+    ['l5/config.json', 'mlsDep.json'],
+    async () => {
+      if (args.useExistingConfig) {
+        log(`using existing client config for ${clientId} (composer skipped)`);
+      } else {
+        // Normally run the composers: the Studio-written l5/config.json lacks the
+        // master runtime manifest merge (masterModules.json -> 102034
+        // modules/persistenceModules). The publish client validates that merge
+        // before invoking this build with --use-existing-config.
+        composeGeneratedConfig(clientId);
+      }
+      const configPath = clientConfigPath(clientId);
+      if (!existsSync(configPath)) throw new Error(`generated config not found: ${configPath}`);
+      const composed = JSON.parse(await readFile(configPath, 'utf8'));
+      const { config, replaced, differed } = withMasterRuntimeManifest(composed, readMasterRuntimeManifest);
+      if (replaced.length > 0) log(`master manifest replaced ${replaced.join(', ')}`);
+      if (differed.length > 0) log(`master manifest differed ${differed.join(', ')} (client copy ignored)`);
+      assertPlatformPersistence(config);
 
-  // The project set comes from the generated client config (only what the app needs),
-  // with each project's source root resolved from its `root` field.
-  const ids = Object.keys(clientConfig.projects ?? {});
-  if (ids.length === 0) throw new Error('config.json declares no projects.');
-  for (const id of ids) {
-    const root = clientConfig.projects[id]?.root ?? `../mls-${id}`;
-    projectRoots.set(id, resolve(clientRoot, root));
-  }
-  log(`client=${clientId} projects=${ids.join(' ')}`);
+      // The project set comes from the generated client config (only what the app needs),
+      // with each project's source root resolved from its `root` field.
+      const projectIds = Object.keys(config.projects ?? {});
+      if (projectIds.length === 0) throw new Error('config.json declares no projects.');
+      for (const id of projectIds) {
+        const root = config.projects[id]?.root ?? `../mls-${id}`;
+        projectRoots.set(id, resolve(clientRoot, root));
+      }
+      log(`client=${clientId} projects=${projectIds.join(' ')}`);
 
-  if (args.only !== 'web') {
-    await buildServer(ids);
-    // post-compile: compile each project's .less and inject into the per-file JS
-    // (same mls-ci routine the GitHub Action uses; requires the /// <mls header,
-    // so it applies to dist/local only)
-    run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local', ...ids]);
-    await validateServerOutput(clientConfig);
-    // make the chosen client config discoverable at the projects-dir root
-    await writeFile(resolve(ROOT, 'config.json'), `${JSON.stringify(clientConfig, null, 2)}\n`, 'utf8');
-    log('copied generated client config to project root');
-  }
+      if (args.only !== 'web') {
+        await buildServer(projectIds);
+        // post-compile: compile each project's .less and inject into the per-file JS
+        // (same mls-ci routine the GitHub Action uses; requires the /// <mls header,
+        // so it applies to dist/local only)
+        run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local', ...projectIds]);
+        await validateServerOutput(config);
+        // make the chosen client config discoverable at the projects-dir root
+        await writeFile(resolve(ROOT, 'config.json'), `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+        log('copied generated client config to project root');
+      }
+      return { clientConfig: config, ids: projectIds };
+    },
+  );
 
   if (args.only !== 'server') {
     await buildWeb(clientConfig, ids);
