@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { writeDraftDenoConfig } from './denoDraftConfig.mjs';
 
 function platformFixture() {
@@ -55,6 +57,24 @@ test('writeDraftDenoConfig still maps a client that is not a platform directory'
       path.join(base, 'drafts', 'solo', 'mls-999999') + path.sep,
     );
     assert.equal(config.imports['/_102034_/'], path.join(base, 'mls-102034') + path.sep);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('cli writes drafts/<slug>/deno.json and prints the path', () => {
+  const base = platformFixture();
+  try {
+    const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'denoDraftConfig.mjs');
+    const result = spawnSync(process.execPath, [script, base, 'team-102047', '102047'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const dest = path.join(base, 'drafts', 'team-102047', 'deno.json');
+    assert.equal(result.stdout, `${dest}\n`);
+    const config = JSON.parse(readFileSync(dest, 'utf8'));
+    assert.equal(
+      config.imports['/_102047_/'],
+      path.join(base, 'drafts', 'team-102047', 'mls-102047') + path.sep,
+    );
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
