@@ -2,7 +2,7 @@ import { readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export const DENO_JSON_NAME = 'deno.json';
+export const DENO_JSON_NAME = 'deno.check.json';
 
 // Deno 2.4.5: a chave "/_<id>_/" basta para o especificador absoluto; `.js`→`.ts` exige "unstable": ["sloppy-imports"].
 export function loadMlsProjectDirs(root) {

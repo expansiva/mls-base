@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  DENO_JSON_NAME,
   buildImports,
   renderDenoJson,
   writeDenoJson,
@@ -37,6 +38,9 @@ test('buildImports: uma entrada por pasta mls-*, chave /_<id>_/', () => {
 test('writeDenoJson é idempotente e inclui sloppy-imports', () => {
   withRoot((root) => {
     const dest = writeDenoJson(root);
+    assert.equal(DENO_JSON_NAME, 'deno.check.json');
+    assert.equal(dest, join(root, 'deno.check.json'));
+    assert.equal(existsSync(join(root, 'deno.json')), false);
     const first = readFileSync(dest, 'utf8');
     writeDenoJson(root);
     const second = readFileSync(dest, 'utf8');
@@ -51,6 +55,8 @@ test('writeDenoJson é idempotente e inclui sloppy-imports', () => {
 
 test('mls-base: mapa cobre o 102034 e gravar duas vezes não muda o arquivo', () => {
   const dest = writeDenoJson(MLS_BASE);
+  assert.equal(dest, join(MLS_BASE, 'deno.check.json'));
+  assert.equal(existsSync(join(MLS_BASE, 'deno.json')), false);
   const first = readFileSync(dest, 'utf8');
   writeDenoJson(MLS_BASE);
   assert.equal(readFileSync(dest, 'utf8'), first);
