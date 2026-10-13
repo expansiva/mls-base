@@ -8,6 +8,7 @@
 // Os comandos git rodam com cwd = mls-<id>/ (o .git é o do checkout do
 // projeto, não o do mls-base). Retorna o lastModify (ISO) usado no callWork.
 
+import AdmZip from 'adm-zip';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -100,10 +101,46 @@ export async function createFileInfo({ targetDir, levels, log }) {
     });
   }
 
-  const lastModify = new Date().toISOString();
-  const result = { lastModified: lastModify, files: fileInfos };
+  const previous = await readPreviousFileInfos(targetDir, log);
+  const differ = previous ? diffCount(previous.files, fileInfos) : fileInfos.length;
+  const unchanged = differ === 0 && typeof previous?.lastModified === 'string' && previous.lastModified.length > 0;
+  const lastModify = unchanged ? previous.lastModified : new Date().toISOString();
+  log('fileinfo', unchanged
+    ? `fileinfo: unchanged, lastModified kept ${lastModify}`
+    : `fileinfo: changed (${differ} files differ)`);
   log('fileinfo', `${fileInfos.length} files inventoried`);
+  const result = { lastModified: lastModify, files: fileInfos };
   return { result, lastModify };
+}
+
+// Previous inventory lives in the project's obj/compiled.zip (written on the
+// prior build). Compared as (shortPath, versionRef, Length) only — update_at
+// stays per-file and is not part of the stamp.
+async function readPreviousFileInfos(targetDir, log) {
+  const zipPath = join(targetDir, 'obj', 'compiled.zip');
+  if (!existsSync(zipPath)) return null;
+  try {
+    const entry = new AdmZip(zipPath).getEntry('fileinfos.json');
+    if (!entry) throw new Error('fileinfos.json missing');
+    const parsed = JSON.parse(entry.getData().toString('utf8'));
+    if (!parsed || !Array.isArray(parsed.files)) throw new Error('fileinfos.json has no files');
+    return parsed;
+  } catch (err) {
+    log('fileinfo', `fileinfo: previous compiled.zip unreadable (${err instanceof Error ? err.message : err})`);
+    return null;
+  }
+}
+
+function diffCount(previousFiles, nextFiles) {
+  const prev = new Map(previousFiles.map((file) => [file.shortPath, file]));
+  const next = new Map(nextFiles.map((file) => [file.shortPath, file]));
+  let n = 0;
+  for (const path of new Set([...prev.keys(), ...next.keys()])) {
+    const a = prev.get(path);
+    const b = next.get(path);
+    if (!a || !b || a.versionRef !== b.versionRef || Number(a.Length) !== Number(b.Length)) n++;
+  }
+  return n;
 }
 
 export async function writeFileInfo({ stageRoot, targetDir, levels, log }) {
