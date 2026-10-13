@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // build.mjs — mls-base runtime build
 //
-//   server  -> dist/local/_<id>_/...   (tsc emit; /_<id>_/ imports rewritten to
-//                                        relative, completing .js when the target
-//                                        exists in dist; resources copied; .js.map)
+//   server  -> dist/local/_<id>_/...   (tsc -b via tsProjectBuild; .js/.js.map
+//                                        copied from .tsbuild/; /_<id>_/ imports
+//                                        rewritten to relative; resources copied)
 //   web     -> dist/web/                 (Lit único + shells com importmap + css +
 //                                        l3; módulos do app vêm do compiled.zip)
 //
@@ -32,20 +32,23 @@ import {
   litPackageDir,
   readLitRuntimeConfig,
 } from './litRuntime.mjs';
-import { readTypeCheckPolicy } from './typeCheckPolicy.mjs';
-import { formatTypeCheckTsconfigLog, typeCheckProject } from './typeCheckRun.mjs';
+import {
+  excerptLines,
+  formatOverrideLog,
+  formatToleratedLog,
+  formatTypeCheckMarker,
+  formatTypeCheckReport,
+  readTypeCheckPolicy,
+  summarizeTscOutput,
+  verdictFor,
+} from './typeCheckPolicy.mjs';
+import { formatTypeCheckTsconfigLog } from './typeCheckRun.mjs';
+import { buildTsProjects } from './tsProjectBuild.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(ROOT, 'dist');
-// VM compile uses the unversioned pruned copy written by addNewVersion
-// (gb63). Mac `pnpm compile` without a prior release keeps extending tsconfig.json.
-function baseTsconfigRel() {
-  return existsSync(resolve(ROOT, 'tsconfig.vm.json')) ? './tsconfig.vm.json' : './tsconfig.json';
-}
 const LOCAL_DIST = resolve(DIST, 'local');
 const WEB_DIST_DIR = 'web';
-const TSC_BIN = resolve(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
-const TS_SEGMENTS = ['core', 'l1', 'l2'];
 export const RES_SEGMENTS = ['core', 'l1', 'l2', 'l3', 'l5'];
 export const RES_EXT = new Set([
   '.html', '.css', '.less', '.json', '.svg', '.md', '.sql',
@@ -55,7 +58,6 @@ export const RES_EXT = new Set([
   '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico',
   '.woff2',
 ]);
-const TSC_EMIT_BATCH_SIZE = Number.parseInt(process.env.COLLAB_TSC_EMIT_BATCH_SIZE ?? '40', 10);
 // Matches absolute project specifiers in emitted JS: from '/_102034_/l1/...'
 // Matches every form of project specifier in emitted JS:
 //   from '/_..._/...'  | import '/_..._/...'  | import('/_..._/...')  | require('/_..._/...')
@@ -76,139 +78,6 @@ function run(cmd, args) {
   if (result.status !== 0) {
     throw new Error(`Command failed (${result.status}): ${cmd} ${args.join(' ')}`);
   }
-}
-
-function runTscCommand(args, label) {
-  const fullArgs = [TSC_BIN, ...args];
-  const displayBin = toPosix(relative(ROOT, TSC_BIN));
-  log(`node ${displayBin} ${args.join(' ')}`);
-  const result = spawnSync(process.execPath, fullArgs, { cwd: ROOT, encoding: 'utf8' });
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-  if (result.error) {
-    throw new Error(`Failed to start TypeScript compiler: ${result.error.message}`);
-  }
-  if (result.status === 0) return { ok: true, label };
-
-  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  const status = result.signal ? `signal ${result.signal}` : `exit ${result.status}`;
-  const fatal = Boolean(result.signal) ||
-    /SIGKILL|Killed|ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL|JavaScript heap out of memory/iu.test(output);
-  return { ok: false, label, status, fatal, output };
-}
-
-async function runTsc(_tsconfigPath, ids, compilerOptions) {
-  if (process.env.COLLAB_RUN_TSC_TYPECHECK === '0') {
-    log('COLLAB_RUN_TSC_TYPECHECK=0 is ignored: typecheck always runs; the verdict is l5/project.json typeCheck.status');
-  }
-  const blocked = [];
-  console.log(formatTypeCheckTsconfigLog(ROOT));
-  for (const id of ids) {
-    const report = typeCheckProject({ root: ROOT, projectId: id });
-    if (report.overrideLog) log(report.overrideLog);
-    log(`typeCheck ${report.reportLine}`);
-    if (report.toleratedLog) log(report.toleratedLog);
-    for (const line of report.excerpt) log(`typeCheck ${line}`);
-    log(report.marker);
-    if (report.verdict.block) blocked.push(report);
-  }
-  if (blocked.length > 0) {
-    const first = blocked[0];
-    throw new Error([
-      `TypeScript typeCheck blocked mls-${first.projectId} (status=${first.policy.status}).`,
-      'permissive tolerates type, syntax and broken-import errors; emit/config failures and a tsc crash block in both modes (rt34).',
-      first.excerpt.join('\n') || first.reportLine,
-    ].filter(Boolean).join('\n'));
-  }
-
-  // Emit one project per tsc process. The monolithic emit can be killed by Lima's
-  // small VM memory limit; split emit keeps the release path reliable without swap.
-  for (const id of ids) {
-    const files = await collectProjectTsFiles(id);
-    const emit = await runTscEmitConfig(`mls-${id}`, `.tsconfig.build.${id}.json`, files, compilerOptions);
-    if (emit.ok) continue;
-
-    if (emit.fatal && files.length > TSC_EMIT_BATCH_SIZE) {
-      log(`tsc emit for mls-${id} could not complete (${emit.status}); retrying in batches of ${TSC_EMIT_BATCH_SIZE}`);
-      const batched = await runTscEmitBatches(id, files, compilerOptions);
-      if (batched) continue;
-    }
-
-    throw new Error([
-      `TypeScript emit failed during publish for mls-${id} (${emit.status}).`,
-      'No release will be activated because dist/local may be incomplete.',
-      summarizeTypeScriptOutput(emit.output) || tailOutput(emit.output),
-    ].filter(Boolean).join('\n'));
-  }
-}
-
-async function runTscEmitConfig(label, configName, files, compilerOptions) {
-  const configPath = resolve(ROOT, configName);
-  await writeFile(configPath, `${JSON.stringify({
-    extends: baseTsconfigRel(),
-    compilerOptions: {
-      ...compilerOptions,
-      noResolve: true,
-    },
-    // extends merges files with the base tsconfig's "include" instead of
-    // replacing it — without this override every emit (and every batch) was
-    // silently compiling the whole repo's l1/l2 (~3458 files) instead of just
-    // `files`, which is what actually blew up memory, not project/batch size.
-    include: [],
-    files,
-  }, null, 2)}\n`, 'utf8');
-  try {
-    return runTscCommand(['-p', configPath, '--noCheck', '--pretty', 'false'], `emit ${label}`);
-  } finally {
-    await unlink(configPath).catch(() => undefined);
-  }
-}
-
-async function runTscEmitBatches(id, files, compilerOptions) {
-  const dtsFiles = files.filter((file) => file.endsWith('.d.ts'));
-  const tsFiles = files.filter((file) => !file.endsWith('.d.ts'));
-  const batchSize = Number.isFinite(TSC_EMIT_BATCH_SIZE) && TSC_EMIT_BATCH_SIZE > 0
-    ? TSC_EMIT_BATCH_SIZE
-    : 40;
-  for (let start = 0, batch = 1; start < tsFiles.length; start += batchSize, batch += 1) {
-    const batchFiles = [...dtsFiles, ...tsFiles.slice(start, start + batchSize)];
-    const emit = await runTscEmitConfig(
-      `mls-${id} batch ${batch}`,
-      `.tsconfig.build.${id}.${batch}.json`,
-      batchFiles,
-      compilerOptions,
-    );
-    if (!emit.ok) {
-      throw new Error([
-        `TypeScript emit failed during publish for mls-${id} batch ${batch} (${emit.status}).`,
-        'No release will be activated because dist/local may be incomplete.',
-        summarizeTypeScriptOutput(emit.output) || tailOutput(emit.output),
-      ].filter(Boolean).join('\n'));
-    }
-  }
-  return true;
-}
-
-function summarizeTypeScriptOutput(output) {
-  const lines = output.split(/\r?\n/u);
-  const selected = [];
-  for (let i = 0; i < lines.length; i += 1) {
-    if (!/\berror TS\d+:/u.test(lines[i])) continue;
-    selected.push(lines[i]);
-    for (let j = i + 1; j < lines.length && j <= i + 3; j += 1) {
-      if (!lines[j].trim()) break;
-      if (/\berror TS\d+:/u.test(lines[j])) break;
-      selected.push(lines[j]);
-    }
-  }
-  if (selected.length > 0) return `TypeScript errors:\n${selected.slice(-40).join('\n')}`;
-  const tail = lines.filter((line) => line.trim()).slice(-40).join('\n');
-  return tail ? `Compiler output:\n${tail}` : '';
-}
-
-function tailOutput(output) {
-  const tail = output.split(/\r?\n/u).filter((line) => line.trim()).slice(-40).join('\n');
-  return tail ? `Compiler output:\n${tail}` : '';
 }
 
 // Bytes, not git checkout: an uncommitted edit in l5/config.json must survive the build.
@@ -410,22 +279,6 @@ export async function copyL3Assets(ids, destRoot) {
   return copied;
 }
 
-async function collectProjectTsFiles(id) {
-  const roots = [
-    resolve(ROOT, 'types'),
-    ...TS_SEGMENTS.map((seg) => join(projectDir(id), seg)),
-  ];
-  const files = [];
-  for (const root of roots) {
-    for (const file of await walkFiles(root)) {
-      if (file.endsWith('.ts') || file.endsWith('.d.ts')) {
-        files.push(toPosix(relative(ROOT, file)));
-      }
-    }
-  }
-  return files;
-}
-
 async function pruneLocalDistProjects(ids) {
   if (!existsSync(LOCAL_DIST)) return;
   const keep = new Set(ids.map((id) => `_${id}_`));
@@ -520,50 +373,152 @@ export async function rewriteLocalDistAbsoluteImports(localDist = LOCAL_DIST) {
   return { rewritten, completed };
 }
 
+export function tsbuildUnitDirName(members) {
+  if (members.length === 1) return members[0];
+  return `scc.${members.join('+')}`;
+}
+
+export function tsbuildLogLines(node, seconds) {
+  const label = Number.isFinite(seconds) ? seconds.toFixed(1) : '0.0';
+  return node.members.map((member) => `tsbuild ${member} ${node.status} (${label}s)`);
+}
+
+function mergeLayer(left, right) {
+  return {
+    type: (left?.type ?? 0) + (right?.type ?? 0),
+    syntax: (left?.syntax ?? 0) + (right?.syntax ?? 0),
+    import: (left?.import ?? 0) + (right?.import ?? 0),
+    emit: (left?.emit ?? 0) + (right?.emit ?? 0),
+    blocking: (left?.blocking ?? 0) + (right?.blocking ?? 0),
+    lines: [...(left?.lines ?? []), ...(right?.lines ?? [])],
+  };
+}
+
+function mergeSummaries(a, b) {
+  return {
+    l1: mergeLayer(a.l1, b.l1),
+    l2: mergeLayer(a.l2, b.l2),
+    other: mergeLayer(a.other, b.other),
+  };
+}
+
+function summaryForProject(node, projectId) {
+  const lines = ['l1', 'l2', 'other'].flatMap((key) => node.summary?.[key]?.lines ?? []);
+  const mine = lines.filter((line) => {
+    const match = /mls-(\d+)\//.exec(line);
+    return !match || match[1] === projectId;
+  });
+  return summarizeTscOutput(mine.join('\n'));
+}
+
+export function assertTypeCheckAllowed(root, ids, nodes) {
+  if (process.env.COLLAB_RUN_TSC_TYPECHECK === '0') {
+    log('COLLAB_RUN_TSC_TYPECHECK=0 is ignored: typecheck always runs; the verdict is l5/project.json typeCheck.status');
+  }
+  const blocked = [];
+  console.log(formatTypeCheckTsconfigLog(root));
+  for (const id of ids) {
+    const related = nodes.filter((node) => node.members.some((member) => member.startsWith(`${id}.`)));
+    let summary = summarizeTscOutput('');
+    let fatal = false;
+    for (const node of related) {
+      summary = mergeSummaries(summary, summaryForProject(node, id));
+      if (node.verdicts?.[id]?.fatal) fatal = true;
+    }
+    const policy = readTypeCheckPolicy(join(root, `mls-${id}`));
+    const verdict = verdictFor(policy, summary, { fatal });
+    const report = {
+      projectId: id,
+      policy,
+      reportLine: formatTypeCheckReport(id, policy, summary),
+      toleratedLog: formatToleratedLog(id, policy, summary),
+      overrideLog: formatOverrideLog(policy),
+      excerpt: excerptLines(summary),
+      marker: formatTypeCheckMarker(id, policy, summary, { fatal }),
+      verdict,
+    };
+    if (report.overrideLog) log(report.overrideLog);
+    log(`typeCheck ${report.reportLine}`);
+    if (report.toleratedLog) log(report.toleratedLog);
+    for (const line of report.excerpt) log(`typeCheck ${line}`);
+    log(report.marker);
+    if (report.verdict.block) blocked.push(report);
+  }
+  if (blocked.length > 0) {
+    const first = blocked[0];
+    throw new Error([
+      `TypeScript typeCheck blocked mls-${first.projectId} (status=${first.policy.status}).`,
+      'permissive tolerates type, syntax and broken-import errors; emit/config failures and a tsc crash block in both modes (rt34).',
+      first.excerpt.join('\n') || first.reportLine,
+    ].filter(Boolean).join('\n'));
+  }
+}
+
+/** Same spawn as tsProjectBuild, timed by the caller. */
+export function spawnTsbuild(root, tsconfigPath) {
+  const tscBin = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
+  const timeBin = '/usr/bin/time';
+  const useTime = existsSync(timeBin);
+  const args = useTime
+    ? ['-l', process.execPath, tscBin, '-b', tsconfigPath, '--pretty', 'false', '--verbose']
+    : [tscBin, '-b', tsconfigPath, '--pretty', 'false', '--verbose'];
+  const cmd = useTime ? timeBin : process.execPath;
+  const result = spawnSync(cmd, args, { cwd: root, encoding: 'utf8' });
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  const rss = /([\d]+)\s+maximum resident set size/.exec(output);
+  const fatal = Boolean(result.signal)
+    || /SIGKILL|Killed|JavaScript heap out of memory/iu.test(output)
+    || result.error != null;
+  return {
+    status: result.error ? 1 : (result.status ?? 1),
+    signal: result.signal,
+    fatal,
+    output,
+    rssBytes: rss ? Number(rss[1]) : 0,
+  };
+}
+
+export async function copyTsbuildUnits(root, nodes, localDist) {
+  let copied = 0;
+  for (const node of nodes) {
+    const dir = join(root, '.tsbuild', tsbuildUnitDirName(node.members));
+    if (!existsSync(dir)) continue;
+    for (const file of await walkFiles(dir)) {
+      if (extname(file) !== '.js' && !file.endsWith('.js.map')) continue;
+      const rel = relative(dir, file);
+      const dest = join(localDist, rel);
+      await mkdir(dirname(dest), { recursive: true });
+      await cp(file, dest);
+      copied += 1;
+    }
+  }
+  return copied;
+}
+
 // ── server build (dist/local) ────────────────────────────────────────────────
-async function buildServer(ids) {
+async function buildServer(ids, clientId) {
   log(`server build -> dist/local (${ids.map((i) => 'mls-' + i).join(' ')})`);
   await rm(LOCAL_DIST, { recursive: true, force: true });
 
-  // dynamic tsconfig: paths from the project set, emit to dist/local, sourcemaps on.
-  // Relative path values (leading "./") resolve correctly without baseUrl, so the
-  // file lives at the project root and stays forward-compatible (no baseUrl).
-  const paths = {};
-  const include = ['./types/*.d.ts'];
-  for (const id of ids) {
-    for (const seg of TS_SEGMENTS) {
-      const segDir = join(projectDir(id), seg);
-      if (!existsSync(segDir)) continue;
-      const segRel = toPosix(relative(ROOT, segDir));
-      paths[`/_${id}_/${seg}/*`] = [`./${segRel}/*`];
-      include.push(`./${segRel}/**/*.ts`, `./${segRel}/**/*.d.ts`);
-    }
-  }
-  const compilerOptions = {
-    // Force consistent ESM output for every file (dist/local/package.json is
-    // type:module). nodenext would emit CJS for files without a package.json
-    // type:module context, mixing CJS+ESM and breaking at runtime.
-    module: 'esnext',
-    moduleResolution: 'bundler',
-    outDir: toPosix(relative(ROOT, LOCAL_DIST)),
-    rootDir: '.',
-    paths,
-    sourceMap: true,
-    declaration: false,
-    noEmit: false,
-    noEmitOnError: false,
-  };
-  const tsconfig = {
-    extends: baseTsconfigRel(),
-    compilerOptions,
-    include,
-  };
-  // Single, inspectable tsconfig at the project root (where the build runs).
-  // Overwritten each run; not deleted.
-  const tmp = resolve(ROOT, 'tsconfig.build.json');
-  await writeFile(tmp, `${JSON.stringify(tsconfig, null, 2)}\n`, 'utf8');
-  log('tsconfig written: tsconfig.build.json');
-  await runTsc('tsconfig.build.json', ids, compilerOptions);
+  const seconds = [];
+  const built = buildTsProjects({
+    root: ROOT,
+    ids,
+    clientId,
+    log,
+    spawnTsc(root, tsconfigPath) {
+      const started = Date.now();
+      const result = spawnTsbuild(root, tsconfigPath);
+      seconds.push((Date.now() - started) / 1000);
+      return result;
+    },
+  });
+  if (built.failed) throw new Error(built.failed);
+  built.nodes.forEach((node, index) => {
+    for (const line of tsbuildLogLines(node, seconds[index] ?? 0)) log(line);
+  });
+  assertTypeCheckAllowed(ROOT, ids, built.nodes);
+  await copyTsbuildUnits(ROOT, built.nodes, LOCAL_DIST);
 
   // rename dist/local/mls-<id> -> dist/local/_<id>_
   if (existsSync(LOCAL_DIST)) {
@@ -795,7 +750,7 @@ async function main() {
       log(`client=${clientId} projects=${projectIds.join(' ')}`);
 
       if (args.only !== 'web') {
-        await buildServer(projectIds);
+        await buildServer(projectIds, clientId);
         // post-compile: compile each project's .less and inject into the per-file JS
         // (same mls-ci routine the GitHub Action uses; requires the /// <mls header,
         // so it applies to dist/local only)

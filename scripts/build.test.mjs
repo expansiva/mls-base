@@ -17,7 +17,12 @@ import {
   readMasterRuntimeManifest,
   snapshotClientFiles,
   withClientFilesRestored,
+  assertTypeCheckAllowed,
+  copyTsbuildUnits,
+  tsbuildLogLines,
 } from './build.mjs';
+import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { summarizeTscOutput } from './typeCheckPolicy.mjs';
 
 const MLS_BASE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ID = '900001';
@@ -464,4 +469,66 @@ test('withMasterRuntimeManifest: arquivos reais — 102047 sem differed, platafo
   const filled = withMasterRuntimeManifest(shape102056, readMasterRuntimeManifest);
   assert.deepEqual(filled.config.projects[102034].persistenceModules, out.config.projects[102034].persistenceModules);
   assertPlatformPersistence(filled.config);
+});
+
+test('copia .js e .js.map de .tsbuild e reescreve o import absoluto', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rt62-build-'));
+  const local = join(root, 'dist', 'local');
+  const unit = join(root, '.tsbuild', '9.l1', 'mls-9', 'l1');
+  await mkdir(unit, { recursive: true });
+  await writeFile(join(unit, 'a.js'), 'import { b } from "/_9_/l1/b";\n');
+  await writeFile(join(unit, 'a.js.map'), '{"file":"a.js"}\n');
+  await writeFile(join(unit, 'a.d.ts'), 'export {};\n');
+  await writeFile(join(unit, 'b.js'), 'export const b = 1;\n');
+  const copied = await copyTsbuildUnits(root, [{ members: ['9.l1'] }], local);
+  assert.equal(copied, 3);
+  await assert.rejects(readFile(join(local, 'mls-9', 'l1', 'a.d.ts'), 'utf8'));
+  await rename(join(local, 'mls-9'), join(local, '_9_'));
+  const rewritten = await rewriteLocalDistAbsoluteImports(local);
+  assert.equal(rewritten.rewritten, 1);
+  assert.equal(rewritten.completed, 1);
+  const source = await readFile(join(local, '_9_', 'l1', 'a.js'), 'utf8');
+  assert.match(source, /from "\.\/b\.js"/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('strict bloqueia com a mensagem de typeCheck; permissive não', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rt62-check-'));
+  await mkdir(join(root, 'mls-9', 'l5'), { recursive: true });
+  await writeFile(join(root, 'mls-9', 'l5', 'project.json'), `${JSON.stringify({
+    typeCheck: { status: 'strict' },
+  })}\n`);
+  const line = 'mls-9/l1/a.ts(1,1): error TS2322: bad';
+  const nodes = [{
+    members: ['9.l1'],
+    status: 'errors',
+    summary: summarizeTscOutput(line),
+    verdicts: { 9: { fatal: false } },
+  }];
+  assert.throws(
+    () => assertTypeCheckAllowed(root, ['9'], nodes),
+    (error) => {
+      assert.match(error.message, /TypeScript typeCheck blocked mls-9 \(status=strict\)\./);
+      assert.match(error.message, /permissive tolerates type, syntax and broken-import errors/);
+      assert.match(error.message, /TS2322/);
+      return true;
+    },
+  );
+  await writeFile(join(root, 'mls-9', 'l5', 'project.json'), `${JSON.stringify({
+    typeCheck: { status: 'permissive' },
+  })}\n`);
+  assert.doesNotThrow(() => assertTypeCheckAllowed(root, ['9'], nodes));
+  await rm(root, { recursive: true, force: true });
+});
+
+test('log por nó traz id.camada, status e segundos', () => {
+  const lines = tsbuildLogLines({ members: ['102047.l1', '102047.l2'], status: 'built' }, 1.24);
+  assert.deepEqual(lines, [
+    'tsbuild 102047.l1 built (1.2s)',
+    'tsbuild 102047.l2 built (1.2s)',
+  ]);
+  assert.deepEqual(
+    tsbuildLogLines({ members: ['102034.l1'], status: 'skipped' }, 0.04),
+    ['tsbuild 102034.l1 skipped (0.0s)'],
+  );
 });
