@@ -240,17 +240,30 @@ function writeUnitTsconfig(root, unit, ids) {
   return tsconfigPath;
 }
 
-function defaultSpawnTsc(root, tsconfigPath) {
+const TIME_BIN = '/usr/bin/time';
+const TSC_LINE_RE = /error TS\d+|Projects in this build|Building project|is up to date/i;
+
+/** RSS de pico. darwin: bytes (`time -l`). linux: a linha em kbytes × 1024 (`time -v`). */
+export function parseMaxRss(output, platform) {
+  const text = String(output ?? '');
+  if (platform === 'darwin') {
+    const match = /(\d+)\s+maximum resident set size/.exec(text);
+    return match ? Number(match[1]) : 0;
+  }
+  if (platform === 'linux') {
+    const match = /Maximum resident set size \(kbytes\):\s*(\d+)/.exec(text);
+    return match ? Number(match[1]) * 1024 : 0;
+  }
+  return 0;
+}
+
+function tscArgv(tsconfigPath) {
   const tscBin = join(MLS_ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
-  const timeBin = '/usr/bin/time';
-  const useTime = existsSync(timeBin);
-  const args = useTime
-    ? ['-l', process.execPath, tscBin, '-b', tsconfigPath, '--pretty', 'false', '--verbose']
-    : [tscBin, '-b', tsconfigPath, '--pretty', 'false', '--verbose'];
-  const cmd = useTime ? timeBin : process.execPath;
-  const result = spawnSync(cmd, args, { cwd: root, encoding: 'utf8' });
+  return [tscBin, '-b', tsconfigPath, '--pretty', 'false', '--verbose'];
+}
+
+function readSpawn(result) {
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  const rss = /([\d]+)\s+maximum resident set size/.exec(output);
   const fatal = Boolean(result.signal)
     || /SIGKILL|Killed|JavaScript heap out of memory/iu.test(output)
     || result.error != null;
@@ -259,8 +272,40 @@ function defaultSpawnTsc(root, tsconfigPath) {
     signal: result.signal,
     fatal,
     output,
-    rssBytes: rss ? Number(rss[1]) : 0,
   };
+}
+
+function meterMissedTsc(result, output) {
+  if (result.status === 125 || result.status === 126 || result.status === 127) return true;
+  return !TSC_LINE_RE.test(output);
+}
+
+/**
+ * Roda `tsc -b`. No darwin mede com `time -l`, no linux com `time -v`.
+ * Se o medidor não chega a executar o tsc, roda de novo sem ele. O medidor não reprova o build.
+ * @param {typeof spawnSync} [spawn]
+ * @param {NodeJS.Platform} [platform]
+ */
+export function spawnTscMeasured(root, tsconfigPath, spawn = spawnSync, platform = process.platform) {
+  const argv = tscArgv(tsconfigPath);
+  const opts = { cwd: root, encoding: 'utf8' };
+  const useMeter = (platform === 'darwin' || platform === 'linux') && existsSync(TIME_BIN);
+  if (!useMeter) {
+    return { ...readSpawn(spawn(process.execPath, argv, opts)), rssBytes: 0 };
+  }
+  const flag = platform === 'darwin' ? '-l' : '-v';
+  const measured = spawn(TIME_BIN, [flag, process.execPath, ...argv], opts);
+  const parsed = readSpawn(measured);
+  if (meterMissedTsc(measured, parsed.output)) {
+    const line = parsed.output.split(/\r?\n/).map((s) => s.trim()).find(Boolean) ?? '';
+    console.log(`tsbuild: medidor de memória indisponível (${line})`);
+    return { ...readSpawn(spawn(process.execPath, argv, opts)), rssBytes: 0 };
+  }
+  return { ...parsed, rssBytes: parseMaxRss(parsed.output, platform) };
+}
+
+function defaultSpawnTsc(root, tsconfigPath) {
+  return spawnTscMeasured(root, tsconfigPath);
 }
 
 function classifyRun(result) {
