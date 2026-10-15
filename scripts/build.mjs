@@ -679,8 +679,6 @@ export async function buildWeb(clientConfig, ids) {
     }
   }
 
-  await writeComponentStylesForWeb(clientConfig, outdir, ids);
-
   // copy shell templates referenced by config.json (kept in their _<id>_ path),
   // injetando o importmap do Lit gerado acima.
   const litImportMap = buildLitImportMap(litConfig.package, litConfig.baseUrl, litEntries);
@@ -694,42 +692,6 @@ export async function buildWeb(clientConfig, ids) {
     shells += 1;
   }
   log(`lit importmap injetado em ${shells} shell(s), ${Object.keys(litImportMap.imports).length} specifiers`);
-}
-
-function extractInjectedCss(source) {
-  const blocks = [];
-  const re = /if\s*\(\s*this\.loadStyle\s*\)\s*this\.loadStyle\s*\(\s*`([\s\S]*?)`\s*\)\s*;/gu;
-  let match;
-  while ((match = re.exec(source)) !== null) blocks.push(match[1]);
-  return blocks;
-}
-
-async function writeComponentStylesForWeb(clientConfig, outdir, ids) {
-  if (!existsSync(LOCAL_DIST)) {
-    log('component styles skipped (dist/local not found)');
-    return;
-  }
-
-  const blocks = [];
-  for (const id of ids) {
-    const l2 = resolve(LOCAL_DIST, `_${id}_`, 'l2');
-    if (!existsSync(l2)) continue;
-    for (const file of (await walkFiles(l2)).filter((f) => extname(f) === '.js')) {
-      const cssBlocks = extractInjectedCss(await readFile(file, 'utf8'));
-      for (const css of cssBlocks) blocks.push(css);
-    }
-  }
-
-  const css = `${blocks.join('\n\n')}\n`;
-  let written = 0;
-  for (const [projId, project] of Object.entries(clientConfig.projects ?? {})) {
-    if (project.type !== 'master frontend') continue;
-    const cssOut = resolve(outdir, `_${projId}_`, 'l2', 'shared', 'component-styles.css');
-    await mkdir(dirname(cssOut), { recursive: true });
-    await writeFile(cssOut, css, 'utf8');
-    written += 1;
-  }
-  log(`component styles compiled -> ${written} file(s), ${blocks.length} block(s)`);
 }
 
 // ── client config discovery ──────────────────────────────────────────────────

@@ -54,11 +54,19 @@ test('buildWeb: dist/web é Lit + shells + css, sem JS do app', { timeout: 120_0
   const backup = join(MLS_BASE, 'dist', 'web.gb93-test-bak');
   if (existsSync(backup)) rmSync(backup, { recursive: true, force: true });
   if (existsSync(outdir)) renameSync(outdir, backup);
+  const localFixture = join(MLS_BASE, 'dist', 'local', `_${ID}_`);
+  const localBackup = join(MLS_BASE, 'dist', `local._${ID}_.gb93-test-bak`);
+  if (existsSync(localBackup)) rmSync(localBackup, { recursive: true, force: true });
+  if (existsSync(localFixture)) renameSync(localFixture, localBackup);
+  const fixtureJs = join(localFixture, 'l2', 'comp.js');
+  const fixtureBody = 'if(this.loadStyle) this.loadStyle(`collab-rt69-marker { color: #12ab34; }`);\n';
+  mkdirSync(dirname(fixtureJs), { recursive: true });
+  writeFileSync(fixtureJs, fixtureBody);
   try {
     await buildWeb(
       {
         shellTemplates: { spa: `./_${ID}_/l2/spa/index.html` },
-        projects: { [ID]: { type: 'client' } },
+        projects: { [ID]: { type: 'master frontend' } },
       },
       [ID],
     );
@@ -72,10 +80,17 @@ test('buildWeb: dist/web é Lit + shells + css, sem JS do app', { timeout: 120_0
     const shell = readFileSync(join(outdir, `_${ID}_`, 'l2', 'spa', 'index.html'), 'utf8');
     assert.match(shell, /<script type="importmap">/);
     assert.match(shell, /"lit": "\/_libs\/lit\/index\.js"/);
+    assert.equal(
+      listFiles(outdir).some((f) => f.endsWith('component-styles.css')),
+      false,
+    );
+    assert.equal(readFileSync(fixtureJs, 'utf8'), fixtureBody);
   } finally {
     setProjectRoot(ID, undefined);
     rmSync(outdir, { recursive: true, force: true });
     if (existsSync(backup)) renameSync(backup, outdir);
+    rmSync(localFixture, { recursive: true, force: true });
+    if (existsSync(localBackup)) renameSync(localBackup, localFixture);
     rmSync(root, { recursive: true, force: true });
   }
 });
