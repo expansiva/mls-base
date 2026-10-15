@@ -43,7 +43,7 @@ import {
   verdictFor,
 } from './typeCheckPolicy.mjs';
 import { formatTypeCheckTsconfigLog } from './typeCheckRun.mjs';
-import { buildTsProjects, spawnTscMeasured } from './tsProjectBuild.mjs';
+import { buildTsProjects } from './tsProjectBuild.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(ROOT, 'dist');
@@ -454,6 +454,30 @@ export function assertTypeCheckAllowed(root, ids, nodes) {
   }
 }
 
+/** Same spawn as tsProjectBuild, timed by the caller. */
+export function spawnTsbuild(root, tsconfigPath) {
+  const tscBin = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
+  const timeBin = '/usr/bin/time';
+  const useTime = existsSync(timeBin);
+  const args = useTime
+    ? ['-l', process.execPath, tscBin, '-b', tsconfigPath, '--pretty', 'false', '--verbose']
+    : [tscBin, '-b', tsconfigPath, '--pretty', 'false', '--verbose'];
+  const cmd = useTime ? timeBin : process.execPath;
+  const result = spawnSync(cmd, args, { cwd: root, encoding: 'utf8' });
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  const rss = /([\d]+)\s+maximum resident set size/.exec(output);
+  const fatal = Boolean(result.signal)
+    || /SIGKILL|Killed|JavaScript heap out of memory/iu.test(output)
+    || result.error != null;
+  return {
+    status: result.error ? 1 : (result.status ?? 1),
+    signal: result.signal,
+    fatal,
+    output,
+    rssBytes: rss ? Number(rss[1]) : 0,
+  };
+}
+
 export async function copyTsbuildUnits(root, nodes, localDist) {
   let copied = 0;
   for (const node of nodes) {
@@ -484,7 +508,7 @@ async function buildServer(ids, clientId) {
     log,
     spawnTsc(root, tsconfigPath) {
       const started = Date.now();
-      const result = spawnTscMeasured(root, tsconfigPath);
+      const result = spawnTsbuild(root, tsconfigPath);
       seconds.push((Date.now() - started) / 1000);
       return result;
     },
