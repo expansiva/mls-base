@@ -368,9 +368,84 @@ test('com runPush o envio vai ao vivo e devolve a saída do hook (e o update-ref
     });
     assert.equal(sent.status, 'pushed', sent.reason);
     assert.match(sent.out, /build=ok/u);
-    assert.deepEqual(seen, ['push', '-o', 'deps=102020', 'vm', `${SNAPSHOT_REF}:refs/heads/main`]);
-    // o update-ref correu de facto, pelo gitSync
-    assert.ok(git(repo, 'rev-parse', SNAPSHOT_REF));
+    const pinned = git(repo, 'rev-parse', SNAPSHOT_REF);
+    assert.deepEqual(seen, ['push', '-o', 'deps=102020', 'vm', `${pinned}:refs/heads/main`]);
+    assert.ok(pinned);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ref técnico que avança depois do commit não troca o objeto enviado', () => {
+  withRemote(({ repo, vm, gitSync, ensureRemote }) => {
+    const mainBefore = git(repo, 'rev-parse', 'main');
+    const indexBefore = git(repo, 'write-tree');
+    writeFileSync(join(repo, 'l2', 'a.ts'), 'const a = 7;\n');
+    const plan = planSnapshot({ repo, remote: 'vm', url: vm, env: GIT_ENV, gitSync, ensureRemote });
+    const decoy = git(repo, 'commit-tree', plan.tree, '-m', 'decoy');
+    let refspec = '';
+    const wrapped = (cwd, args, env) => {
+      if (args[0] === 'push') {
+        refspec = args.at(-1);
+        git(cwd, 'update-ref', SNAPSHOT_REF, decoy);
+      }
+      return gitSync(cwd, args, env);
+    };
+    const sent = sendSnapshot({ plan, remote: 'vm', env: GIT_ENV, gitSync: wrapped });
+    const pushed = refspec.slice(0, 40);
+    assert.equal(sent.status, 'pushed', sent.reason);
+    assert.match(refspec, /^[0-9a-f]{40}:refs\/heads\/main$/u);
+    assert.notEqual(pushed, decoy);
+    assert.equal(git(vm, 'rev-parse', 'main'), pushed);
+    assert.match(git(repo, 'show', `${pushed}:l2/a.ts`), /a = 7/u);
+    assert.equal(git(repo, 'rev-parse', 'main'), mainBefore);
+    assert.equal(git(repo, 'write-tree'), indexBefore);
+    const again = planSnapshot({ repo, remote: 'vm', url: vm, env: GIT_ENV, gitSync, ensureRemote });
+    assert.equal(again.status, 'unchanged');
+  });
+});
+
+test('runPush com skip-build também envia o commit criado, não o ref técnico', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pin-async-'));
+  try {
+    const repo = makeRepo(root, 'mls-102020', { '.gitignore': '/obj/\n', 'l2/a.ts': 'const a = 1;\n' });
+    const vm = join(root, 'vm.git');
+    git(root, 'init', '-q', '--bare', '-b', 'main', vm);
+    git(vm, 'config', 'receive.advertisePushOptions', 'true');
+    git(repo, 'push', '-q', vm, 'main');
+    git(repo, 'remote', 'add', 'vm', vm);
+    const mainBefore = git(repo, 'rev-parse', 'main');
+    const indexBefore = git(repo, 'write-tree');
+    writeFileSync(join(repo, 'l2', 'a.ts'), 'const a = 8;\n');
+    const gitSync = (cwd, args, env) => {
+      try {
+        return { code: 0, out: execFileSync('git', args, { cwd, encoding: 'utf8', env: env ?? GIT_ENV }) };
+      } catch (error) {
+        return { code: error.status ?? 1, out: String(error.stderr ?? error.message) };
+      }
+    };
+    const plan = planSnapshot({ repo, remote: 'vm', url: vm, env: GIT_ENV, gitSync, ensureRemote: () => {} });
+    const decoy = git(repo, 'commit-tree', plan.tree, '-m', 'decoy-async');
+    let seen = null;
+    const sent = await sendSnapshot({
+      plan, remote: 'vm', env: GIT_ENV, pushOptions: ['skip-build'], gitSync,
+      runPush: (cwd, args) => {
+        seen = args;
+        git(cwd, 'update-ref', SNAPSHOT_REF, decoy);
+        return Promise.resolve(gitSync(cwd, args, GIT_ENV));
+      },
+    });
+    const refspec = seen.at(-1);
+    const pushed = refspec.slice(0, 40);
+    assert.equal(sent.status, 'pushed', sent.reason);
+    assert.ok(seen.includes('-o') && seen.includes('skip-build'));
+    assert.match(refspec, /^[0-9a-f]{40}:refs\/heads\/main$/u);
+    assert.notEqual(pushed, decoy);
+    assert.equal(git(vm, 'rev-parse', 'main'), pushed);
+    assert.equal(git(repo, 'rev-parse', 'main'), mainBefore);
+    assert.equal(git(repo, 'write-tree'), indexBefore);
+    const again = planSnapshot({ repo, remote: 'vm', url: vm, env: GIT_ENV, gitSync, ensureRemote: () => {} });
+    assert.equal(again.status, 'unchanged');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

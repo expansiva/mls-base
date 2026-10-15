@@ -207,7 +207,8 @@ export function sendSnapshot({ plan, remote, env, pushOptions = [], gitSync, run
 
   const args = ['push'];
   for (const option of pushOptions) args.push('-o', option);
-  args.push(remote, `${SNAPSHOT_REF}:refs/heads/main`);
+  // O ref técnico pode avançar antes do push; o objeto desta chamada é o que segue.
+  args.push(remote, `${commit}:refs/heads/main`);
   if (runPush) {
     return runPush(repo, args).then((pushed) => (pushed.code !== 0
       ? { status: 'error', reason: String(pushed.out ?? '').trim(), out: pushed.out ?? '' }
