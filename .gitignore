@@ -33,4 +33,3 @@ pm2.apps.d
 mls.d.ts
 static/
 **.js
-.tsbuild/

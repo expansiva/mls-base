@@ -1,11 +1,14 @@
-// typeCheckRun.mjs — typecheck de um mls-* pelos nós do tsProjectBuild.
+// typeCheckRun.mjs — run tsc --noEmit per layer for one mls-* project.
 //
-// O build (build.mjs) e o gate do obj (buildProjectsObj) passam pela mesma
-// função. O tsc -b usa o .tsbuild que o publish já gerou: nó em dia volta
-// skipped. O veredito continua o do typeCheck.status do projeto (rt34).
+// Cost (gb74 E3): always type-check the project in this run, even when
+// buildProjectsObj skipped the obj rebuild (cache-hot). Do not reuse the
+// buildCI code pass: that pass is mixed-layer, is skipped when up-to-date,
+// and is the reason lima and AWS disagreed. Two tsc --noEmit processes
+// (l1 = tsconfig.backend.json, l2 = tsconfig.frontend.json) per project.
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import {
   excerptLines,
   formatOverrideLog,
@@ -16,20 +19,23 @@ import {
   summarizeTscOutput,
   verdictFor,
 } from './typeCheckPolicy.mjs';
-import { buildTsProjects } from './tsProjectBuild.mjs';
+import { vmTsconfigRel } from './runtime/addNewVersion.mjs';
+import { pathIdsOf } from './syncTsconfigPaths.mjs';
 
-function mergeLayer(left, right) {
-  return {
+const LAYER_TSCONFIG = {
+  l1: './tsconfig.backend.json',
+  l2: './tsconfig.frontend.json',
+};
+
+function mergeSummaries(a, b) {
+  const mergeLayer = (left, right) => ({
     type: (left?.type ?? 0) + (right?.type ?? 0),
     syntax: (left?.syntax ?? 0) + (right?.syntax ?? 0),
     import: (left?.import ?? 0) + (right?.import ?? 0),
     emit: (left?.emit ?? 0) + (right?.emit ?? 0),
     blocking: (left?.blocking ?? 0) + (right?.blocking ?? 0),
     lines: [...(left?.lines ?? []), ...(right?.lines ?? [])],
-  };
-}
-
-function mergeSummaries(a, b) {
+  });
   return {
     l1: mergeLayer(a.l1, b.l1),
     l2: mergeLayer(a.l2, b.l2),
@@ -41,81 +47,97 @@ function emptySummary() {
   return summarizeTscOutput('');
 }
 
-function summaryForProject(node, projectId) {
-  const lines = ['l1', 'l2', 'other'].flatMap((key) => node.summary?.[key]?.lines ?? []);
-  const mine = lines.filter((line) => {
-    const match = /mls-(\d+)\//.exec(line);
-    return !match || match[1] === projectId;
+export function defaultSpawnTsc(root, tsconfigPath) {
+  const tscBin = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
+  const result = spawnSync(process.execPath, [tscBin, '-p', tsconfigPath, '--noEmit', '--pretty', 'false'], {
+    cwd: root,
+    encoding: 'utf8',
   });
-  return summarizeTscOutput(mine.join('\n'));
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  const fatal = Boolean(result.signal)
+    || /SIGKILL|Killed|JavaScript heap out of memory/iu.test(output)
+    || result.error != null;
+  return {
+    status: result.error ? 1 : (result.status ?? 1),
+    signal: result.signal,
+    fatal,
+    output,
+  };
 }
 
-/** Ids already baked into the paths of a .tsbuild unit tsconfig, in file order. */
-function idsFromTsbuild(root) {
-  const dir = join(root, '.tsbuild');
-  if (!existsSync(dir)) return [];
-  for (const name of readdirSync(dir)) {
-    const file = join(dir, name, 'tsconfig.json');
-    if (!existsSync(file)) continue;
-    try {
-      const json = JSON.parse(readFileSync(file, 'utf8'));
-      const ids = [];
-      for (const key of Object.keys(json.compilerOptions?.paths ?? {})) {
-        const match = /^\/_(\d+)_\/\*$/.exec(key);
-        if (match) ids.push(match[1]);
-      }
-      if (ids.length) return ids;
-    } catch {
-      /* next unit */
-    }
-  }
-  return [];
+function layerHasSources(root, projectId, layer) {
+  const dir = join(root, `mls-${projectId}`, layer);
+  return existsSync(dir);
 }
 
-function countTsbuildNodes(root) {
-  const dir = join(root, '.tsbuild');
-  if (!existsSync(dir)) return 0;
-  let n = 0;
-  for (const name of readdirSync(dir)) {
-    if (existsSync(join(dir, name, 'tsconfig.json'))) n += 1;
-  }
-  return n;
-}
-
-/** One line the gate prints before tsc. */
+/** One line the gate prints before tsc: `typeCheck: tsconfig=./tsconfig.vm.json aliases=13`. */
 export function formatTypeCheckTsconfigLog(root) {
-  const n = countTsbuildNodes(root);
-  return `typeCheck: paths gerados por nó (.tsbuild), ${n} nós`;
+  const rel = vmTsconfigRel(root);
+  const file = join(root, rel);
+  const n = existsSync(file) ? pathIdsOf(readFileSync(file, 'utf8')).length : 0;
+  return `typeCheck: tsconfig=${rel} aliases=${n}`;
+}
+
+/** `paths` from vmTsconfigRel (generated file when it exists, versioned otherwise). */
+function compilerPathsFromRoot(root) {
+  const file = join(root, vmTsconfigRel(root));
+  if (!existsSync(file)) return undefined;
+  const ids = pathIdsOf(readFileSync(file, 'utf8'));
+  if (!ids.length) return undefined;
+  const paths = {};
+  for (const id of ids) paths[`/_${id}_/*`] = [`./mls-${id}/*`];
+  return paths;
+}
+
+function writeLayerTsconfig(root, projectId, layer) {
+  const configName = `.tsconfig.typecheck.${projectId}.${layer}.json`;
+  const configPath = resolve(root, configName);
+  const include = [
+    `./mls-${projectId}/${layer}/**/*.ts`,
+    `./mls-${projectId}/${layer}/**/*.d.ts`,
+    './types/*.d.ts',
+  ];
+  if (layer === 'l1') include.push(`./mls-${projectId}/nodejs*/**/*.ts`);
+  // Child `paths` override inherited ones, so the gate sees the machine's
+  // aliases without dirtying the versioned tsconfig base. Do not set
+  // `baseUrl`: it is commented out in tsconfig.base.json, and paths resolve
+  // relative to this file, which lives at the repo root.
+  const compilerOptions = { noEmit: true };
+  const paths = compilerPathsFromRoot(root);
+  if (paths) compilerOptions.paths = paths;
+  writeFileSync(configPath, `${JSON.stringify({
+    extends: LAYER_TSCONFIG[layer],
+    compilerOptions,
+    include,
+  }, null, 2)}\n`, 'utf8');
+  return configPath;
 }
 
 /**
- * Type-check one project. Same function for the dist path and the obj/gate
- * path, so the verdict cannot depend on which of the two ran.
+ * Type-check one project, both layers. Same function for the dist path
+ * (`build.mjs`) and the obj/gate path (`buildProjectsObj` / gitPostReceive),
+ * so the verdict cannot depend on which of the two ran or on the obj cache.
  *
- * Nodes are this project's l1/l2, or the cycle node that contains them
- * when .tsbuild was already planned with the publish's id set.
- *
- * @param {{ root: string, projectId: string, env?: NodeJS.ProcessEnv, spawnTsc?: Function }} args
+ * @param {{ root: string, projectId: string, env?: NodeJS.ProcessEnv, spawnTsc?: typeof defaultSpawnTsc }} args
  */
-export function typeCheckProject({ root, projectId, env = process.env, spawnTsc }) {
+export function typeCheckProject({ root, projectId, env = process.env, spawnTsc = defaultSpawnTsc }) {
   const projectDir = join(root, `mls-${projectId}`);
   const policy = readTypeCheckPolicy(projectDir, env);
-  const baked = idsFromTsbuild(root);
-  const ids = baked.includes(String(projectId)) ? baked : [projectId];
-  const built = buildTsProjects({
-    root,
-    ids,
-    clientId: projectId,
-    env,
-    ...(spawnTsc ? { spawnTsc } : {}),
-  });
-  const related = built.nodes.filter((node) => node.members.some((member) => member.startsWith(`${projectId}.`)));
   let summary = emptySummary();
-  let fatal = Boolean(built.failed);
-  for (const node of related) {
-    summary = mergeSummaries(summary, summaryForProject(node, projectId));
-    if (node.verdicts?.[projectId]?.fatal) fatal = true;
+  let fatal = false;
+
+  for (const layer of /** @type {const} */ (['l1', 'l2'])) {
+    if (!layerHasSources(root, projectId, layer)) continue;
+    const configPath = writeLayerTsconfig(root, projectId, layer);
+    try {
+      const result = spawnTsc(root, configPath);
+      if (result.fatal) fatal = true;
+      summary = mergeSummaries(summary, summarizeTscOutput(result.output));
+    } finally {
+      try { unlinkSync(configPath); } catch { /* already gone */ }
+    }
   }
+
   const verdict = verdictFor(policy, summary, { fatal });
   return {
     projectId,
@@ -134,8 +156,8 @@ export function typeCheckProject({ root, projectId, env = process.env, spawnTsc 
  * Type-check every id. Used by both paths so a cache-hot project cannot
  * disappear from the report.
  *
- * @param {{ root: string, projectIds: string[], env?: NodeJS.ProcessEnv, spawnTsc?: Function }} args
+ * @param {{ root: string, projectIds: string[], env?: NodeJS.ProcessEnv, spawnTsc?: typeof defaultSpawnTsc }} args
  */
-export function typeCheckProjects({ root, projectIds, env = process.env, spawnTsc }) {
+export function typeCheckProjects({ root, projectIds, env = process.env, spawnTsc = defaultSpawnTsc }) {
   return projectIds.map((projectId) => typeCheckProject({ root, projectId, env, spawnTsc }));
 }

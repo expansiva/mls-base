@@ -54,12 +54,8 @@ function withFixture({ status, reason = 'fixture' }, fn) {
   }
 }
 
-function layerOfTsconfig(tsconfigPath) {
-  return /(?:^|[.+])l2(?:[./]|$)/.test(tsconfigPath) ? 'l2' : 'l1';
-}
-
 function spawnTypeError(_root, tsconfigPath) {
-  const layer = layerOfTsconfig(tsconfigPath);
+  const layer = /\.l2\.json$/.test(tsconfigPath) ? 'l2' : 'l1';
   return {
     status: layer === 'l2' ? 2 : 0,
     fatal: false,
@@ -68,7 +64,7 @@ function spawnTypeError(_root, tsconfigPath) {
 }
 
 function spawnImportError(_root, tsconfigPath) {
-  const layer = layerOfTsconfig(tsconfigPath);
+  const layer = /\.l2\.json$/.test(tsconfigPath) ? 'l2' : 'l1';
   return {
     status: layer === 'l2' ? 2 : 0,
     fatal: false,
@@ -77,7 +73,7 @@ function spawnImportError(_root, tsconfigPath) {
 }
 
 function spawnEmitError(_root, tsconfigPath) {
-  const layer = layerOfTsconfig(tsconfigPath);
+  const layer = /\.l2\.json$/.test(tsconfigPath) ? 'l2' : 'l1';
   return {
     status: layer === 'l2' ? 2 : 0,
     fatal: false,
@@ -245,7 +241,7 @@ ${pathBlock(vmIds)}
   writeFileSync(join(projectDir, 'l5', 'project.json'), JSON.stringify({ appEnv: 'presentation' }));
 }
 
-test('T2: o tsconfig do gate é o do nó em .tsbuild, não o do tsconfig.vm.json', () => {
+test('T2: o tsconfig do gate traz paths de todos os mls-* do disco, inclusive o que falta no versionado', () => {
   const root = mkdtempSync(join(tmpdir(), 'gb-not11-t2-'));
   try {
     writeTypecheckFixture(root, {
@@ -255,12 +251,13 @@ test('T2: o tsconfig do gate é o do nó em .tsbuild, não o do tsconfig.vm.json
     });
     const captured = captureLayerConfigs(root, '102056');
     assert.ok(captured.length >= 1);
-    for (const { path, config } of captured) {
-      assert.match(path, /\.tsbuild\/102056\.l[12]\/tsconfig\.json$/);
-      assert.equal(config.compilerOptions.composite, true);
-      assert.ok(config.compilerOptions.paths['/_102056_/*']);
-      assert.equal(config.compilerOptions.paths['/_102039_/*'], undefined);
+    for (const { config } of captured) {
+      assert.deepEqual(
+        Object.keys(config.compilerOptions.paths).sort(),
+        ['/_102039_/*', '/_102056_/*'],
+      );
       assert.equal(config.compilerOptions.baseUrl, undefined);
+      assert.equal(config.compilerOptions.noEmit, true);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -280,8 +277,7 @@ test('T3: paths do gate não incluem projeto que não existe no disco; tsc acusa
       "import x from '/_999999_/missing.js';\nexport const n = x;\n",
     );
     const captured = captureLayerConfigs(root, '102056');
-    for (const { path, config } of captured) {
-      assert.match(path, /\.tsbuild\/102056\.l[12]\/tsconfig\.json$/);
+    for (const { config } of captured) {
       assert.equal(config.compilerOptions.paths['/_999999_/*'], undefined);
       assert.ok(config.compilerOptions.paths['/_102056_/*']);
     }
@@ -332,7 +328,7 @@ test('T3: paths do gate não incluem projeto que não existe no disco; tsc acusa
   }
 });
 
-test('T4: sem tsconfig.vm.json o gate não inventa alias do versionado', () => {
+test('T4: sem tsconfig.vm.json o gate lê o versionado (Mac) e não inventa alias', () => {
   const root = mkdtempSync(join(tmpdir(), 'gb-not11-t4-'));
   try {
     writeTypecheckFixture(root, {
@@ -343,7 +339,10 @@ test('T4: sem tsconfig.vm.json o gate não inventa alias do versionado', () => {
     const captured = captureLayerConfigs(root, '102039');
     assert.ok(captured.length >= 1);
     for (const { config } of captured) {
-      assert.deepEqual(Object.keys(config.compilerOptions.paths).sort(), ['/_102039_/*']);
+      assert.deepEqual(
+        Object.keys(config.compilerOptions.paths).sort(),
+        ['/_100554_/*', '/_102039_/*'],
+      );
       assert.equal(config.compilerOptions.baseUrl, undefined);
     }
   } finally {
@@ -477,19 +476,15 @@ test('clone06 T7: typeCheck: tsconfig=… aliases=N sai com o N certo', () => {
       vmIds: ALL_13,
       projectId: '102057',
     });
-    mkdirSync(join(root, '.tsbuild', '102057.l1'), { recursive: true });
-    mkdirSync(join(root, '.tsbuild', '102057.l2'), { recursive: true });
-    writeFileSync(join(root, '.tsbuild', '102057.l1', 'tsconfig.json'), '{}\n');
-    writeFileSync(join(root, '.tsbuild', '102057.l2', 'tsconfig.json'), '{}\n');
     assert.equal(
       formatTypeCheckTsconfigLog(root),
-      'typeCheck: paths gerados por nó (.tsbuild), 2 nós',
+      'typeCheck: tsconfig=./tsconfig.vm.json aliases=13',
     );
     const dir = dirname(fileURLToPath(import.meta.url));
     const run = readFileSync(join(dir, 'typeCheckRun.mjs'), 'utf8');
     const build = readFileSync(join(dir, 'build.mjs'), 'utf8');
     const objs = readFileSync(join(dir, 'runtime', 'buildProjectsObj.mjs'), 'utf8');
-    assert.match(run, /typeCheck: paths gerados por nó \(\.tsbuild\), \$\{n\} nós/);
+    assert.match(run, /typeCheck: tsconfig=\$\{rel\} aliases=\$\{n\}/);
     assert.match(build, /formatTypeCheckTsconfigLog/);
     assert.match(objs, /formatTypeCheckTsconfigLog/);
   } finally {

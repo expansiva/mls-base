@@ -292,14 +292,15 @@ test('updateTsconfigPaths recusa tsconfig sem bloco paths', () => {
   }
 });
 
-test('tsconfig.vm.json está no .gitignore e o build importa o tsProjectBuild', () => {
+test('tsconfig.vm.json está no .gitignore e o compile da VM aponta para ele', () => {
   const ignore = readFileSync(join(MLS_BASE, '.gitignore'), 'utf8');
   assert.match(ignore, /^tsconfig\.vm\.json$/m);
   const addSrc = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
   assert.match(addSrc, /VM_TSCONFIG = 'tsconfig\.vm\.json'/);
   assert.match(addSrc, /writeFileSync\(dest,/);
   const buildSrc = readFileSync(join(HERE, '..', 'build.mjs'), 'utf8');
-  assert.match(buildSrc, /from '\.\/tsProjectBuild\.mjs'/);
+  assert.match(buildSrc, /function baseTsconfigRel/);
+  assert.match(buildSrc, /tsconfig\.vm\.json/);
   const createSrc = readFileSync(join(HERE, '..', 'buildCI', 'createTsconfig.mjs'), 'utf8');
   assert.match(createSrc, /tsconfig\.json raiz do mls-base nunca é tocado/);
 });
