@@ -106,5 +106,10 @@ test('os dois shells do runtime carregam os marcadores e nenhum CDN', () => {
     assert.ok(html.includes('<!-- collab:lit-importmap -->'), `${shell} sem marcador de abertura`);
     assert.ok(html.includes('<!-- /collab:lit-importmap -->'), `${shell} sem marcador de fecho`);
     assert.equal(html.includes('jsdelivr'), false, `${shell} ainda aponta para o CDN`);
+    assert.ok(
+      html.includes('href="/_102033_/l2/shared/tailwind.css"'),
+      `${shell} perdeu o CSS básico`,
+    );
+    assert.equal(html.includes('component-styles.css'), false, `${shell} ainda referencia o agregado`);
   }
 });
