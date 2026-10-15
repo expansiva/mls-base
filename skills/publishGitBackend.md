@@ -20,7 +20,7 @@ compiles and cuts a release.
 | setup on the VM (idempotent) | `mls-base/scripts/runtime/gitReposSetup.mjs --root /data/mls-base` |
 | platform checkout (lima copy → git) | `mls-base/scripts/runtime/ensureMlsBaseCheckout.mjs` |
 | hook | `mls-base/scripts/runtime/gitPostReceive.sh` → `gitPostReceive.mjs` |
-| client side | `mls-base/scripts/publishGit.mjs <projectId> local\|remote [--align] [--autocommit]` |
+| client side | `mls-base/scripts/publishGit.mjs <projectId> local\|remote [--align] [--autocommit]` — `local` aligns lima to the captured Mac SHA by itself; `--align` remains the remote unrelated confirmation |
 | clone from VM | `mls-base/scripts/publishGit.mjs <projectId> clone local\|remote` |
 
 Each repo gets `main` + an immutable `vm-baseline` snapshot and
@@ -48,11 +48,31 @@ equals local HEAD; if the ref did not move, it still exits 1 and says **Publish 
 matters is produced on the VM by the hook (and on GitHub by the Action). Keeping `obj/` versioned
 makes the hook's rewrite dirty the VM worktree, and `updateInstead` then refuses every later push.
 
-`--align` remains for the first push onto a repo whose history is unrelated (a folder that
-existed before it was git-managed, or a clone that never shared a commit with the VM).
-Confirmation is human by design — `clone` never answers it and never force-pushes. A project
-born with `vm:init` carries `.collab-git` inside `vm-baseline`, so later pushes are
-fast-forward and do not ask.
+**Local aligns by itself; remote does not.** Lima has no history of its own: the Mac is the
+source. `publishGit <id> local` (no `--align`, no prompt) keeps same/ahead as a normal push
+and, for behind, diverged, and unrelated — including after rebase, amend, or reset — sends
+the SHA captured under the lock with `--force-with-lease=refs/heads/main:<SHA just read>`.
+It does not pull, reset, or rebase the Mac, and it never uses plain `--force`. `--align` is
+still accepted on local and changes nothing. A refused lease is a concurrent conflict: the
+command stops and does not fetch and force again in that attempt. Do not delete the lock at
+the start of a publish, and do not reset lima by hand as the routine after a rebase.
+
+**Remote stays as it was.** behind and diverged are refused (`pull/rebase`). unrelated still
+needs `--align` plus the interactive confirmation. `clone` never answers that prompt and
+never force-pushes. A project born with `vm:init` carries `.collab-git` inside
+`vm-baseline`, so later pushes are fast-forward and do not ask.
+
+**One local publish at a time per Mac workspace.** Every `local` publish from the same
+mls-base ROOT — any app, over SSH or HTTPS — takes one lock in the system temp directory
+before the first local mutation or fetch, and holds it through dependency snapshots until
+the app push and its hook have a known result. Another publisher from that ROOT waits
+(one notice, then 250 ms polls, ten minutes). At the limit it exits without fetch or push
+and without removing the active lock. A dead owner, incomplete metadata, or an uncertain
+remote end (signal during the push/hook, or https `disconnect-applied` once the ref matches
+but the build is not known to have finished) keeps the lock. The supervisor deletes that
+directory only after confirming the hook on lima has finished. The lock is this workspace's
+CLI, not a distributed lock: another Mac or a manual push is still subject to Git's own
+checks.
 
 **A publish with no content change makes no release, and that is intended** (nothing to rebuild). To force one, make an empty commit (`git commit --allow-empty`) before `pnpm publish:git`. The migrate of the publish runs with the app's `COLLAB_PROJECT_ID` and, in a test mode (`development`/`presentation`), the same `DATABASE_URL_TEST` pm2 gives the app (rt54); it prints `[migrate] projeto <id>, appEnv=<modo>, banco <nome>` so the target database is never silent.
 
@@ -65,8 +85,9 @@ the history that seeds the VM on a client-class project. Cycle:
 2. **Commit** — a coherent message written by the LLM. After this, `publishGit` does not need
    `--autocommit`.
 3. **Publish** — from `mls-<id>`: `pnpm publish:git` (lima) or `pnpm publish:remote` (production
-   VM). Same as `node scripts/publishGit.mjs <id> local|remote`. Add `--align` only on the first
-   unrelated-histories push (the confirmation is interactive; do not auto-answer it).
+   VM). Same as `node scripts/publishGit.mjs <id> local|remote`. Lima aligns a rewritten Mac
+   history by itself. On production, `--align` is only the unrelated-histories confirmation
+   (interactive; do not auto-answer it); behind and diverged stay refused.
 4. **Test** — `/monitor/tests` on the new release.
 5. **Report** — passed / failed × the baseline.
 
