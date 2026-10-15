@@ -41,6 +41,7 @@ import {
 import { runRedirectLogin } from './publishGitLogin.mjs';
 import { addMissingTsconfigPaths } from './syncTsconfigPaths.mjs';
 import { formatClientConfigWarn, validateClientConfigFile } from './validateClientConfig.mjs';
+import { createPublishLocalLock } from './publishGitLocalLock.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_REMOTE_BASE = '/data/mls-base';
@@ -95,7 +96,7 @@ function usage() {
     '  local  — PUBLISH_LOCAL_* from mls-base/.env',
     '  remote — CLI flags, else servers/remote.conf (copy from servers/remote.conf.example)',
     '  clone  — git clone from the VM; existing folder: connect remote `vm` and report state, never force',
-    '  --align — first-time unrelated histories: --force-with-lease after a diff + confirm',
+    '  --align — local: alignment is automatic (flag kept for compatibility). remote unrelated: --force-with-lease after a diff + confirm',
     '  --autocommit — dirty worktree: git add -A and commit `publish: <area> (n files), …` before push',
     '  obj/ is disposable locally (the VM hook rebuilds it); publishGit deletes it from disk and git before push',
   ].join('\n');
@@ -854,6 +855,7 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env }) {
   if (!changed.length) return { changed: [], missing };
 
   for (const entry of changed) {
+    activeGuard?.setPhase('deps');
     const sent = sendSnapshot({
       plan: entry.plan,
       remote: VM_REMOTE,
@@ -919,6 +921,11 @@ async function main() {
     process.exit(0);
   }
 
+  if (profile === 'local') {
+    activeGuard = createLocalPublishGuard();
+    await activeGuard.begin(ROOT);
+  }
+
   const branch = gitOut(repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (branch !== 'main') {
     fail(`publish from main (current branch: ${branch}).`);
@@ -933,6 +940,7 @@ async function main() {
 
   ensureVmRemote(repo, url);
 
+  activeGuard?.setPhase('fetch');
   process.stderr.write(`[publishGit] ${projectName} → ${url} (${profile})\n`);
   const fetch = gitSync(repo, ['fetch', VM_REMOTE, '+refs/heads/main:refs/remotes/vm/main'], env);
   if (fetch.code !== 0) {
@@ -941,7 +949,8 @@ async function main() {
     fail(`could not read VM main:\n${fetch.out.trim()}`);
   }
 
-  const localSha = gitOut(repo, ['rev-parse', 'HEAD']);
+  let originSha = gitOut(repo, ['rev-parse', 'HEAD']);
+  const localSha = originSha;
   const remoteRef = gitSync(repo, ['rev-parse', 'refs/remotes/vm/main']);
   if (remoteRef.code !== 0) {
     fail('the VM has no main branch; run gitReposSetup on the VM first.');
@@ -971,26 +980,26 @@ async function main() {
       `[publishGit] app unchanged; deps changed: ${rebuildIds.join(' ')} — marker commit on the project to cut the release.\n`,
     );
     makeRebuildCommit(repo, rebuildIds);
-  }
-  if (rel === 'behind' || rel === 'diverged') {
-    fail('the VM has commits you do not — pull/rebase.');
+    originSha = selectPublishedSha(gitOut(repo, ['rev-parse', 'HEAD']));
   }
 
-  let forceLease = '';
-  if (rel === 'unrelated') {
-    printDiffSummary(repo, localSha, remoteSha);
-    if (!align) {
-      fail(
-        '\n[publishGit] refusing automatic force. Re-run with --align and confirm the summary above.',
-      );
-    }
+  if (rel === 'unrelated' && profile !== 'local') printDiffSummary(repo, localSha, remoteSha);
+  const decision = alignmentDecision({ profile, rel, align, localSha: originSha, remoteSha });
+  if (!decision.proceed) fail(decision.message);
+  if (decision.needsConfirm) {
     const ok = await confirmAlign();
     if (!ok) fail('[publishGit] alignment cancelled.');
-    forceLease = remoteSha;
     process.stderr.write('[publishGit] aligning with --force-with-lease…\n');
   }
-  const pushArgs = clientPushArgs({ remote: VM_REMOTE, changedDeps, forceLease });
+  if (decision.aligning && profile === 'local') process.stderr.write(`${decision.message}\n`);
+  const pushArgs = clientPushArgs({
+    remote: VM_REMOTE,
+    changedDeps,
+    forceLease: decision.forceLease,
+    srcSha: originSha,
+  });
 
+  activeGuard?.setPhase('push/hook');
   const pushed = await runGitLive(repo, pushArgs, env);
   const text = pushed.out;
   const https = Boolean(conf.GIT_URL);
@@ -1003,8 +1012,8 @@ async function main() {
       explainDirtyVm(text);
       process.exit(1);
     }
-    if (/non-fast-forward|failed to push some refs/i.test(text) && !isPushDisconnect(text)) {
-      fail('the VM has commits you do not — pull/rebase.');
+    if (isNonFastForward(text) && !isPushDisconnect(text)) {
+      fail(nonFastForwardMessage(profile, Boolean(decision.forceLease)));
     }
   }
 
@@ -1018,21 +1027,22 @@ async function main() {
   if (needsRefCheck) {
     remoteShaAfter = readRemoteMainSha(repo, env);
   }
-  const localHead = gitOut(repo, ['rev-parse', 'HEAD']);
+  const publishedSha = selectPublishedSha(originSha);
   const verdict = classifyPushResult({
     code: pushed.code,
     text,
     https,
-    localSha: localHead,
+    localSha: publishedSha,
     remoteShaAfter,
   });
 
   if (verdict.kind === 'disconnect-applied') {
-    process.stderr.write(`${disconnectAppliedMessage(localHead)}\n`);
+    process.stderr.write(`${disconnectAppliedMessage(publishedSha)}\n`);
+    if (profile === 'local') activeGuard?.conclude('disconnect-applied');
     process.exit(0);
   }
   if (verdict.kind === 'disconnect-not-applied' || verdict.kind === 'push-error') {
-    fail(pushNotAppliedMessage({ code: pushed.code, kind: verdict.kind, localSha: localHead, remoteShaAfter }));
+    fail(pushNotAppliedMessage({ code: pushed.code, kind: verdict.kind, localSha: publishedSha, remoteShaAfter }));
   }
 
   reportBuildMarker(text);
@@ -1106,12 +1116,131 @@ export function readRemoteMainSha(repo, env, { gitSyncFn = gitSync, attempts = 4
   return '';
 }
 
-export function clientPushArgs({ remote, changedDeps = [], forceLease = '' }) {
+export function clientPushArgs({ remote, changedDeps = [], forceLease = '', srcSha = '' } = {}) {
   const args = ['push'];
   if (changedDeps.length) args.push('-o', `deps=${changedDeps.join(',')}`);
   if (forceLease) args.push(`--force-with-lease=refs/heads/main:${forceLease}`);
-  args.push(remote, 'main');
+  args.push(remote, srcSha ? `${srcSha}:refs/heads/main` : 'main');
   return args;
+}
+
+export function shortSha(sha) {
+  return String(sha || '').slice(0, 7);
+}
+
+/** Origin pinned at capture time. A later HEAD from another session is not the publish. */
+export function selectPublishedSha(capturedSha) {
+  return capturedSha;
+}
+
+/**
+ * Local behind/diverged/unrelated align with the captured remote SHA.
+ * Remote behind/diverged stay refused. Remote unrelated still needs --align and confirmation.
+ */
+export function alignmentDecision({ profile, rel, align = false, localSha = '', remoteSha = '' }) {
+  if (rel === 'same' || rel === 'ahead') {
+    return { proceed: true, forceLease: '', aligning: false, needsConfirm: false };
+  }
+  if (profile === 'local' && (rel === 'behind' || rel === 'diverged' || rel === 'unrelated')) {
+    return {
+      proceed: true,
+      forceLease: remoteSha,
+      aligning: true,
+      needsConfirm: false,
+      message:
+        `[publishGit] aligning local ${rel}: ${shortSha(localSha)} over VM ${shortSha(remoteSha)} ` +
+        'with --force-with-lease (Mac history kept).',
+    };
+  }
+  if (rel === 'behind' || rel === 'diverged') {
+    return { proceed: false, message: 'the VM has commits you do not — pull/rebase.' };
+  }
+  if (rel === 'unrelated') {
+    if (!align) {
+      return {
+        proceed: false,
+        needsConfirm: false,
+        message: '\n[publishGit] refusing automatic force. Re-run with --align and confirm the summary above.',
+      };
+    }
+    return { proceed: true, forceLease: remoteSha, aligning: true, needsConfirm: true };
+  }
+  return { proceed: false, message: `unexpected relation ${rel}` };
+}
+
+export function isNonFastForward(text) {
+  return /non-fast-forward|failed to push some refs|stale info/i.test(String(text ?? ''));
+}
+
+/** Local lease refusal is a conflict to report, not a cue to fetch and force again. */
+export function nonFastForwardMessage(profile, usedLease) {
+  if (profile === 'local' && usedLease) {
+    return '[publishGit] lease refused: remote main moved during this publish. Concurrent conflict; not retrying.';
+  }
+  return 'the VM has commits you do not — pull/rebase.';
+}
+
+export function shouldRetainLocalLock(kind) {
+  return kind === 'disconnect-applied' || kind === 'uncertain' || kind === 'interrupted';
+}
+
+const REMOTE_WRITE_PHASES = new Set(['deps', 'push/hook']);
+
+let activeGuard = null;
+
+export function createLocalPublishGuard(options = {}) {
+  const lock = options.lock ?? createPublishLocalLock(options);
+  const state = { phase: 'idle' };
+  const onSignal = (sig) => {
+    if (REMOTE_WRITE_PHASES.has(state.phase)) {
+      lock.retain(`interrupted by ${sig} during ${state.phase}; remote conclusion unknown`);
+      state.phase = 'retained';
+      process.stderr.write(
+        `[publishGit] local lock retained: ${sig} during push/hook; supervisor must confirm the remote hook finished.\n`,
+      );
+    }
+    process.exit(1);
+  };
+  const guard = {
+    state,
+    async begin(root) {
+      const got = await lock.acquire({ root, phase: 'prepare' });
+      if (!got.ok) fail(got.diagnosis || `publish local lock not acquired (${got.code || 'busy'})`);
+      state.phase = 'prepare';
+      if (options.bindSignals !== false) {
+        process.on('SIGINT', onSignal);
+        process.on('SIGTERM', onSignal);
+        process.on('SIGHUP', onSignal);
+      }
+      return got;
+    },
+    setPhase(phase) {
+      state.phase = phase;
+      return lock.updatePhase(phase);
+    },
+    conclude(kind) {
+      if (state.phase === 'retained') return 'retained';
+      if (shouldRetainLocalLock(kind)) {
+        const diagnosis = kind === 'disconnect-applied'
+          ? 'https disconnect-applied: ref matches published SHA; hook completion unknown'
+          : `remote conclusion unknown (${kind})`;
+        lock.retain(diagnosis);
+        state.phase = 'retained';
+        process.stderr.write(
+          `[publishGit] local lock retained: ${diagnosis}. Supervisor must confirm the remote operation finished.\n`,
+        );
+        return 'retained';
+      }
+      lock.release();
+      state.phase = 'released';
+      return 'released';
+    },
+    noteRejection() {
+      if (REMOTE_WRITE_PHASES.has(state.phase)) return guard.conclude('uncertain');
+      return 'pending-exit-release';
+    },
+  };
+  return guard;
 }
 
 export function warnClientConfig(root, projectId, write = (text) => process.stderr.write(text)) {
@@ -1169,6 +1298,7 @@ function invokedAsMain() {
 
 if (invokedAsMain()) {
   main().catch((error) => {
+    activeGuard?.noteRejection();
     fail(error instanceof Error ? error.stack || error.message : String(error));
   });
 }

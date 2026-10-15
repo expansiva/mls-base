@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   autocommitDirty,
+  alignmentDecision,
   classifyPushResult,
   clientPushArgs,
+  createLocalPublishGuard,
   commitMessageFromNames,
   DIRTY_LOCAL_MSG,
   disconnectAppliedMessage,
@@ -19,11 +21,13 @@ import {
   makeRebuildCommit,
   MISSING_HOOK_MSG,
   needsRebuildCommit,
+  nonFastForwardMessage,
   noteTsconfigPaths,
   parseArgs,
   pushNotAppliedMessage,
   readRemoteMainSha,
   rebuildCommitMessage,
+  selectPublishedSha,
   remoteConfMissingMessage,
   remoteUrlFor,
   resolveProfileConf,
@@ -576,6 +580,153 @@ test('formatPublishClientConfigTail lê o marker do hook e não muda o MARKER_OK
   const MARKER_OK = /##gitBackend build=ok release=(\d{14}) project=mls-\d+##/;
   assert.equal(MARKER_OK.exec(hook)[1], '20260906120000');
   assert.equal(formatPublishClientConfigTail('##gitBackend build=ok release=20260906120000 project=mls-102039##'), '');
+});
+
+test('clientPushArgs aceita origem fixa e conserva o default main', () => {
+  assert.deepEqual(clientPushArgs({
+    remote: 'vm',
+    changedDeps: ['102025'],
+    forceLease: 'abc123',
+    srcSha: 'deadbeefcafebabe',
+  }), [
+    'push',
+    '-o',
+    'deps=102025',
+    '--force-with-lease=refs/heads/main:abc123',
+    'vm',
+    'deadbeefcafebabe:refs/heads/main',
+  ]);
+  assert.deepEqual(clientPushArgs({ remote: 'vm', srcSha: '' }), ['push', 'vm', 'main']);
+});
+
+test('origem publicada continua a SHA capturada quando o HEAD avança depois', () => {
+  const captured = 'aaa1111captured';
+  const headNow = 'bbb2222laterhead';
+  assert.equal(selectPublishedSha(captured), captured);
+  assert.notEqual(selectPublishedSha(captured), headNow);
+  assert.deepEqual(clientPushArgs({ remote: 'vm', srcSha: selectPublishedSha(captured) }), [
+    'push', 'vm', 'aaa1111captured:refs/heads/main',
+  ]);
+});
+
+test('cinco relações nos dois perfis, com e sem --align', () => {
+  const localSha = '1111111aaaaaaa';
+  const remoteSha = '2222222bbbbbbb';
+  for (const align of [false, true]) {
+    for (const rel of ['same', 'ahead']) {
+      for (const profile of ['local', 'remote']) {
+        const decision = alignmentDecision({ profile, rel, align, localSha, remoteSha });
+        assert.equal(decision.proceed, true, `${profile} ${rel} align=${align}`);
+        assert.equal(decision.forceLease, '');
+        assert.equal(decision.needsConfirm, false);
+      }
+    }
+    for (const rel of ['behind', 'diverged', 'unrelated']) {
+      const local = alignmentDecision({ profile: 'local', rel, align, localSha, remoteSha });
+      assert.equal(local.proceed, true, `local ${rel}`);
+      assert.equal(local.forceLease, remoteSha);
+      assert.equal(local.needsConfirm, false);
+      assert.match(local.message, new RegExp(`aligning local ${rel}`));
+      assert.match(local.message, /1111111/);
+      assert.match(local.message, /2222222/);
+      assert.doesNotMatch(local.message, /pull\/rebase/);
+    }
+    for (const rel of ['behind', 'diverged']) {
+      const remote = alignmentDecision({ profile: 'remote', rel, align, localSha, remoteSha });
+      assert.equal(remote.proceed, false, `remote ${rel} align=${align}`);
+      assert.match(remote.message, /pull\/rebase/);
+    }
+  }
+  const unrelatedOff = alignmentDecision({
+    profile: 'remote', rel: 'unrelated', align: false, localSha, remoteSha,
+  });
+  assert.equal(unrelatedOff.proceed, false);
+  assert.match(unrelatedOff.message, /refusing automatic force/);
+  const unrelatedOn = alignmentDecision({
+    profile: 'remote', rel: 'unrelated', align: true, localSha, remoteSha,
+  });
+  assert.equal(unrelatedOn.proceed, true);
+  assert.equal(unrelatedOn.needsConfirm, true);
+  assert.equal(unrelatedOn.forceLease, remoteSha);
+});
+
+test('lease recusada no local não pede nova tentativa; remote mantém pull/rebase', () => {
+  assert.match(nonFastForwardMessage('local', true), /lease refused/);
+  assert.match(nonFastForwardMessage('local', true), /not retrying/);
+  assert.match(nonFastForwardMessage('remote', true), /pull\/rebase/);
+  assert.match(nonFastForwardMessage('local', false), /pull\/rebase/);
+});
+
+test('guard local libera em desfecho conhecido e retém disconnect/sinal durante o push', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rt73-guard-'));
+  const root = mkdtempSync(join(tmp, 'root-'));
+  const child = `
+    import { createLocalPublishGuard } from ${JSON.stringify(SCRIPT)};
+    const guard = createLocalPublishGuard({ tmpRoot: process.env.TMP });
+    const got = await guard.begin(process.env.ROOT);
+    if (process.env.MODE === 'push' || process.env.MODE === 'disconnect' || process.env.MODE === 'marker') {
+      guard.setPhase('push/hook');
+    }
+    process.stdout.write(got.dir + '\\n');
+    if (process.env.MODE === 'disconnect') {
+      guard.conclude('disconnect-applied');
+      process.exit(0);
+    }
+    if (process.env.MODE === 'marker') {
+      guard.conclude('marker-ok');
+      process.exit(0);
+    }
+    if (process.env.MODE === 'exit') process.exit(0);
+    setInterval(() => {}, 1000);
+  `;
+  function run(mode) {
+    return spawnSync(process.execPath, ['--input-type=module', '-e', child], {
+      encoding: 'utf8',
+      env: { ...process.env, TMP: tmp, ROOT: root, MODE: mode },
+    });
+  }
+  try {
+    const known = run('exit');
+    assert.equal(known.status, 0, known.stderr);
+    const knownDir = known.stdout.trim().split('\n').pop();
+    assert.equal(existsSync(knownDir), false);
+
+    const marker = run('marker');
+    assert.equal(marker.status, 0, marker.stderr);
+    assert.equal(existsSync(marker.stdout.trim().split('\n').pop()), false);
+
+    const dropped = run('disconnect');
+    assert.equal(dropped.status, 0, dropped.stderr);
+    const droppedDir = dropped.stdout.trim().split('\n').pop();
+    const droppedMeta = JSON.parse(readFileSync(join(droppedDir, 'owner.json'), 'utf8'));
+    assert.equal(droppedMeta.retained, true);
+    assert.match(droppedMeta.diagnosis, /disconnect-applied/);
+    rmSync(droppedDir, { recursive: true, force: true });
+
+    const held = spawn(process.execPath, ['--input-type=module', '-e', child], {
+      env: { ...process.env, TMP: tmp, ROOT: root, MODE: 'push' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const dir = await new Promise((resolvePromise, reject) => {
+      let buf = '';
+      held.stdout.on('data', (chunk) => {
+        buf += chunk.toString();
+        const line = buf.split('\n')[0];
+        if (line) resolvePromise(line.trim());
+      });
+      held.on('error', reject);
+      held.on('exit', (code) => reject(new Error(`child exited early ${code}`)));
+    });
+    held.kill('SIGTERM');
+    const code = await new Promise((resolvePromise) => held.on('exit', resolvePromise));
+    assert.notEqual(code, 0);
+    const meta = JSON.parse(readFileSync(join(dir, 'owner.json'), 'utf8'));
+    assert.equal(meta.retained, true);
+    assert.match(meta.diagnosis, /SIGTERM/);
+    rmSync(dir, { recursive: true, force: true });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('noteTsconfigPaths no clone acrescenta o mapeamento; publish chama o validador', () => {
