@@ -1,0 +1,11 @@
+{
+  "name": "tools-browser",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@playwright/cli": "0.1.22",
+    "playwright": "1.64.0-alpha-1790635538000"
+  }
+}
