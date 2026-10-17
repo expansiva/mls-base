@@ -295,6 +295,48 @@ test('--help local explica setup e sessão e encaminha o resto ao CLI', async ()
   rmSync(root, { recursive: true, force: true });
 });
 
+test('scripts da raiz encaminham os argumentos e o id da sessão', async () => {
+  const repo = path.resolve(HERE, '..', '..');
+  const pkg = JSON.parse(readFileSync(path.join(repo, 'package.json'), 'utf8'));
+  assert.equal(pkg.scripts.browser, 'node tools/browser/browser.mjs');
+  assert.equal(pkg.scripts['browser:setup'], 'node tools/browser/browser.mjs setup');
+  for (const name of ['install:dev', 'postinstall', 'postInstall', 'build', 'publishGit']) {
+    assert.equal(String(pkg.scripts[name]).includes('tools/browser'), false);
+  }
+  const bin = path.join(HERE, 'node_modules', '@playwright', 'cli', 'playwright-cli.js');
+  const nm = path.join(HERE, 'node_modules');
+  const existed = existsSync(bin);
+  const nmExisted = existsSync(nm);
+  const previous = existed ? readFileSync(bin) : null;
+  installFakeCli(HERE);
+  const log = path.join(mkdtempSync(path.join(tmpdir(), 'rt74-script-')), 'log');
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn('pnpm', ['run', 'browser', '--', '-s=codex-rt74-script', 'fill', 'e1', 'ola mundo'], {
+        cwd: repo,
+        env: { ...process.env, RT74_LOG: log },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.on('error', reject);
+      child.on('exit', (code) => resolve({ code, stdout, stderr }));
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const [call] = readLog(log);
+    assert.equal(call.args.includes('-s=codex-rt74-script'), true);
+    assert.equal(call.args.includes('ola mundo'), true);
+    assert.equal(call.cmd, 'fill');
+    assert.equal(call.cwd, realpathSync(HERE));
+  } finally {
+    if (existed) writeFileSync(bin, previous);
+    else if (!nmExisted) rmSync(nm, { recursive: true, force: true });
+    else rmSync(bin, { force: true });
+  }
+});
+
 test('ação de browser sem sessão não chega ao CLI', async () => {
   const root = scratch();
   installFakeCli(root);
