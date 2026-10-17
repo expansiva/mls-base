@@ -80,7 +80,7 @@ function readLog(file) {
   return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
-test('cwd externo não muda a raiz do pacote nem o Firefox do config', async () => {
+test('cwd externo não muda a raiz do pacote nem o Chromium do config', async () => {
   const root = scratch();
   installFakeCli(root);
   const log = path.join(root, 'log');
@@ -92,14 +92,14 @@ test('cwd externo não muda a raiz do pacote nem o Firefox do config', async () 
   assert.equal(call.args[0], '--config');
   assert.equal(realpathSync(call.args[1]), realpathSync(path.join(root, '.playwright', 'cli.config.json')));
   const config = JSON.parse(readFileSync(call.args[1], 'utf8'));
-  assert.equal(config.browser.browserName, 'firefox');
+  assert.equal(config.browser.browserName, 'chromium');
   assert.equal(call.args.at(-1), '--idle-timeout=300000');
   assert.equal(call.args.includes('--browser=chromium'), false);
   rmSync(root, { recursive: true, force: true });
   rmSync(away, { recursive: true, force: true });
 });
 
-test('setup no Mac é explícito, isolado e só pede o Firefox', async () => {
+test('setup no Mac é explícito, isolado e só pede o Chromium', async () => {
   const root = scratch();
   const meta = mkdtempSync(path.join(tmpdir(), 'rt74-pnpm-'));
   const pnpmLog = path.join(meta, 'pnpm.jsonl');
@@ -128,9 +128,9 @@ process.exit(0);
     '--dir', realpathSync(root), 'install', '--ignore-workspace', '--ignore-scripts',
   ]);
   const pw = JSON.parse(readFileSync(pwLog, 'utf8').trim());
-  assert.deepEqual(pw.args, ['install', 'firefox']);
+  assert.deepEqual(pw.args, ['install', 'chromium']);
   assert.equal(pw.cwd, realpathSync(root));
-  assert.equal(JSON.stringify(pw.args).includes('chromium'), false);
+  assert.equal(JSON.stringify(pw.args).includes('firefox'), false);
   assert.equal(JSON.stringify(pw.args).includes('webkit'), false);
   rmSync(root, { recursive: true, force: true });
   rmSync(meta, { recursive: true, force: true });
@@ -170,6 +170,7 @@ test('recusa outro motor, attach, CDP, close-all e perfil humano sem subir o CLI
   writeFileSync(webkit, JSON.stringify({ browser: { browserName: 'webkit' } }));
   const home = path.join(root, 'home');
   const human = path.join(home, 'Library', 'Application Support', 'Firefox', 'Profiles', 'x');
+  const chromeProfile = path.join(home, 'Library', 'Application Support', 'Chromium', 'Default');
   const cases = [
     ['-s=codex-rt74-1', 'open', '--browser=chrome'],
     ['-s=codex-rt74-1', 'attach', '--cdp=http://127.0.0.1:9'],
@@ -178,6 +179,7 @@ test('recusa outro motor, attach, CDP, close-all e perfil humano sem subir o CLI
     ['close-all'],
     ['kill-all'],
     ['-s=codex-rt74-1', 'open', '--profile', human],
+    ['-s=codex-rt74-1', 'open', '--profile', chromeProfile],
   ];
   for (const args of cases) {
     const result = await run(root, args, { RT74_LOG: log, HOME: home });

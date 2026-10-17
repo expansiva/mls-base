@@ -1,4 +1,4 @@
-# Browser local — Playwright CLI com Firefox
+# Browser local — Playwright CLI com Chromium
 
 Mesma ferramenta para Codex e Claude Code, pelo terminal do Mac. Não há MCP, skill global nem configuração em `~/.codex` ou `~/.claude`. O `--help` do launcher e este arquivo são a mesma referência.
 
@@ -18,7 +18,7 @@ Fora do `mls-base` (chat com outro cwd):
 node /Volumes/WagnerSSD1/collab/mls-base/tools/browser/browser.mjs setup
 ```
 
-Só Darwin instala. O setup pede o Firefox do Playwright, não o Firefox de `/Applications` e não Chromium, Chrome, Edge ou WebKit.
+Só Darwin instala. O motor é o Chromium do Playwright: no Firefox do Playwright (156) a página perde o service worker depois da primeira navegação; no Chromium (Chrome for Testing 155) o `controller` permanece nos reloads. Sem `channel` e sem o Google Chrome de marca do Mac. Sem perfil humano, sem Edge, WebKit ou Firefox como motor.
 
 ## Sessão nomeada
 
@@ -88,6 +88,6 @@ Perfil em disco só quando a sessão precisa sobreviver ao fecho do browser, num
 
 ## Cache e service worker
 
-Não afirmar que `context.serviceWorkers()` funciona no Firefox. Para cache e service worker, ler as APIs da própria página (CacheStorage, registration) e os logs ou contadores que o harness já emite. Não bloquear o service worker e não usar `route` para medir cache HTTP: o routing desliga esse cache.
+No Chromium o service worker continua controlando a página nos F5, e `context.serviceWorkers()` existe nesse motor. Para cache e service worker, ler as APIs da própria página (CacheStorage, registration) e os logs ou contadores que o harness já emite. Não bloquear o service worker e não usar `route` para medir cache HTTP: o routing desliga esse cache.
 
-O harness Puppeteer/Firefox anterior continua como está. Sem fallback para Chrome.
+O harness Puppeteer/Firefox anterior continua disponível. Sem perfil humano e sem o Google Chrome de marca.

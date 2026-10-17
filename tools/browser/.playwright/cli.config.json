@@ -1,6 +1,6 @@
 {
   "browser": {
-    "browserName": "firefox",
+    "browserName": "chromium",
     "isolated": true,
     "launchOptions": {
       "headless": true

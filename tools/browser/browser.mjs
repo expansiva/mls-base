@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Launcher fino do Playwright CLI (Firefox). Não instala nada sozinho.
+// Launcher fino do Playwright CLI (Chromium). Não instala nada sozinho.
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { platform } from 'node:os';
@@ -94,7 +94,7 @@ async function helpAndForward() {
 function localHelp() {
   const self = path.join(ROOT, 'browser.mjs');
   return [
-    'tools/browser — Playwright CLI with Firefox, on the Mac.',
+    'tools/browser — Playwright CLI with Chromium, on the Mac.',
     '',
     'setup (once, darwin only; not run by a normal command):',
     `  node ${self} setup`,
@@ -107,7 +107,7 @@ function localHelp() {
     `  node ${self} -s=codex-rt74-<id> close`,
     '',
     'No session required: help, version, list.',
-    'Engine: Firefox. Refuses Chromium, Chrome, Edge, WebKit, attach, and CDP.',
+    'Engine: Playwright Chromium. Refuses Firefox, Chrome, Edge, WebKit, attach, and CDP.',
     '--headed is allowed. A profile only via --profile pointing at a dedicated folder.',
     'Headless session idle: 5 min. Deadlines: 60 s per operation, 10 min for setup.',
     'Detailed CLI help (after setup): playwright-cli --help',
@@ -131,13 +131,13 @@ async function setup() {
     console.error(`Playwright did not appear at ${PW_BIN}. Run again: node ${path.join(ROOT, 'browser.mjs')} setup`);
     return 1;
   }
-  const firefox = await runChild(process.execPath, [PW_BIN, 'install', 'firefox'], {
+  const chromium = await runChild(process.execPath, [PW_BIN, 'install', 'chromium'], {
     cwd: ROOT,
     env: cliEnv(),
     deadline,
   });
-  if (firefox.code !== 0 || firefox.timed || interrupted) {
-    console.error(firefox.timed ? 'Setup timed out during install firefox.' : 'install firefox failed.');
+  if (chromium.code !== 0 || chromium.timed || interrupted) {
+    console.error(chromium.timed ? 'Setup timed out during install chromium.' : 'install chromium failed.');
     return 1;
   }
   return 0;
@@ -154,10 +154,10 @@ function refusalReason(argv, command) {
     if (a === '--cdp' || a.startsWith('--cdp=') || a === '--extension' || a.startsWith('--extension=')) {
       return `${a} refused: no attach/CDP/Chrome.`;
     }
-    if (a === '--channel' || a.startsWith('--channel=')) return `${a} refused: the engine is Playwright's Firefox.`;
+    if (a === '--channel' || a.startsWith('--channel=')) return `${a} refused: the engine is Playwright's Chromium.`;
     const browser = flagValue(argv, i, '--browser');
-    if (browser.present && browser.value.toLowerCase() !== 'firefox') {
-      return `browser ${browser.value} refused: use Firefox.`;
+    if (browser.present && browser.value.toLowerCase() !== 'chromium') {
+      return `browser ${browser.value} refused: use Chromium.`;
     }
     const profile = flagValue(argv, i, '--profile');
     if (profile.present && isHumanProfile(profile.value)) {
@@ -169,7 +169,7 @@ function refusalReason(argv, command) {
     const why = configRejection(configArg);
     if (why) return why;
   } else if (!existsSync(CONFIG)) {
-    return `Firefox config missing: ${CONFIG}`;
+    return `Chromium config missing: ${CONFIG}`;
   }
   return '';
 }
@@ -197,15 +197,15 @@ function configRejection(file) {
     return `Could not read config ${file}.`;
   }
   const browser = json.browser || {};
-  if (browser.browserName && browser.browserName !== 'firefox') {
-    return `Config ${file} switches the engine to ${browser.browserName}. Use Firefox.`;
+  if (browser.browserName && browser.browserName !== 'chromium') {
+    return `Config ${file} switches the engine to ${browser.browserName}. Use Chromium.`;
   }
   if (browser.cdpEndpoint || browser.remoteEndpoint || browser.cdpHeaders) {
     return `Config ${file} uses CDP/remote. Refused.`;
   }
   const launch = browser.launchOptions || {};
   if (launch.channel || launch.executablePath) {
-    return `Config ${file} sets channel/executablePath. Firefox must be Playwright's.`;
+    return `Config ${file} sets channel/executablePath. Chromium must be Playwright's.`;
   }
   if (browser.userDataDir && isHumanProfile(browser.userDataDir)) {
     return `Config ${file} uses a human profile. Refused.`;
@@ -219,11 +219,14 @@ function isHumanProfile(p) {
   const roots = [
     path.join(home, 'Library', 'Application Support', 'Firefox'),
     path.join(home, 'Library', 'Application Support', 'Google', 'Chrome'),
+    path.join(home, 'Library', 'Application Support', 'Chromium'),
     path.join(home, 'Library', 'Application Support', 'Microsoft Edge'),
     path.join(home, '.mozilla'),
     path.join(home, '.config', 'google-chrome'),
+    path.join(home, '.config', 'chromium'),
     '/Applications/Firefox.app',
     '/Applications/Google Chrome.app',
+    '/Applications/Chromium.app',
   ];
   return roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
 }
