@@ -45,6 +45,7 @@ Cross-cutting:
 - [`modelTypes.md`](modelTypes.md) — model preference per prompt.
 - [`mlsProjectsArch.md`](mlsProjectsArch.md) — project layout in production; three implementations of the mls lib surface (cfe / host CLI / runtime VM).
 - [`browserLocal.md`](browserLocal.md) — browsing/clicking a screen from Codex or Claude Code on the Mac: `pnpm run browser -- -s=<client>-<id> …` (Playwright CLI + Chromium; never branded Google Chrome or a human profile); setup once, named session, read only the region you need.
+- [`publishLima.md`](publishLima.md) — publishing an app to lima: changed dependencies go along as working-tree snapshots, what the local lock protects and what to check first (dirty app/deps, `.collab-msg.lock`).
 
 ## Rules that hold everywhere
 
