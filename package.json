@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "private": true,
     "collabLibs": {
-        "libs": "20260911215739",
+        "libs": "20261015225303",
         "monaco": "20240313204233"
     },
     "scripts": {
