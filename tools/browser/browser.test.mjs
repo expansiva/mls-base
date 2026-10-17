@@ -236,6 +236,39 @@ test('headed não impõe idle; open headless impõe cinco minutos', async () => 
   rmSync(root, { recursive: true, force: true });
 });
 
+test('eval, find e click não recebem --config; o close de limpeza também não', async () => {
+  const root = scratch();
+  installFakeCli(root);
+  const log = path.join(root, 'log');
+  const env = { RT74_LOG: log };
+  for (const args of [
+    ['-s=codex-rt74-1', 'eval', '1'],
+    ['-s=codex-rt74-1', 'find', 'Save'],
+    ['-s=codex-rt74-1', 'click', 'e1'],
+  ]) {
+    const result = await run(root, args, env);
+    assert.equal(result.code, 0, args.join(' '));
+  }
+  const calls = readLog(log);
+  assert.deepEqual(calls.map((line) => line.cmd), ['eval', 'find', 'click']);
+  for (const call of calls) assert.equal(call.args.includes('--config'), false, call.cmd);
+
+  const timed = await run(root, ['-s=codex-rt74-9', 'open', 'http://localhost:2047'], {
+    ...env,
+    RT74_SLEEP: '20000',
+    BROWSER_TOOL_OP_MS: '300',
+    BROWSER_TOOL_CLEANUP_MS: '2000',
+  });
+  assert.equal(timed.code, 1);
+  const lines = readLog(log);
+  const opened = lines.find((line) => line.cmd === 'open');
+  const closed = lines.find((line) => line.cmd === 'close');
+  assert.equal(opened.args[0], '--config');
+  assert.equal(closed.args.includes('--config'), false);
+  assert.equal(closed.args.includes('-s=codex-rt74-9'), true);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('timeout encerra só a sessão nomeada e não vira sucesso', async () => {
   const root = scratch();
   installFakeCli(root);

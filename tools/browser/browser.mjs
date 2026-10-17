@@ -229,7 +229,9 @@ function isHumanProfile(p) {
 }
 
 function withDefaults(argv, command) {
-  const out = configPath(argv) ? [...argv] : ['--config', CONFIG, ...argv];
+  const out = [...argv];
+  // CLI 0.1.22 accepts --config only on open. cwd is ROOT, so the default file applies to the rest.
+  if (command === 'open' && !configPath(argv)) out.unshift('--config', CONFIG);
   const headed = argv.includes('--headed') || argv.some((a) => a === '--headless=false' || a === '--headless=0');
   const hasIdle = argv.some((a) => a === '--idle-timeout' || a.startsWith('--idle-timeout='));
   if (command === 'open' && !headed && !hasIdle) out.push(`--idle-timeout=${IDLE_MS}`);
@@ -263,7 +265,7 @@ function sessionName(argv) {
 async function closeNamedSession(session) {
   if (!session || !existsSync(CLI_BIN)) return;
   cleaning = true;
-  await runChild(process.execPath, [CLI_BIN, `--config`, CONFIG, `-s=${session}`, 'close'], {
+  await runChild(process.execPath, [CLI_BIN, `-s=${session}`, 'close'], {
     cwd: ROOT,
     env: cliEnv(),
     timeoutMs: CLEANUP_MS,
