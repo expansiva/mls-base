@@ -391,8 +391,10 @@ if (process.env.LOCAL_TEST_BENCH_ROLE === 'remote') {
     process.exitCode = 1;
   });
 } else if (isDirect()) {
-  hostMain().catch((error) => {
+  try {
+    hostMain();
+  } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
-  });
+  }
 }

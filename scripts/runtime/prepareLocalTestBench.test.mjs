@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -232,6 +232,38 @@ test('caminho remoto real aguarda o retorno e publica o resumo sem cookie', () =
   assert.equal(saved.personas.membro.cmUserId, 'cm-m');
   assert.equal((statSync(path.join(dir, '102047.json')).mode & 0o777), 0o600);
   rmSync(box.base, { recursive: true, force: true });
+});
+
+test('entrada direta do host: exit 0 com o resumo e exit 1 com a falha', () => {
+  const script = new URL('./prepareLocalTestBench.mjs', import.meta.url).pathname;
+  const argv = [script, '--project', '102047', '--runtime-root', '/rel', '--cm-root', '/cm'];
+  const summary = 'manifest: /etc/collab/local-tests/102047.json\nprojectId: 102047\n';
+  const okBin = mkdtempSync(path.join(tmpdir(), 'rt85-ssh-ok-'));
+  const failBin = mkdtempSync(path.join(tmpdir(), 'rt85-ssh-fail-'));
+  writeFileSync(
+    path.join(okBin, 'ssh'),
+    "#!/bin/sh\nprintf '%s\\n' 'manifest: /etc/collab/local-tests/102047.json' 'projectId: 102047'\n",
+  );
+  writeFileSync(path.join(failBin, 'ssh'), '#!/bin/sh\necho ssh-bench-failed >&2\nexit 1\n');
+  chmodSync(path.join(okBin, 'ssh'), 0o755);
+  chmodSync(path.join(failBin, 'ssh'), 0o755);
+  const baseEnv = { ...process.env };
+  delete baseEnv.LOCAL_TEST_BENCH_ROLE;
+  const ok = spawnSync(process.execPath, argv, {
+    encoding: 'utf8',
+    env: { ...baseEnv, PATH: `${okBin}:${baseEnv.PATH ?? ''}` },
+  });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stdout, summary);
+  assert.equal(ok.stdout.includes('cookieKey'), false);
+  const fail = spawnSync(process.execPath, argv, {
+    encoding: 'utf8',
+    env: { ...baseEnv, PATH: `${failBin}:${baseEnv.PATH ?? ''}` },
+  });
+  assert.equal(fail.status, 1);
+  assert.match(fail.stderr, /ssh-bench-failed/);
+  rmSync(okBin, { recursive: true, force: true });
+  rmSync(failBin, { recursive: true, force: true });
 });
 
 test('o host só chama ssh lima-ubuntu24 e recusa stdout com cookie', () => {
