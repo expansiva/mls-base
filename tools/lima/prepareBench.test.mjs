@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { dispatch } from './sessionVm.mjs';
 import {
   BenchError, PROBE_ACTIVITY_SQL, PROBE_COUNT_SQL, PROBE_DATABASE_SQL, PROBE_DEPENDENTS_SQL, PROBE_SCOPE_SQL, prepareBench, probeWithPg,
 } from './prepareBench.mjs';
@@ -41,7 +42,8 @@ function benchTree(options = {}) {
     id: 'rel-a', client: '102047', versionRef: 'abc', platformCommit: 'def', libs: 'pin', monaco: '1',
   }));
   write(path.join(release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'migrate.js'), 'process.exit(0)\n');
-  write(path.join(release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'resetLocalDb.js'), options.resetBody ?? 'process.exit(0)\n');
+  const resetLine = '##resetLocalDb {"modules":[{"moduleId":"tarefas","tables":1,"seedRows":1}],"seededTables":["schema_seed"],"database":"collab_app_test"}\\n';
+  write(path.join(release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'resetLocalDb.js'), options.resetBody ?? `process.stdout.write('${resetLine}'); process.exit(0);\n`);
   write(path.join(release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'seedLocalTest.js'), 'process.exit(0)\n');
   write(path.join(cm, 'history.txt'), 'cm-history-kept\n');
   return { root, remote, release, cm };
@@ -271,6 +273,75 @@ test('vm stdin refuses a missing operation before any ddl', () => {
   assert.equal(body.code, 'operation');
   assert.equal(body.ready, false);
   assert.equal(existsSync(marker), false);
+});
+
+test('the real session lock is awaited before ddl', async () => {
+  const tree = benchTree({
+    resetBody: 'require("fs").writeFileSync(process.env.BENCH_DDL_MARKER, "ran\\n"); process.exit(0);\n',
+  });
+  const lockPath = path.join(tree.root, 'lima.lock');
+  const marker = path.join(tree.root, 'ddl-ran');
+  const acquired = await dispatch({
+    op: 'acquire', session: 'rt89-r3', projectId: '102047', origin: 'test', lockPath,
+  });
+  const begun = await dispatch({
+    op: 'beginOperation', ownerId: acquired.ownerId, name: 'bench', phase: 'preparing', lockPath,
+  });
+  let probed = false;
+  await prepareBench({
+    db: 'migrate',
+    runtimeRoot: tree.release,
+    cmRoot: tree.cm,
+    operation: { ownerId: acquired.ownerId, operationId: begun.operationId, lockPath },
+    probe: () => { probed = true; return { currentDatabase: 'collab_app_test', activity: [], externalDependents: [] }; },
+    spawnSync: (cmd, args, opts) => {
+      if (cmd === 'pm2') return { status: 0, stdout: '', stderr: '' };
+      return spawnSync(cmd, args, opts);
+    },
+    runSeed: () => ({ manifest: manifest(), manifestFile: 'manifest.json' }),
+    health: () => ({ ok: true }),
+    waitHook: () => {},
+  });
+  assert.equal(probed, true);
+  assert.equal(existsSync(marker), false);
+
+  let refusedProbe = false;
+  await assert.rejects(() => prepareBench({
+    db: 'reset',
+    runtimeRoot: tree.release,
+    cmRoot: tree.cm,
+    operation: { ownerId: 'cd'.repeat(16), operationId: begun.operationId, lockPath },
+    probe: () => { refusedProbe = true; },
+    spawnSync: () => { throw new Error('ddl'); },
+  }), /not registered/);
+  assert.equal(refusedProbe, false);
+
+  const bare = path.join(tree.root, 'empty.lock');
+  await assert.rejects(() => prepareBench({
+    db: 'reset',
+    runtimeRoot: tree.release,
+    cmRoot: tree.cm,
+    operation: { ownerId: acquired.ownerId, operationId: begun.operationId, lockPath: bare },
+    probe: () => { refusedProbe = true; },
+    spawnSync: () => { throw new Error('ddl'); },
+  }), /not registered/);
+  assert.equal(refusedProbe, false);
+  assert.equal(existsSync(marker), false);
+});
+
+test('a reset without the summary line stays failed after ddl', async () => {
+  const tree = benchTree({ resetBody: 'process.stdout.write("done\\n"); process.exit(0);\n' });
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const box = harness(tree, logFile);
+  await assert.rejects(() => box.run('reset'), (error) => {
+    assert.equal(error.receipt.phase, 'failed');
+    assert.equal(error.receipt.ready, false);
+    assert.equal(error.receipt.ddlStarted, true);
+    assert.match(error.message, /summary line/);
+    return true;
+  });
+  assert.equal(box.order.includes('seed'), false);
+  assert.equal(box.order.includes('probe:after'), false);
 });
 
 test('an unregistered operation is refused before the probe', async () => {

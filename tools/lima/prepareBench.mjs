@@ -225,11 +225,11 @@ function assertReceiptSafe(receipt) {
   }
 }
 
-export function confirmBenchOperation(operation) {
+export async function confirmBenchOperation(operation) {
   if (!operation || typeof operation.ownerId !== 'string' || typeof operation.operationId !== 'string' || typeof operation.lockPath !== 'string') {
     return { ok: false, code: 'operation', message: 'bench operation is missing' };
   }
-  const status = dispatch({
+  const status = await dispatch({
     op: 'status',
     ownerId: operation.ownerId,
     lockPath: operation.lockPath,
@@ -240,6 +240,27 @@ export function confirmBenchOperation(operation) {
     return { ok: false, code: 'operation', message: 'bench operation is not registered for this owner' };
   }
   return { ok: true };
+}
+
+const RESET_SUMMARY_MARK = '##resetLocalDb ';
+
+/** A linha marcada do resetLocalDb. Sem ela o reset não tem tabelas semeadas para conferir. */
+export function readResetLocalDbLine(stdout) {
+  const marked = String(stdout || '').split(/\r?\n/).filter((line) => line.startsWith(RESET_SUMMARY_MARK));
+  if (marked.length !== 1) {
+    return { ok: false, message: 'resetLocalDb summary line is missing' };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(marked[0].slice(RESET_SUMMARY_MARK.length));
+  } catch {
+    return { ok: false, message: 'resetLocalDb summary line is invalid' };
+  }
+  const tables = parsed?.seededTables;
+  if (!parsed || !Array.isArray(parsed.modules) || !Array.isArray(tables) || tables.some((name) => typeof name !== 'string' || name === '')) {
+    return { ok: false, message: 'resetLocalDb summary line is invalid' };
+  }
+  return { ok: true, seededTables: tables, modules: parsed.modules, database: parsed.database };
 }
 
 function loadPg(runtimeRoot) {
@@ -263,7 +284,7 @@ export async function probeWithPg(client, request = {}) {
   const activityResult = await client.query(PROBE_ACTIVITY_SQL);
   const scopeResult = await client.query(PROBE_SCOPE_SQL);
   const scopeTables = (scopeResult.rows || []).map((row) => row.name).filter((name) => typeof name === 'string');
-  const seedTables = (request.seedTables || []).filter((name) => scopeTables.includes(name));
+  const seedTables = Array.isArray(request.seedTables) ? request.seedTables.filter((name) => typeof name === 'string') : [];
   const dependents = scopeTables.length
     ? await client.query(PROBE_DEPENDENTS_SQL, [scopeTables])
     : { rows: [] };
@@ -274,14 +295,13 @@ export async function probeWithPg(client, request = {}) {
     const counts = countsOf(counted.rows);
     const seeds = new Set(seedTables);
     scopeCleared = scopeTables.length > 0;
-    seedsOk = seedTables.length > 0;
+    seedsOk = true;
+    for (const name of seedTables) {
+      if (!scopeTables.includes(name) || !(counts.get(name) > 0)) seedsOk = false;
+    }
     for (const name of scopeTables) {
-      const n = counts.get(name);
-      if (seeds.has(name)) {
-        if (!(n > 0)) seedsOk = false;
-      } else if (n !== 0) {
-        scopeCleared = false;
-      }
+      if (seeds.has(name)) continue;
+      if (counts.get(name) !== 0) scopeCleared = false;
     }
   }
   return {
@@ -310,7 +330,7 @@ export async function prepareBench(input) {
   const spawn = input.spawnSync ?? spawnSync;
   const projectId = input.projectId ?? BENCH_PROJECT_ID;
   if (input.operation) {
-    const confirmed = confirmBenchOperation(input.operation);
+    const confirmed = await confirmBenchOperation(input.operation);
     if (!confirmed.ok) {
       const error = new BenchError(confirmed.message, {
         ok: false, phase: 'refused', ready: false, retainLock: true, ddlStarted: false, code: confirmed.code,
@@ -347,7 +367,7 @@ export async function prepareBench(input) {
         client = new pg.Client({ connectionString: databaseUrl });
         await client.connect();
       }
-      return probeWithPg(client, { ...call, seedTables: input.seedTables });
+      return probeWithPg(client, call);
     };
   const before = await Promise.resolve(probe({ database: identity.database, phase: 'before' })) ?? {};
   if (before.currentDatabase !== identity.database) {
@@ -445,8 +465,19 @@ export async function prepareBench(input) {
         }
       }
       try {
-        runNode(spawn, script, slot.resolvedRoot, childEnv(projectId, databaseUrl));
+        const ran = runNode(spawn, script, slot.resolvedRoot, childEnv(projectId, databaseUrl));
+        if (input.db === 'reset') {
+          const summary = readResetLocalDbLine(ran.stdout);
+          if (!summary.ok) {
+            const receipt = failedReceipt(baseReceipt, summary.message);
+            receipt.ddlStarted = true;
+            receipt.reset = { started: true, ok: false };
+            throw new BenchError(receipt.error, receipt);
+          }
+          baseReceipt.resetSummary = { modules: summary.modules, seededTables: summary.seededTables, database: summary.database };
+        }
       } catch (error) {
+        if (error instanceof BenchError) throw error;
         const receipt = failedReceipt(baseReceipt, error.message);
         receipt.ddlStarted = true;
         receipt.stoppedOnly = BENCH_APP;
@@ -455,7 +486,11 @@ export async function prepareBench(input) {
         throw new BenchError(error.message, receipt);
       }
       if (input.db === 'reset') {
-        const after = await Promise.resolve(probe({ database: identity.database, phase: 'after' })) ?? {};
+        const after = await Promise.resolve(probe({
+          database: identity.database,
+          phase: 'after',
+          seedTables: baseReceipt.resetSummary?.seededTables ?? [],
+        })) ?? {};
         if (after.scopeCleared !== true || after.seedsOk !== true) {
           const receipt = failedReceipt(baseReceipt, 'reset did not clear scope rows and reapply schema seeds');
           receipt.ddlStarted = true;
@@ -536,6 +571,7 @@ export async function prepareBench(input) {
       healthOk: true,
     };
     delete receipt.error;
+    delete receipt.resetSummary;
     assertReceiptSafe(receipt);
     return receipt;
   } catch (error) {
@@ -588,7 +624,6 @@ async function main() {
       runtimeRoot: command.runtimeRoot,
       cmRoot: command.cmRoot,
       operation,
-      seedTables: command.seedTables,
     });
     process.stdout.write(`${JSON.stringify(receipt)}\n`);
     process.exit(0);
