@@ -519,8 +519,8 @@ export async function prepareBench(input) {
       })
       : runOnVm({
         argv: ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot, '--member-role', MEMBER_ROLE],
-        fs,
         spawnSync: spawn,
+        ...(input.manifestDir ? { manifestDir: input.manifestDir } : {}),
       });
     const manifest = seed?.manifest;
     if (!manifest?.companyMdmId || !manifest.personas?.responsavel || !manifest.personas?.membro) {

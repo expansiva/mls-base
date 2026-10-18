@@ -358,6 +358,50 @@ test('an unregistered operation is refused before the probe', async () => {
   assert.equal(probed, false);
 });
 
+test('seed writes the manifest through the real runOnVm fs', async () => {
+  const tree = benchTree();
+  const manifestDir = path.join(tree.root, 'manifests');
+  const mdm = {
+    organizationKey: 'org-bench',
+    companyMdmId: 'company-1',
+    personas: [
+      { alias: 'responsavel', email: 'responsavel.102047@runtime.test', name: 'Bench responsible', sub: 'local-test:102047:responsavel', personMdmId: 'mdm-r' },
+      { alias: 'membro', email: 'membro.102047@runtime.test', name: 'Bench member', sub: 'local-test:102047:membro', personMdmId: 'mdm-m' },
+    ],
+  };
+  const cm = {
+    storagePrefix: 'desenv_',
+    personas: [
+      { alias: 'responsavel', email: 'responsavel.102047@runtime.test', sub: 'local-test:102047:responsavel', cmUserId: 'cm-r' },
+      { alias: 'membro', email: 'membro.102047@runtime.test', sub: 'local-test:102047:membro', cmUserId: 'cm-m' },
+    ],
+  };
+  const receipt = await prepareBench({
+    db: 'migrate',
+    runtimeRoot: tree.release,
+    cmRoot: tree.cm,
+    manifestDir,
+    probe: () => ({ currentDatabase: 'collab_app_test', activity: [], externalDependents: [] }),
+    waitHook: () => {},
+    health: () => ({ ok: true }),
+    spawnSync: (cmd, args = [], opts = {}) => {
+      if (cmd === 'pm2') return { status: 0, stdout: '', stderr: '' };
+      const script = String(args[0] ?? '');
+      if (script.endsWith('seedLocalTest.js')) return { status: 0, stdout: `${JSON.stringify(mdm)}\n`, stderr: '' };
+      if (script.endsWith('seedLocalTestCm.mjs')) return { status: 0, stdout: `${JSON.stringify(cm)}\n`, stderr: '' };
+      return spawnSync(cmd, args, { ...opts, encoding: 'utf8' });
+    },
+  });
+  const file = path.join(manifestDir, '102047.json');
+  assert.equal(existsSync(file), true);
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  assert.equal(saved.companyMdmId, 'company-1');
+  assert.equal(saved.personas.responsavel.personMdmId, 'mdm-r');
+  assert.equal(saved.personas.membro.cmUserId, 'cm-m');
+  assert.equal(receipt.seed.manifestFile, file);
+  assert.equal(JSON.stringify(receipt).includes('cookie'), false);
+});
+
 function fakePg(script) {
   const seen = [];
   return {
