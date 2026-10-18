@@ -136,9 +136,9 @@ Depois da gravação:
 pm2 restart /data/mls-base/pm2.apps.d/app2047.config.js --update-env
 ```
 
-Trocar de pessoa não reinicia o app. Desligar é apagar as duas linhas e o mesmo `pm2 restart <arquivo> --update-env`. A flag e o arquivo não entram na release, no cfe nem no repositório. Não imprimir `cookieKey`, token de serviço nem o conteúdo do manifesto.
+Trocar de pessoa não reinicia o app. Desligar é apagar as duas linhas e `pm2 delete app2047 && pm2 start <arquivo> && pm2 save`: o `restart --update-env` mescla o env e **não** remove uma variável apagada do arquivo (medido na lima em 18/10/2026). O publish preserva as duas linhas (`vmApps.mjs`). A flag e o arquivo não entram na release, no cfe nem no repositório. Não imprimir `cookieKey`, token de serviço nem o conteúdo do manifesto.
 
-Dois perfis limpos da ferramenta, um por pessoa. Sem outra aba dessa origem durante a troca: o seletor apaga `msgDB`, `serviceCollabMessages` e `collabMessages_userId` e, se outra aba bloquear o IndexedDB, não troca a sessão. Sem perfil humano e sem o Google Chrome de marca.
+Dois perfis limpos da ferramenta, um por pessoa. A sessão headless fecha depois de 5 min sem `open` e volta **sem cookies**: aí o login de teste da lima (`CBE_TEST_*`) grava um `cauth` falso e o `/session/info` vem sem pessoa. Basta selecionar de novo (o login com a pessoa selecionada expira esse `cauth`). Abrir o seletor e só clicar depois de a página carregar; clique cedo demais não troca nada. Sem outra aba dessa origem durante a troca: o seletor apaga `msgDB`, `serviceCollabMessages` e `collabMessages_userId` e, se outra aba bloquear o IndexedDB, não troca a sessão. Sem perfil humano e sem o Google Chrome de marca.
 
 ```
 rtk pnpm run browser -- -s=responsavel open http://localhost:2047/__test/session
@@ -148,6 +148,6 @@ rtk pnpm run browser -- -s=membro open http://localhost:2047/__test/session
 rtk pnpm run browser -- -s=membro click "getByRole('button', { name: 'membro' })"
 ```
 
-A página diz "Local test session". Os botões são `responsavel`, `membro` e `Leave session`. A troca navega para `/`. Para uma rota do módulo, abrir essa rota depois da seleção. `reload` (F5) conserva a seleção. `Leave session` ou `GET /exec/logout` saem. Apagar as duas linhas do `env` do app e `pm2 restart <arquivo> --update-env` revoga o mecanismo; a rota `/__test/session` responde 404.
+A página diz "Local test session". Os botões são `responsavel`, `membro` e `Leave session`. A troca navega para `/`. Para uma rota do módulo, abrir essa rota depois da seleção. `reload` (F5) conserva a seleção. `Leave session` ou `GET /exec/logout` saem. Apagar as duas linhas do `env` do app e `pm2 delete` + `pm2 start <arquivo>` revoga o mecanismo; a rota `/__test/session` responde 404.
 
 Conferir os dois lados pelo JSON, não por screenshot: `/session/info` traz `userId` (o sub), `person.mdmId` e a mesma `company.mdmId`; `/whoami` traz o `cmUserId` da pessoa selecionada. Os quatro ids continuam distintos. A prova de mensagem real e de Task é a rt86 na lima, com upstream de verdade. O teste de composição desta receita usa upstream controlado e não substitui essa prova.
