@@ -1,27 +1,37 @@
 #!/usr/bin/env node
+import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { prepareBench } from './prepareBench.mjs';
+import { planLocalSources, prepareSources } from './prepareSources.mjs';
 import {
   LONG_TIMEOUT_MS,
   assertProjectId,
   beginSession,
+  callVm,
   endSession,
+  loadOwnerRef,
   publicView,
   refuseRemoteArgv,
   resolveLocalProfile,
+  saveOwnerRef,
   statusSession,
 } from './session.mjs';
 
 const SESSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/u;
+const SECRET = /cookieKey|postgres:\/\/|PGPASSWORD|secretAccess|DATABASE_URL|token|cookie/iu;
+const RELEASE_FIELDS = ['id', 'client', 'versionRef', 'platformCommit', 'libs', 'monaco'];
 
 export function usage() {
   return [
     'usage: node tools/lima/lima.mjs <command>',
     '  begin 102047 --session <name>',
     '  status [--session <name>]',
-    '  prepare 102047 --session <name> [--db migrate|reset]',
+    '  prepare 102047 --session <name> [--db migrate|reset] [--dry-run]',
     '  end --session <name>',
     'help and status do not start prepare or a browser.',
-    'prepare is parsed here and runs only in a later step.',
+    'prepare keeps the reservation; --dry-run only reports occupation and the plan.',
   ].join('\n');
 }
 
@@ -45,6 +55,7 @@ export function parseCli(argv) {
   let session = '';
   let projectId = '';
   let db = 'migrate';
+  let dryRun = false;
   const positional = [];
   for (let i = 1; i < args.length; i += 1) {
     const sessionValue = takeSession(args, i);
@@ -59,6 +70,10 @@ export function parseCli(argv) {
     }
     if (args[i].startsWith('--db=')) {
       db = args[i].slice('--db='.length);
+      continue;
+    }
+    if (args[i] === '--dry-run') {
+      dryRun = true;
       continue;
     }
     if (args[i].startsWith('--')) throw Object.assign(new Error(`unknown argument ${args[i]}`), { code: 'usage', exitCode: 2 });
@@ -80,7 +95,245 @@ export function parseCli(argv) {
   if (command === 'prepare' && db !== 'migrate' && db !== 'reset') {
     throw Object.assign(new Error('--db must be migrate or reset'), { code: 'usage', exitCode: 2 });
   }
-  return { command, session, projectId, db };
+  if (dryRun && command !== 'prepare') {
+    throw Object.assign(new Error('--dry-run belongs to prepare'), { code: 'usage', exitCode: 2 });
+  }
+  return { command, session, projectId, db, dryRun };
+}
+
+function sessionOptions(env) {
+  return {
+    sshBin: env.LIMA_SSH_BIN,
+    lockPath: env.LIMA_LOCK_PATH,
+    env,
+    timeoutMs: env.LIMA_CLAIM_TIMEOUT_MS ? Number(env.LIMA_CLAIM_TIMEOUT_MS) : undefined,
+  };
+}
+
+function receiptPaths(env, session) {
+  const dir = env.LIMA_RECEIPT_DIR || env.LIMA_STATE_DIR || tmpdir();
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return {
+    dir,
+    ready: join(dir, `lima-receipt-${session}.json`),
+    diagnosis: join(dir, `lima-receipt-${session}.diagnosis.json`),
+  };
+}
+
+function writeAtomic(file, body) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, body, { mode: 0o600 });
+  renameSync(tmp, file);
+}
+
+function publishDiagnosis(env, session, diagnosis) {
+  const paths = receiptPaths(env, session);
+  rmSync(paths.ready, { force: true });
+  writeAtomic(paths.diagnosis, `${JSON.stringify(diagnosis)}\n`);
+  return paths;
+}
+
+function assertReceiptSafe(receipt) {
+  if (SECRET.test(JSON.stringify(receipt))) {
+    throw Object.assign(new Error('receipt would leak a secret'), { code: 'receipt' });
+  }
+}
+
+function releaseOf(sources) {
+  const release = sources?.evidence?.release;
+  if (!release || typeof release !== 'object') return null;
+  const stamp = {};
+  for (const field of RELEASE_FIELDS) stamp[field] = release[field] ?? null;
+  return stamp;
+}
+
+function buildReceipt({ parsed, profile, sources, bench }) {
+  const evidence = sources.evidence || {};
+  const seed = bench.seed || {};
+  const personas = seed.personas || {};
+  const receipt = {
+    ok: true,
+    ready: true,
+    session: parsed.session,
+    phase: 'ready',
+    at: new Date().toISOString(),
+    vm: profile.alias,
+    projectId: parsed.projectId,
+    origin: 'localhost',
+    db: parsed.db,
+    release: releaseOf(sources) || bench.release || bench.observedRelease || null,
+    shas: {
+      root: evidence.initialRootSha || null,
+      appInitial: evidence.initialAppSha || null,
+      appFinal: evidence.finalAppSha || null,
+    },
+    depTrees: evidence.depTrees || {},
+    migrate: bench.migrate || null,
+    reset: bench.reset || null,
+    modules: bench.modules || bench.reset?.modules || bench.migrate?.modules || null,
+    company: {
+      companyMdmId: seed.companyMdmId || null,
+      organizationKey: seed.organizationKey || null,
+    },
+    personas,
+    cmIds: {
+      responsavel: personas.responsavel?.cmUserId || null,
+      membro: personas.membro?.cmUserId || null,
+    },
+    limits: bench.limits || [],
+  };
+  if (!receipt.release || RELEASE_FIELDS.some((field) => receipt.release[field] == null || receipt.release[field] === '')) {
+    throw Object.assign(new Error('receipt is missing release fields'), { code: 'receipt' });
+  }
+  if (!receipt.company.companyMdmId || !receipt.cmIds.responsavel || !receipt.cmIds.membro) {
+    throw Object.assign(new Error('receipt is missing company or cm ids'), { code: 'receipt' });
+  }
+  assertReceiptSafe(receipt);
+  return receipt;
+}
+
+async function loadStages(env) {
+  if (!env.LIMA_PREPARE_STAGES) return { prepareSources, prepareBench, planLocalSources };
+  return import(pathToFileURL(env.LIMA_PREPARE_STAGES).href);
+}
+
+async function vm(profile, command, env) {
+  const reply = await callVm(profile, command, sessionOptions(env));
+  return reply.json || { ok: false, code: 'ssh' };
+}
+
+export async function runPrepare(parsed, profile, env = process.env) {
+  const stages = await loadStages(env);
+  const options = sessionOptions(env);
+  if (parsed.dryRun) {
+    const status = await statusSession(profile, parsed.session, options);
+    let plan = null;
+    let planError = null;
+    try {
+      plan = await stages.planLocalSources(profile.root, parsed.projectId, env);
+    } catch (error) {
+      planError = error.code || error.message;
+    }
+    const report = {
+      ok: true,
+      dryRun: true,
+      ready: false,
+      session: parsed.session,
+      projectId: parsed.projectId,
+      db: parsed.db,
+      held: status.held === true,
+      phase: status.phase || null,
+      occupiedBy: status.session || null,
+      plan: plan && {
+        rootSha: plan.rootSha,
+        appSha: plan.appSha,
+        pin: plan.pin,
+        deps: plan.deps,
+        blocked: plan.blocked,
+      },
+      planError,
+    };
+    assertReceiptSafe(report);
+    process.stdout.write(`${JSON.stringify(publicView(report))}\n`);
+    return 0;
+  }
+
+  const held = loadOwnerRef(profile, parsed.session);
+  if (held) {
+    const status = await statusSession(profile, parsed.session, options);
+    if ((status.browsers || []).length > 0) {
+      publishDiagnosis(env, parsed.session, {
+        ok: false, ready: false, session: parsed.session, phase: status.phase || 'testing',
+        at: new Date().toISOString(), code: 'browser', message: 'prepare refused while a browser is registered',
+      });
+      const error = new Error('prepare refused while a browser is registered');
+      error.exitCode = 1;
+      error.result = { ok: false, code: 'browser', phase: status.phase, browsers: status.browsers, ready: false };
+      throw error;
+    }
+  }
+
+  const begun = await beginSession(profile, parsed.session, parsed.projectId, options);
+  let ref = { ...begun.ref, operationId: null };
+  const started = await vm(profile, {
+    op: 'beginOperation', ownerId: ref.ownerId, name: `prepare-${parsed.db}`, phase: 'preparing',
+  }, env);
+  if (!started.ok) {
+    publishDiagnosis(env, parsed.session, {
+      ok: false, ready: false, session: parsed.session, phase: started.phase || 'reserved',
+      at: new Date().toISOString(), code: started.code || 'operation', message: 'prepare operation refused',
+    });
+    const error = new Error(started.code || 'prepare operation refused');
+    error.exitCode = started.exitCode || 1;
+    error.result = publicView(started);
+    throw error;
+  }
+  ref = { ...ref, operationId: started.operationId };
+  saveOwnerRef(profile, ref);
+
+  const fail = async (code, message, uncertain = true) => {
+    await vm(profile, {
+      op: 'finishOperation', ownerId: ref.ownerId, operationId: ref.operationId, uncertain: true,
+    }, env);
+    saveOwnerRef(profile, { ...ref, operationId: ref.operationId });
+    publishDiagnosis(env, parsed.session, {
+      ok: false, ready: false, session: parsed.session, phase: 'failed', at: new Date().toISOString(), code, message, uncertain,
+    });
+    const error = new Error(message);
+    error.code = code;
+    error.exitCode = 1;
+    error.uncertain = true;
+    error.result = { ok: false, ready: false, phase: 'failed', code };
+    throw error;
+  };
+
+  let sources;
+  try {
+    sources = await stages.prepareSources({
+      root: profile.root,
+      projectId: parsed.projectId,
+      profile,
+      session: parsed.session,
+      env,
+      sshBin: env.LIMA_SSH_BIN,
+      lockPath: env.LIMA_LOCK_PATH,
+      db: parsed.db,
+    });
+  } catch (error) {
+    await fail(error.code || 'sources', error.message);
+  }
+  if (!sources?.ok) await fail(sources?.code || 'sources', sources?.message || 'source prepare failed', sources?.uncertain !== false);
+
+  let bench;
+  try {
+    bench = await stages.prepareBench({
+      db: parsed.db,
+      projectId: parsed.projectId,
+      runtimeRoot: sources.evidence?.release?.runtimeRoot,
+      sources,
+      browsersOpen: false,
+    });
+  } catch (error) {
+    await fail(error.code || 'bench', error.receipt?.error || error.message);
+  }
+  if (!bench?.ready) await fail(bench?.code || 'bench', 'bench did not become ready', false);
+
+  let receipt;
+  try {
+    receipt = buildReceipt({ parsed, profile, sources, bench });
+  } catch (error) {
+    await fail(error.code || 'receipt', error.message, false);
+  }
+  const finished = await vm(profile, {
+    op: 'finishOperation', ownerId: ref.ownerId, operationId: ref.operationId, phase: 'ready',
+  }, env);
+  if (!finished.ok || finished.phase !== 'ready') await fail(finished.code || 'phase', 'reservation did not reach ready', true);
+  saveOwnerRef(profile, { ...ref, operationId: null });
+  const paths = receiptPaths(env, parsed.session);
+  writeAtomic(paths.ready, `${JSON.stringify(receipt)}\n`);
+  rmSync(paths.diagnosis, { force: true });
+  process.stdout.write(`${JSON.stringify(publicView({ ...receipt, receiptFile: paths.ready }))}\n`);
+  return 0;
 }
 
 function printView(view) {
@@ -94,10 +347,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 0;
   }
   const profile = resolveLocalProfile(undefined, env);
-  if (parsed.command === 'prepare') {
-    process.stderr.write(`prepare refused until s7\nprojectId: ${parsed.projectId}\nsession: ${parsed.session}\ndb: ${parsed.db}\n`);
-    return 2;
-  }
+  if (parsed.command === 'prepare') return runPrepare(parsed, profile, env);
   if (parsed.command === 'begin') {
     const begun = await beginSession(profile, parsed.session, parsed.projectId);
     printView({ ...begun.view, resumed: begun.resumed });

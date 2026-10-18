@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -143,14 +143,17 @@ test('remote host, wrong project and prepare do not succeed', async () => {
   assert.notEqual(other.code, 0);
   assert.match(other.stderr, /102047/u);
   const prepared = await runCli(['prepare', '102047', '--session', 'a'], box.env);
-  assert.equal(prepared.code, 2);
-  assert.match(prepared.stderr, /refused until s7/u);
-  assert.match(prepared.stderr, /db: migrate/u);
-  assert.doesNotMatch(`${prepared.stdout}${prepared.stderr}`, /ready/u);
-  assert.equal(sshLines(box.sshLog).length, 0);
-  const reset = await runCli(['prepare', '102047', '--session', 'a', '--db', 'reset'], box.env);
-  assert.equal(reset.code, 2);
-  assert.match(reset.stderr, /db: reset/u);
+  assert.notEqual(prepared.code, 0);
+  assert.doesNotMatch(prepared.stdout, /"ready":true/u);
+  assert.match(readFileSync(box.lockPath, 'utf8'), /"phase":"failed"/u);
+  const reset = await runCli(['prepare', '102047', '--session', 'reset-early', '--db', 'reset'], {
+    ...box.env,
+    LIMA_STATE_DIR: join(box.root, 'reset-state'),
+    LIMA_LOCK_PATH: join(box.root, 'reset.lock'),
+    LIMA_SSH_LOG: join(box.root, 'reset-ssh.log'),
+  });
+  assert.notEqual(reset.code, 0);
+  assert.doesNotMatch(reset.stdout, /"ready":true/u);
 });
 
 test('a second session with the same name is refused and the owner can resume', async () => {
@@ -242,4 +245,171 @@ test('browser bind uses the owner file and ignores a foreign id', async () => {
   assert.notEqual(open.code, 0);
   assert.match(`${open.stdout}${open.stderr}`, /browsers still open/u);
   assert.match(readFileSync(box.lockPath, 'utf8'), /campanha-responsavel/u);
+});
+
+const RELEASE = {
+  id: 'rel-1', client: '102047', versionRef: 'abc', platformCommit: 'def', libs: 'pin', monaco: 'pin',
+};
+
+function stageSource() {
+  return `import { appendFileSync, existsSync } from 'node:fs';
+const log = process.env.LIMA_STAGE_LOG;
+const note = (line) => appendFileSync(log, line + '\\n');
+export async function planLocalSources() {
+  note('plan');
+  return { rootSha: 'root', appSha: 'app', pin: { libs: 'pin' }, deps: [], blocked: [] };
+}
+export async function prepareSources(input) {
+  note('sources:' + input.db);
+  while (process.env.LIMA_HOLD === '1' && !existsSync(process.env.LIMA_HOLD_RELEASE || '')) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  if (process.env.LIMA_FAIL === 'sources') return { ok: false, code: 'dirty', uncertain: false, sent: false };
+  if (process.env.LIMA_FAIL === 'sources-sent') return { ok: false, code: 'build', uncertain: true, sent: true };
+  return {
+    ok: true,
+    evidence: {
+      initialRootSha: 'root', initialAppSha: 'app', finalAppSha: 'app',
+      depTrees: { '102034': 'tree' },
+      release: ${JSON.stringify(RELEASE)},
+    },
+  };
+}
+export async function prepareBench(input) {
+  note('bench:' + input.db);
+  if (process.env.LIMA_FAIL === 'bench') throw new Error('seed failed');
+  const same = input.db === 'migrate';
+  return {
+    ready: true,
+    db: input.db,
+    release: ${JSON.stringify(RELEASE)},
+    migrate: same ? { executed: false, reused: true, ok: true, modules: ['tarefas'] } : { executed: false },
+    reset: same ? null : { ok: true, rebuilt: true, modules: ['tarefas'] },
+    modules: ['tarefas'],
+    seed: {
+      companyMdmId: 'co-1', organizationKey: 'org',
+      personas: {
+        responsavel: { cmUserId: 'cm-r', personMdmId: 'mdm-r' },
+        membro: { cmUserId: 'cm-m', personMdmId: 'mdm-m' },
+      },
+    },
+    limits: ['cm history preserved'],
+  };
+}
+`;
+}
+
+function withStages(box, extra = {}) {
+  const stages = join(box.root, 'stages.mjs');
+  const stageLog = join(box.root, 'stages.log');
+  writeFileSync(stages, stageSource());
+  writeFileSync(stageLog, '');
+  return {
+    ...box.env,
+    ...extra,
+    LIMA_PREPARE_STAGES: stages,
+    LIMA_STAGE_LOG: stageLog,
+    LIMA_RECEIPT_DIR: box.stateDir,
+  };
+}
+
+test('prepare reaches ready, repeats migrate, resets explicitly, and keeps the lock', async () => {
+  const box = bench();
+  const env = withStages(box);
+  const prepared = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], env);
+  assert.equal(prepared.code, 0, prepared.stderr);
+  const view = JSON.parse(prepared.stdout);
+  assert.equal(view.phase, 'ready');
+  assert.equal(view.ready, true);
+  assert.equal(view.origin, 'localhost');
+  assert.equal(view.shas.appFinal, 'app');
+  assert.equal(view.company.companyMdmId, 'co-1');
+  assert.equal(view.migrate.reused, true);
+  assert.equal(Object.hasOwn(view, 'ownerId'), false);
+  const receipt = JSON.parse(readFileSync(view.receiptFile, 'utf8'));
+  assert.equal(receipt.release.versionRef, 'abc');
+  assert.equal(receipt.cmIds.membro, 'cm-m');
+  assert.match(readFileSync(box.lockPath, 'utf8'), /"phase":"ready"/u);
+  const again = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], env);
+  assert.equal(again.code, 0, again.stderr);
+  assert.equal(JSON.parse(again.stdout).company.companyMdmId, 'co-1');
+  assert.match(readFileSync(stageLogOf(env), 'utf8'), /bench:migrate/u);
+  const reset = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'reset'], env);
+  assert.equal(reset.code, 0, reset.stderr);
+  assert.equal(JSON.parse(reset.stdout).reset.rebuilt, true);
+  const other = await runCli(['begin', '102047', '--session', 'outra'], {
+    ...env,
+    LIMA_STATE_DIR: join(box.root, 'other'),
+  });
+  assert.equal(other.code, 73, other.stderr);
+  assert.match(readFileSync(box.lockPath, 'utf8'), /campanha/u);
+});
+
+function stageLogOf(env) {
+  return env.LIMA_STAGE_LOG;
+}
+
+test('dry-run does not reserve, publish, or seed', async () => {
+  const box = bench();
+  const env = withStages(box);
+  const dry = await runCli(['prepare', '102047', '--session', 'campanha', '--dry-run'], env);
+  assert.equal(dry.code, 0, dry.stderr);
+  const view = JSON.parse(dry.stdout);
+  assert.equal(view.dryRun, true);
+  assert.equal(view.held, false);
+  assert.equal(view.db, 'migrate');
+  assert.equal(view.plan.rootSha, 'root');
+  assert.equal(existsSync(box.lockPath), false);
+  assert.equal(readFileSync(stageLogOf(env), 'utf8').trim(), 'plan');
+  assert.equal(existsSync(join(box.stateDir, 'lima-receipt-campanha.json')), false);
+});
+
+test('a failure in sources or bench is not ready and does not unlock', async () => {
+  for (const fail of ['sources', 'sources-sent', 'bench']) {
+    const box = bench();
+    const env = withStages(box, { LIMA_FAIL: fail });
+    mkdirSync(box.stateDir, { recursive: true });
+    writeFileSync(join(box.stateDir, 'lima-receipt-campanha.json'), '{"ready":true,"phase":"ready"}\n');
+    const prepared = await runCli(['prepare', '102047', '--session', 'campanha'], env);
+    assert.notEqual(prepared.code, 0, fail);
+    assert.doesNotMatch(prepared.stdout, /"ready":true/u);
+    assert.equal(existsSync(join(box.stateDir, 'lima-receipt-campanha.json')), false, fail);
+    const diagnosis = readFileSync(join(box.stateDir, 'lima-receipt-campanha.diagnosis.json'), 'utf8');
+    assert.match(diagnosis, /"ready":false/u);
+    assert.match(readFileSync(box.lockPath, 'utf8'), /"phase":"failed"/u);
+    const ended = await runCli(['end', '--session', 'campanha'], env);
+    assert.notEqual(ended.code, 0, fail);
+  }
+});
+
+test('prepare refuses while a browser is open and two campaigns cannot prepare together', async () => {
+  const box = bench();
+  const env = withStages(box);
+  const prepared = await runCli(['prepare', '102047', '--session', 'campanha'], env);
+  assert.equal(prepared.code, 0, prepared.stderr);
+  await bindLimaBrowser(box.profile, 'campanha', 'campanha-responsavel', box.options);
+  const refused = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], env);
+  assert.notEqual(refused.code, 0);
+  assert.match(`${refused.stdout}${refused.stderr}`, /browser/u);
+  assert.match(readFileSync(box.lockPath, 'utf8'), /campanha-responsavel/u);
+
+  const race = bench();
+  const hold = join(race.root, 'go');
+  const raceEnv = withStages(race, { LIMA_HOLD: '1', LIMA_HOLD_RELEASE: hold });
+  const first = runCli(['prepare', '102047', '--session', 'a'], raceEnv);
+  const started = Date.now();
+  while (!readFileSync(stageLogOf(raceEnv), 'utf8').includes('sources:')) {
+    if (Date.now() - started > 5000) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const second = await runCli(['prepare', '102047', '--session', 'b'], {
+    ...raceEnv,
+    LIMA_HOLD: '',
+    LIMA_STATE_DIR: join(race.root, 'b-state'),
+  });
+  assert.equal(second.code, 73, second.stderr);
+  writeFileSync(hold, 'go');
+  const done = await first;
+  assert.equal(done.code, 0, done.stderr);
+  assert.match(readFileSync(race.lockPath, 'utf8'), /"phase":"ready"/u);
 });
