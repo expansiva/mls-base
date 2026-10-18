@@ -100,6 +100,51 @@ test('pm2AppConfig é o arquivo canônico (sites buildPm2AppConfig deve copiar b
 `);
 });
 
+test('ensureProjectApp preserva a sessão local da lima e ignora valor que não é o par válido', () => {
+  const remoteBase = '/data/mls-base';
+  const projectId = '102047';
+  const plain = pm2AppConfig(projectId, 2047, remoteBase);
+  const kept = pm2AppConfig(projectId, 2047, remoteBase, undefined, false, {
+    file: '/etc/collab/local-tests/102047.json',
+  });
+  assert.match(kept, /LOCAL_TEST_SESSION_ENABLED: "true"/u);
+  assert.match(kept, /LOCAL_TEST_SESSIONS_FILE: "\/etc\/collab\/local-tests\/102047.json"/u);
+
+  withRoot((root) => {
+    const appPath = join(root, 'pm2.apps.d', 'app2047.config.js');
+    mkdirSync(join(root, 'pm2.apps.d'), { recursive: true });
+    writeFileSync(join(root, 'pm2.config.js'), pm2AggregatorConfig());
+    writeFileSync(appPath, kept);
+    const again = ensureProjectApp({ root, projectId, remoteBase });
+    assert.equal(again.wrote, false);
+    assert.equal(readFileSync(appPath, 'utf8'), kept);
+
+    const drop = (text) => {
+      writeFileSync(appPath, text);
+      ensureProjectApp({ root, projectId, remoteBase });
+      assert.equal(readFileSync(appPath, 'utf8'), plain);
+    };
+    drop(kept.replace('/etc/collab/local-tests/102047.json', '/tmp/102047.json'));
+    drop(kept.replace('/etc/collab/local-tests/102047.json', '/etc/collab/local-tests/102043.json'));
+    drop(kept.replace('LOCAL_TEST_SESSION_ENABLED: "true"', 'LOCAL_TEST_SESSION_ENABLED: "false"'));
+    drop(kept.replace('    LOCAL_TEST_SESSIONS_FILE: "/etc/collab/local-tests/102047.json"\n', ''));
+  });
+});
+
+test('ensureProjectApp sem as chaves da sessão local escreve o config de hoje', () => {
+  withRoot((root) => {
+    ensureProjectApp({ root, projectId: '102047', remoteBase: '/data/mls-base' });
+    assert.equal(
+      readFileSync(join(root, 'pm2.apps.d', 'app2047.config.js'), 'utf8'),
+      pm2AppConfig('102047', 2047, '/data/mls-base'),
+    );
+    assert.equal(
+      readFileSync(join(root, 'pm2.apps.d', 'app2047.config.js'), 'utf8').includes('LOCAL_TEST_SESSION'),
+      false,
+    );
+  });
+});
+
 test('ensureProjectApp preserva MSG_PROXY_TARGET já escrito pelo sites', () => {
   withRoot((root) => {
     const first = pm2AppConfig('102043', 2043, '/data/mls-base', 'https://102051.collabcodes.com');

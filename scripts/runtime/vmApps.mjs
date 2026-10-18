@@ -78,7 +78,7 @@ export function declaredTestMode(root, projectId) {
   }
 }
 
-function envBlock(projectId, port, msgProxyTarget, databaseUrlTestExprText) {
+function envBlock(projectId, port, msgProxyTarget, databaseUrlTestExprText, localTestSession) {
   const lines = [
     "    NODE_ENV: 'production',",
     "    TZ: 'UTC',",
@@ -89,6 +89,11 @@ function envBlock(projectId, port, msgProxyTarget, databaseUrlTestExprText) {
     lines[lines.length - 1] += ",";
     lines.push(`    MSG_PROXY_TARGET: ${JSON.stringify(String(msgProxyTarget))}`);
   }
+  if (localTestSession) {
+    lines[lines.length - 1] += ",";
+    lines.push(`    LOCAL_TEST_SESSION_ENABLED: "true",`);
+    lines.push(`    LOCAL_TEST_SESSIONS_FILE: ${JSON.stringify(String(localTestSession.file))}`);
+  }
   if (databaseUrlTestExprText) {
     lines[lines.length - 1] += ",";
     lines.push(`    DATABASE_URL_TEST: ${databaseUrlTestExprText}`);
@@ -97,7 +102,7 @@ function envBlock(projectId, port, msgProxyTarget, databaseUrlTestExprText) {
 }
 
 /** Conteúdo de pm2.apps.d/app<porta>.config.js. */
-export function pm2AppConfig(projectId, port, remoteBase, msgProxyTarget, databaseUrlTest = false) {
+export function pm2AppConfig(projectId, port, remoteBase, msgProxyTarget, databaseUrlTest = false, localTestSession) {
   const appName = appNameOf(port);
   return `module.exports = {
   name: ${JSON.stringify(appName)},
@@ -108,7 +113,7 @@ export function pm2AppConfig(projectId, port, remoteBase, msgProxyTarget, databa
   watch: false,
   kill_timeout: 180000,
   env: {
-${envBlock(projectId, port, msgProxyTarget, databaseUrlTest ? databaseUrlTestExpr(remoteBase) : '')}
+${envBlock(projectId, port, msgProxyTarget, databaseUrlTest ? databaseUrlTestExpr(remoteBase) : '', localTestSession)}
   },
   log_date_format: 'YYYY-MM-DDTHH:mm:ss',
   out_file: ${JSON.stringify(`${remoteBase}/logs/${appName}-out.log`)},
@@ -126,6 +131,33 @@ export function msgProxyTargetFromPm2Config(text) {
   } catch {
     return undefined;
   }
+}
+
+function readQuotedField(text, name) {
+  const match = String(text).match(new RegExp(`${name}:\\s*("(?:\\\\.|[^"])*")`, 'u'));
+  if (!match) return undefined;
+  try {
+    const value = JSON.parse(match[1]);
+    return typeof value === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** As duas chaves, só se a flag é "true" e o arquivo é absoluto sob /etc/collab/local-tests/ e termina no json deste projeto. */
+export function localTestSessionFromPm2Config(text, projectId) {
+  const enabled = readQuotedField(text, 'LOCAL_TEST_SESSION_ENABLED');
+  const file = readQuotedField(text, 'LOCAL_TEST_SESSIONS_FILE');
+  if (enabled === undefined || file === undefined) return undefined;
+  if (enabled !== 'true') return undefined;
+  const id = String(projectId);
+  const prefix = '/etc/collab/local-tests/';
+  if (!file.startsWith(prefix)) return undefined;
+  const rest = file.slice(prefix.length);
+  const parts = rest.split('/');
+  if (parts.some((part) => part === '' || part === '.' || part === '..')) return undefined;
+  if (parts[parts.length - 1] !== `${id}.json`) return undefined;
+  return { file };
 }
 
 /** Conteúdo do pm2.config.js agregador. */
@@ -163,7 +195,8 @@ export function ensureProjectApp({ root, projectId, remoteBase = root, msgProxyT
   const target = msgProxyTarget === undefined
     ? msgProxyTargetFromPm2Config(existingText)
     : msgProxyTarget;
-  const appText = pm2AppConfig(projectId, port, remoteBase, target, declaredTestMode(root, projectId));
+  const localTestSession = localTestSessionFromPm2Config(existingText, projectId);
+  const appText = pm2AppConfig(projectId, port, remoteBase, target, declaredTestMode(root, projectId), localTestSession);
   let wrote = false;
   if (!existsSync(appPath) || readFileSync(appPath, 'utf8') !== appText) {
     writeFileSync(appPath, appText);

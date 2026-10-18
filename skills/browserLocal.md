@@ -119,14 +119,24 @@ Repetir o mesmo comando depois de um banco novo. Email e sub reaproveitam as pes
 
 ## Sessão de teste no browser, só na lima
 
-O supervisor grava na `.env` **da lima**, e em nenhum outro lugar:
+A `.env` de `/data/mls-base/.env` é compartilhada por todas as portas. Não gravar a flag ali.
+
+O supervisor grava as duas linhas no `env` de `/data/mls-base/pm2.apps.d/app<porta>.config.js` do app da bancada, e em nenhum outro lugar. No 102047 a porta é 2047:
 
 ```
-LOCAL_TEST_SESSION_ENABLED=true
-LOCAL_TEST_SESSIONS_FILE=/etc/collab/local-tests/102047.json
+    LOCAL_TEST_SESSION_ENABLED: "true",
+    LOCAL_TEST_SESSIONS_FILE: "/etc/collab/local-tests/102047.json"
 ```
 
-Um reload do app depois dessa gravação. Trocar de pessoa não reinicia o app. A flag e o arquivo não entram na release, no cfe nem no repositório. Não imprimir `cookieKey`, token de serviço nem o conteúdo do manifesto.
+O caminho é absoluto, fica sob `/etc/collab/local-tests/` e o arquivo é `<projectId>.json`. A flag é a string `"true"`. As duas linhas vão juntas. O gerador do pm2 não cria esses campos: na publicação seguinte ele só os reescreve quando o arquivo do app já os tem nesse formato. A instalação é manual e só na lima.
+
+Depois da gravação:
+
+```
+pm2 restart /data/mls-base/pm2.apps.d/app2047.config.js --update-env
+```
+
+Trocar de pessoa não reinicia o app. Desligar é apagar as duas linhas e o mesmo `pm2 restart <arquivo> --update-env`. A flag e o arquivo não entram na release, no cfe nem no repositório. Não imprimir `cookieKey`, token de serviço nem o conteúdo do manifesto.
 
 Dois perfis limpos da ferramenta, um por pessoa. Sem outra aba dessa origem durante a troca: o seletor apaga `msgDB`, `serviceCollabMessages` e `collabMessages_userId` e, se outra aba bloquear o IndexedDB, não troca a sessão. Sem perfil humano e sem o Google Chrome de marca.
 
@@ -138,6 +148,6 @@ rtk pnpm run browser -- -s=membro open http://localhost:2047/__test/session
 rtk pnpm run browser -- -s=membro click "getByRole('button', { name: 'membro' })"
 ```
 
-A página diz "Local test session". Os botões são `responsavel`, `membro` e `Leave session`. A troca navega para `/`. Para uma rota do módulo, abrir essa rota depois da seleção. `reload` (F5) conserva a seleção. `Leave session` ou `GET /exec/logout` saem. Desligar a flag e recarregar o app revoga o mecanismo; a rota `/__test/session` responde 404.
+A página diz "Local test session". Os botões são `responsavel`, `membro` e `Leave session`. A troca navega para `/`. Para uma rota do módulo, abrir essa rota depois da seleção. `reload` (F5) conserva a seleção. `Leave session` ou `GET /exec/logout` saem. Apagar as duas linhas do `env` do app e `pm2 restart <arquivo> --update-env` revoga o mecanismo; a rota `/__test/session` responde 404.
 
 Conferir os dois lados pelo JSON, não por screenshot: `/session/info` traz `userId` (o sub), `person.mdmId` e a mesma `company.mdmId`; `/whoami` traz o `cmUserId` da pessoa selecionada. Os quatro ids continuam distintos. A prova de mensagem real e de Task é a rt86 na lima, com upstream de verdade. O teste de composição desta receita usa upstream controlado e não substitui essa prova.
