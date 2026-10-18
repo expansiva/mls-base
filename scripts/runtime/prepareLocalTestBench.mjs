@@ -51,16 +51,23 @@ export function allowedOriginsFor(port) {
 
 const MEMBER_ROLE = /^[A-Za-z][A-Za-z0-9]*\.[A-Z][A-Za-z0-9]*$/;
 
+const LIMA_SESSION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
 export function parseArgs(argv) {
   let project = '';
   let runtimeRoot = '';
   let cmRoot = '';
+  let limaSession = '';
   const memberRoles = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--project') project = argv[++i] ?? '';
     else if (arg === '--runtime-root') runtimeRoot = argv[++i] ?? '';
     else if (arg === '--cm-root') cmRoot = argv[++i] ?? '';
+    else if (arg === '--lima-session') {
+      limaSession = argv[++i] ?? '';
+      if (!LIMA_SESSION_TOKEN.test(limaSession)) throw new Error('--lima-session is not a token');
+    }
     else if (arg === '--member-role') {
       const role = argv[++i] ?? '';
       if (!MEMBER_ROLE.test(role)) throw new Error(`--member-role '${role}' is not <moduleId>.<Tipo>`);
@@ -71,13 +78,24 @@ export function parseArgs(argv) {
   }
   if (!runtimeRoot) throw new Error('--runtime-root is required');
   if (!cmRoot) throw new Error('--cm-root is required');
-  return { project: assertProjectId(project), runtimeRoot, cmRoot, memberRoles };
+  return { project: assertProjectId(project), runtimeRoot, cmRoot, memberRoles, limaSession };
 }
 
-export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = []) {
-  const parts = [
-    'env',
-    'LOCAL_TEST_BENCH_ROLE=remote',
+export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [], context) {
+  const parts = ['env', 'LOCAL_TEST_BENCH_ROLE=remote'];
+  if (context) {
+    if (!context.ownerId || !context.operationId || !context.lockPath) {
+      throw new Error('lima operation is required before seed');
+    }
+    parts.push(
+      `LIMA_OWNER_ID=${context.ownerId}`,
+      `LIMA_OPERATION_ID=${context.operationId}`,
+      `LIMA_LOCK_PATH=${context.lockPath}`,
+    );
+    if (context.sessionVmB64) parts.push(`LIMA_SESSION_VM_B64=${context.sessionVmB64}`);
+    if (context.sessionVmHref) parts.push(`LIMA_SESSION_VM_HREF=${context.sessionVmHref}`);
+  }
+  parts.push(
     'node',
     '--input-type=module',
     '-',
@@ -87,13 +105,13 @@ export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [
     runtimeRoot,
     '--cm-root',
     cmRoot,
-  ];
+  );
   for (const role of memberRoles) parts.push('--member-role', role);
   return parts.map(shQuote).join(' ');
 }
 
-export function sshArgs(project, runtimeRoot, cmRoot, memberRoles = []) {
-  return [SSH_ALIAS, remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles)];
+export function sshArgs(project, runtimeRoot, cmRoot, memberRoles = [], context) {
+  return [SSH_ALIAS, remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles, context)];
 }
 
 export function testDatabaseUrlFromEnvText(text) {
@@ -319,7 +337,47 @@ function spawnSeed(spawn, commandArgs, cwd, env, label) {
   return lastJson(result.stdout);
 }
 
+function reservationError(message) {
+  const error = new Error(message);
+  error.resume = 'reservation';
+  return error;
+}
+
+export function reservationFromEnv(env = process.env) {
+  const ownerId = env.LIMA_OWNER_ID || '';
+  const operationId = env.LIMA_OPERATION_ID || '';
+  const lockPath = env.LIMA_LOCK_PATH || '';
+  if (!ownerId && !operationId && !lockPath) return null;
+  if (!ownerId || !operationId || !lockPath) return null;
+  return { ownerId, operationId, lockPath };
+}
+
+export async function assertActiveOperation(context, env = process.env) {
+  if (!context?.ownerId || !context.operationId || !context.lockPath) {
+    throw reservationError('lima operation is required before seed');
+  }
+  const href = env.LIMA_SESSION_VM_HREF
+    || (env.LIMA_SESSION_VM_B64 ? `data:text/javascript;base64,${env.LIMA_SESSION_VM_B64}` : '')
+    || new URL('../../tools/lima/sessionVm.mjs', import.meta.url).href;
+  const { dispatch } = await import(href);
+  const status = await dispatch({
+    op: 'status',
+    ownerId: context.ownerId,
+    lockPath: context.lockPath,
+  });
+  if (!status?.owned) throw reservationError('lima reservation is not owned by this context');
+  const ids = (status.operations || []).map((item) => (typeof item === 'string' ? item : item?.id));
+  if (!ids.includes(context.operationId)) {
+    throw reservationError('seed is outside the registered lima operation');
+  }
+  return status;
+}
+
 export function runOnVm(options) {
+  const remote = process.env.LOCAL_TEST_BENCH_ROLE === 'remote';
+  if (remote && options.reservation?.proved !== true) {
+    throw reservationError('lima operation is required before seed');
+  }
   const fs = options.fs ?? {
     existsSync, readFileSync, realpathSync, mkdirSync, writeFileSync, renameSync, chmodSync,
   };
@@ -364,21 +422,54 @@ export function runOnVm(options) {
   return { manifestFile, summary: publicSummary(manifest, manifestFile), manifest };
 }
 
-export function hostMain(argv = process.argv.slice(2), spawn = spawnSync) {
+const STANDALONE_SESSION = 'prepare-local-bench';
+
+export async function hostMain(argv = process.argv.slice(2), spawn = spawnSync, options = {}) {
+  const env = options.env ?? process.env;
+  const { refuseRemoteArgv, resolveLocalProfile, withLimaOperation } = await import('../../tools/lima/session.mjs');
+  refuseRemoteArgv(argv);
   const args = parseArgs(argv);
-  const command = sshArgs(args.project, args.runtimeRoot, args.cmRoot, args.memberRoles);
-  if (command[0] !== SSH_ALIAS) throw new Error('ssh target is not lima-ubuntu24');
-  const source = readFileSync(fileURLToPath(import.meta.url));
-  const result = spawn('ssh', command, { input: source, encoding: 'utf8' });
-  const stdout = result?.stdout ?? '';
-  const stderr = result?.stderr ?? '';
-  assertPublicText(stdout);
-  if (stderr) process.stderr.write(stderr.endsWith('\n') || !stderr ? stderr : `${stderr}\n`);
-  if (!result || result.status !== 0) {
-    const detail = stderr.trim() || stdout.trim() || 'ssh failed';
-    throw new Error(detail);
-  }
-  process.stdout.write(stdout.endsWith('\n') || !stdout ? stdout : `${stdout}\n`);
+  const profile = options.profile ?? resolveLocalProfile(options.root ?? env.LIMA_PROJECT_ROOT, env);
+  const session = args.limaSession || env.LIMA_SESSION || STANDALONE_SESSION;
+  const lockPath = options.lockPath || env.LIMA_LOCK_PATH || '/etc/collab/local-tests/lima.lock';
+  const sessionVmB64 = readFileSync(fileURLToPath(new URL('../../tools/lima/sessionVm.mjs', import.meta.url))).toString('base64');
+  const sshBin = options.sshBin || env.LIMA_SSH_BIN || 'ssh';
+  await withLimaOperation(profile, {
+    session,
+    projectId: args.project,
+    name: 'prepare-local-bench',
+    phase: 'preparing',
+  }, async (ctx) => {
+    const command = sshArgs(args.project, args.runtimeRoot, args.cmRoot, args.memberRoles, {
+      ownerId: ctx.ownerId,
+      operationId: ctx.operationId,
+      lockPath,
+      sessionVmB64,
+    });
+    if (command[0] !== SSH_ALIAS) throw new Error('ssh target is not lima-ubuntu24');
+    const source = readFileSync(fileURLToPath(import.meta.url));
+    const result = spawn(sshBin, command, {
+      input: source,
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    });
+    const stdout = result?.stdout ?? '';
+    const stderr = result?.stderr ?? '';
+    assertPublicText(stdout);
+    if (stderr) process.stderr.write(stderr.endsWith('\n') || !stderr ? stderr : `${stderr}\n`);
+    if (!result || result.status !== 0) {
+      const detail = stderr.trim() || stdout.trim() || 'ssh failed';
+      const error = new Error(detail);
+      error.uncertain = true;
+      throw error;
+    }
+    process.stdout.write(stdout.endsWith('\n') || !stdout ? stdout : `${stdout}\n`);
+  }, {
+    sshBin,
+    lockPath,
+    env,
+    timeoutMs: options.timeoutMs,
+  });
 }
 
 function isDirect() {
@@ -388,9 +479,13 @@ function isDirect() {
 }
 
 async function remoteMain() {
+  const context = reservationFromEnv();
+  if (!context) throw reservationError('lima operation is required before seed');
+  await assertActiveOperation(context);
   const { summary } = await runOnVm({
     argv: process.argv.slice(2),
     manifestDir: process.env.LOCAL_TEST_BENCH_MANIFEST_DIR || undefined,
+    reservation: { proved: true },
   });
   process.stdout.write(summary);
 }
@@ -402,10 +497,8 @@ if (process.env.LOCAL_TEST_BENCH_ROLE === 'remote') {
     process.exitCode = 1;
   });
 } else if (isDirect()) {
-  try {
-    hostMain();
-  } catch (error) {
+  hostMain().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
-  }
+  });
 }
