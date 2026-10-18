@@ -24,11 +24,7 @@ Na raiz do `mls-base`. O `--` entrega os argumentos ao script.
 rtk proxy pnpm run lima:preparar -- 102047 --session codex-ts01 --db migrate
 ```
 
-Sem `--db`, o prepare usa `migrate` e registra isso no plano e no recibo. Reset explícito, só nesta lima de teste:
-
-```
-rtk proxy pnpm run lima:preparar -- 102047 --session codex-ts01 --db reset
-```
+Sem `--db`, o prepare usa `migrate` e registra isso no plano e no recibo.
 
 Claude Code, o mesmo protocolo, outro nome de campanha:
 
@@ -51,7 +47,7 @@ node tools/lima/lima.mjs end --session codex-ts01
 node tools/lima/lima.mjs prepare 102047 --session codex-ts01 --dry-run
 ```
 
-O prepare adquire ou retoma a reserva, prepara fontes e release, migra ou reseta, semeia e só então marca `ready`. A reserva permanece. Com browser registrado, um novo prepare é recusado. Sem browser, `--db migrate` repete quando o ambiente já está coerente. `--db reset` reconstrói mesmo com o código igual.
+O prepare adquire ou retoma a reserva, prepara fontes e release, migra, semeia e só então marca `ready`. A reserva permanece. Com browser registrado, um novo prepare é recusado. Sem browser, `--db migrate` repete quando o ambiente já está coerente.
 
 Fora do `mls-base`:
 
@@ -59,17 +55,24 @@ Fora do `mls-base`:
 node /Volumes/WagnerSSD1/collab/mls-base/tools/lima/lima.mjs prepare 102047 --session codex-ts01 --db migrate
 ```
 
-## Migrate, reset, cm e recibo
+## Migrate, cm e recibo
 
 `migrate` é o padrão. Conserva dados quando o esquema não muda. Não usa o `pnpm migrate` global.
 
-`reset` só corre se `collab_app_test` for exclusivo desta bancada, o app 2047 estiver parado para o DDL e não houver consumidor ou objeto dependente alheio. Se o banco estiver compartilhado, ausente ou ambíguo, o comando recusa o reset e deixa o migrate disponível. Não apaga banco, schema, extensão nem tabelas de outro app. Apps 2043 e 2052 ficam no ar.
+Reset indisponível (decisão de 18/10/2026), só `migrate`.
 
-O banco limpo não limpa o cm. Humanos e histórico do cm permanecem. Depois de um reset, os MDMids antigos não valem: abrir jars novas e não reutilizar perfil ou storage da campanha anterior. Testes novos usam referências únicas da rodada.
+Humanos e histórico do cm permanecem. Testes novos usam referências únicas da rodada.
 
 O seed interno continua `scripts/runtime/prepareLocalTestBench.mjs` (`--member-role tarefas.MembroEquipe`). Ele agora só semeia dentro da reserva. Não é o comando de preparar a bancada.
 
 O recibo pronto fica no temp do Mac (`lima-receipt-<sessão>.json`), escrito só depois de todos os checks. Traz sessão, fase, instante, VM, projeto, origem `localhost`, stamp da release (`id`, `client`, `versionRef`, `platformCommit`, `libs`, `monaco`), SHAs, árvores das dependências, resultado migrate/reset, módulos, Company, personas, CMids e limites. Falha apaga o recibo pronto e deixa um diagnóstico ao lado. Não promete perfis C14/C15, aviso diário nem integração How. O alpha das duas personas permanece. A instalação npm não é reproduzível byte a byte (pin `collabLibs` do Mac; lockfile fora, Wagner 04/09).
+
+## Entrega da campanha ao tester
+
+`begin` sozinho deixa a reserva em `reserved`, e o browser só liga em `ready` (medido em 18/10/2026: `bench reservation is not ready`).
+Quem deixa `ready` é o `prepare`, que é do runtime. Por isso o runtime prepara **com o nome da campanha do tester** (ex.:
+`lima prepare 102047 --session tester-ts02 --db migrate`); a referência de posse fica no temp do mesmo usuário do Mac, e o tester só
+abre as jars com `--lima-session tester-ts02` e dá o `end` ao terminar. Próxima rodada, campanha nova preparada pelo runtime.
 
 ## Browser
 

@@ -179,14 +179,28 @@ test('remote host, wrong project and prepare do not succeed', async () => {
   assert.notEqual(prepared.code, 0);
   assert.doesNotMatch(prepared.stdout, /"ready":true/u);
   assert.match(readFileSync(box.lockPath, 'utf8'), /"phase":"failed"/u);
+  const resetLog = join(box.root, 'reset-ssh.log');
+  const resetLock = join(box.root, 'reset.lock');
   const reset = await runCli(['prepare', '102047', '--session', 'reset-early', '--db', 'reset'], {
     ...box.env,
     LIMA_STATE_DIR: join(box.root, 'reset-state'),
-    LIMA_LOCK_PATH: join(box.root, 'reset.lock'),
-    LIMA_SSH_LOG: join(box.root, 'reset-ssh.log'),
+    LIMA_LOCK_PATH: resetLock,
+    LIMA_SSH_LOG: resetLog,
   });
-  assert.notEqual(reset.code, 0);
-  assert.doesNotMatch(reset.stdout, /"ready":true/u);
+  assert.equal(reset.code, 2);
+  assert.match(reset.stderr, /reset is not available in this version of the bench; use --db migrate/u);
+  assert.equal(existsSync(resetLog), false);
+  assert.equal(existsSync(resetLock), false);
+  const dryReset = await runCli(['prepare', '102047', '--session', 'reset-early', '--dry-run', '--db', 'reset'], {
+    ...box.env,
+    LIMA_STATE_DIR: join(box.root, 'reset-dry-state'),
+    LIMA_LOCK_PATH: join(box.root, 'reset-dry.lock'),
+    LIMA_SSH_LOG: join(box.root, 'reset-dry-ssh.log'),
+  });
+  assert.equal(dryReset.code, 2);
+  assert.match(dryReset.stderr, /reset is not available/u);
+  assert.equal(existsSync(join(box.root, 'reset-dry-ssh.log')), false);
+  assert.equal(existsSync(join(box.root, 'reset-dry.lock')), false);
 });
 
 test('a second session with the same name is refused and the owner can resume', async () => {
@@ -412,7 +426,7 @@ function withStages(box, extra = {}) {
   };
 }
 
-test('prepare reaches ready, repeats migrate, resets explicitly, and keeps the lock', async () => {
+test('prepare reaches ready, repeats migrate, refuses reset, and keeps the lock', async () => {
   const box = bench();
   const env = withStages(box);
   const prepared = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], env);
@@ -443,9 +457,12 @@ test('prepare reaches ready, repeats migrate, resets explicitly, and keeps the l
   assert.equal(typeof sent.operation.operationId, 'string');
   assert.equal(Object.hasOwn(JSON.parse(JSON.stringify(RELEASE)), 'runtimeRoot'), false);
   assert.equal(sent.runtimeRoot === RELEASE.versionRef, false);
+  const callsBeforeReset = sshLines(box.sshLog).length;
   const reset = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'reset'], env);
-  assert.equal(reset.code, 0, reset.stderr);
-  assert.equal(JSON.parse(reset.stdout).reset.rebuilt, true);
+  assert.equal(reset.code, 2);
+  assert.match(reset.stderr, /use --db migrate/u);
+  assert.equal(sshLines(box.sshLog).length, callsBeforeReset);
+  assert.match(readFileSync(box.lockPath, 'utf8'), /"phase":"ready"/u);
   const other = await runCli(['begin', '102047', '--session', 'outra'], {
     ...env,
     LIMA_STATE_DIR: join(box.root, 'other'),

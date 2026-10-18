@@ -29,7 +29,7 @@ export function usage() {
     'usage: node tools/lima/lima.mjs <command>',
     '  begin 102047 --session <name>',
     '  status [--session <name>]',
-    '  prepare 102047 --session <name> [--db migrate|reset] [--dry-run]',
+    '  prepare 102047 --session <name> [--db migrate] [--dry-run]',
     '  end --session <name>',
     'help and status do not start prepare or a browser.',
     'prepare keeps the reservation; --dry-run only reports occupation and the plan.',
@@ -93,8 +93,14 @@ export function parseCli(argv) {
   if (session && !SESSION_NAME.test(session)) {
     throw Object.assign(new Error('--session is invalid'), { code: 'usage', exitCode: 2 });
   }
-  if (command === 'prepare' && db !== 'migrate' && db !== 'reset') {
-    throw Object.assign(new Error('--db must be migrate or reset'), { code: 'usage', exitCode: 2 });
+  if (command === 'prepare' && db === 'reset') {
+    throw Object.assign(
+      new Error('reset is not available in this version of the bench; use --db migrate'),
+      { code: 'usage', exitCode: 2 },
+    );
+  }
+  if (command === 'prepare' && db !== 'migrate') {
+    throw Object.assign(new Error('--db must be migrate'), { code: 'usage', exitCode: 2 });
   }
   if (dryRun && command !== 'prepare') {
     throw Object.assign(new Error('--dry-run belongs to prepare'), { code: 'usage', exitCode: 2 });
