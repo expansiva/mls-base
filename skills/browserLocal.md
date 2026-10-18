@@ -138,13 +138,13 @@ pm2 restart /data/mls-base/pm2.apps.d/app2047.config.js --update-env
 
 Trocar de pessoa não reinicia o app. Desligar é apagar as duas linhas e `pm2 delete app2047 && pm2 start <arquivo> && pm2 save`: o `restart --update-env` mescla o env e **não** remove uma variável apagada do arquivo (medido na lima em 18/10/2026). O publish preserva as duas linhas (`vmApps.mjs`). A flag e o arquivo não entram na release, no cfe nem no repositório. Não imprimir `cookieKey`, token de serviço nem o conteúdo do manifesto.
 
-Dois perfis limpos da ferramenta, um por pessoa. A sessão headless fecha depois de 5 min sem `open` e volta **sem cookies**: aí o login de teste da lima (`CBE_TEST_*`) grava um `cauth` falso e o `/session/info` vem sem pessoa. Basta selecionar de novo (o login com a pessoa selecionada expira esse `cauth`). Abrir o seletor e só clicar depois de a página carregar; clique cedo demais não troca nada. Sem outra aba dessa origem durante a troca: o seletor apaga `msgDB`, `serviceCollabMessages` e `collabMessages_userId` e, se outra aba bloquear o IndexedDB, não troca a sessão. Sem perfil humano e sem o Google Chrome de marca.
+Dois perfis limpos da ferramenta, um por pessoa. `open` só uma vez por sessão: `open` numa sessão que já existe relança o browser com cookies vazios (medido em 18/10/2026). Depois dele, navegar com `goto`. Sessão sem cookie (novo `open`, ou o idle da sessão headless) cai no login de teste da lima (`CBE_TEST_*`), que grava um `cauth` falso, e o `/session/info` vem sem pessoa: basta selecionar de novo, porque o login com a pessoa selecionada expira esse `cauth`. Para uma rodada longa, abrir com `--idle-timeout=3600000`. Clicar só depois de o seletor carregar. Sem outra aba dessa origem durante a troca: o seletor apaga `msgDB`, `serviceCollabMessages` e `collabMessages_userId` e, se outra aba bloquear o IndexedDB, não troca a sessão. Sem perfil humano e sem o Google Chrome de marca.
 
 ```
-rtk pnpm run browser -- -s=responsavel open http://localhost:2047/__test/session
+rtk pnpm run browser -- -s=responsavel open --idle-timeout=3600000 http://localhost:2047/__test/session
 rtk pnpm run browser -- -s=responsavel click "getByRole('button', { name: 'responsavel' })"
-rtk pnpm run browser -- -s=responsavel open http://localhost:2047/<rota-do-modulo>
-rtk pnpm run browser -- -s=membro open http://localhost:2047/__test/session
+rtk pnpm run browser -- -s=responsavel goto http://localhost:2047/<rota-do-modulo>
+rtk pnpm run browser -- -s=membro open --idle-timeout=3600000 http://localhost:2047/__test/session
 rtk pnpm run browser -- -s=membro click "getByRole('button', { name: 'membro' })"
 ```
 
