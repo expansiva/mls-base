@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPublishLocalLock } from './publishGitLocalLock.mjs';
+import { dispatch } from '../tools/lima/sessionVm.mjs';
+import { saveOwnerRef } from '../tools/lima/session.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI_FILES = [
@@ -56,7 +58,12 @@ function makeBench() {
   mkdirSync(bin, { recursive: true });
   writeFileSync(events, '');
   for (const name of CLI_FILES) copyFileSync(join(HERE, name), join(root, 'scripts', name));
-  writeFileSync(join(root, '.env'), 'PUBLISH_LOCAL_SSH_HOST=bench\nPUBLISH_LOCAL_REMOTE_BASE=/unused\n');
+  mkdirSync(join(root, 'tools', 'lima'), { recursive: true });
+  copyFileSync(join(HERE, '../tools/lima/session.mjs'), join(root, 'tools', 'lima', 'session.mjs'));
+  copyFileSync(join(HERE, '../tools/lima/sessionVm.mjs'), join(root, 'tools', 'lima', 'sessionVm.mjs'));
+  const sshConfig = join(root, 'ssh.config');
+  writeFileSync(sshConfig, 'Host lima-ubuntu24\n  HostName 127.0.0.1\n');
+  writeFileSync(join(root, '.env'), `PUBLISH_LOCAL_SSH_HOST=bench\nPUBLISH_LOCAL_REMOTE_BASE=/unused\nPUBLISH_LOCAL_SSH_CONFIG=${sshConfig}\n`);
   writeExec(join(bin, 'git'), `#!/bin/sh
 if [ "\${COLLAB_ACTOR:-}" != "" ]; then
   printf '%s %s\\n' "\$COLLAB_ACTOR" "\$*" >> "\$COLLAB_GIT_LOG"
@@ -70,6 +77,18 @@ exec ${GIT} "\$@"
   writeExec(join(bin, 'ssh'), `#!/bin/sh
 text="\$*"
 case "\$text" in
+  *--input-type=module*)
+    json=\$(printf '%s' "\$text" | sed -n "s/.* '\\(.*\\)'\$/\\1/p")
+    op=\$(printf '%s' "\$json" | sed -n 's/.*"op":"\\([^"]*\\)".*/\\1/p')
+    if [ -n "\$COLLAB_LIMA_LOG" ]; then
+      printf '%s\\n' "\$op" >> "\$COLLAB_LIMA_LOG"
+    fi
+    if [ -n "\$COLLAB_LIMA_FAIL_OP" ] && [ "\$op" = "\$COLLAB_LIMA_FAIL_OP" ]; then
+      echo "lima ssh dropped" >&2
+      exit 255
+    fi
+    exec "\$COLLAB_NODE" --input-type=module - "\$json"
+    ;;
   *git-receive-pack*) sub=receive-pack ;;
   *git-upload-pack*) sub=upload-pack ;;
   *) echo "ssh shim: \$*" >&2; exit 1 ;;
@@ -166,6 +185,10 @@ function cliEnv(bench, actor, extra = {}) {
     GIT_SSH_COMMAND: join(bench.bin, 'ssh'),
     COLLAB_ACTOR: actor,
     COLLAB_GIT_LOG: join(bench.root, 'git.log'),
+    COLLAB_LIMA_LOG: join(bench.root, 'lima.log'),
+    COLLAB_NODE: process.execPath,
+    LIMA_LOCK_PATH: join(bench.root, 'lima.lock'),
+    LIMA_STATE_DIR: join(bench.root, 'lima-state'),
     ...extra,
   });
   delete env.NODE_TEST_CONTEXT;
@@ -214,6 +237,21 @@ async function waitFor(fn, ms = 15000) {
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
   throw new Error('timed out waiting for bench condition');
+}
+
+function limaLog(bench) {
+  const path = join(bench.root, 'lima.log');
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8').split('\n').filter(Boolean);
+}
+
+function limaProfile(bench) {
+  return {
+    sshConfig: join(bench.root, 'ssh.config'),
+    alias: 'lima-ubuntu24',
+    root: bench.root,
+    stateDir: join(bench.root, 'lima-state'),
+  };
 }
 
 function gitLog(bench, actor) {
@@ -375,9 +413,11 @@ test('two local CLIs of one ROOT serialize, then the waiter publishes the SHA it
     assert.notEqual(v2, v1);
 
     const second = startCli(bench, [appB, 'local', ...flags(bench)], { actor: 'B', timeoutMs: 30000 });
-    await waitFor(() => second.state.err.includes('publish local busy'));
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    assert.deepEqual(gitLog(bench, 'B'), [], 'waiter must not fetch or push while the first hook runs');
+    const refusedB = await second.done;
+    assert.notEqual(refusedB.code, 0);
+    assert.match(refusedB.err, /occupied/);
+    assert.doesNotMatch(refusedB.err, /publish local busy/);
+    assert.deepEqual(gitLog(bench, 'B'), [], 'the other publisher must not fetch or push while the reservation is held');
     const owner = JSON.parse(readFileSync(join(heldLock, 'owner.json'), 'utf8'));
     assert.equal(owner.phase, 'push/hook');
     assert.equal(readFileSync(join(dep.remote, 'lib.txt'), 'utf8'), 'v1\n');
@@ -389,7 +429,7 @@ test('two local CLIs of one ROOT serialize, then the waiter publishes the SHA it
     assert.notEqual(head(a.remote), moved);
     assert.match(doneA.err, new RegExp(`release 20261015120000`));
 
-    const doneB = await second.done;
+    const doneB = await runCli(bench, [appB, 'local', ...flags(bench)], { actor: 'B2', timeoutMs: 30000 });
     assert.equal(doneB.code, 0, doneB.err);
     assert.match(doneB.err, /marker commit/);
     assert.equal(readFileSync(join(dep.remote, 'lib.txt'), 'utf8'), 'v2\n');
@@ -485,9 +525,12 @@ test('red build, pre-push failure, and an uncertain interrupt', { timeout: 40000
 
     const thief = await runCli(bench, [cutId, 'local', ...flags(bench)], { actor: 'thief', timeoutMs: 8000 });
     assert.notEqual(thief.code, 0);
-    assert.match(thief.err, /retained/);
+    assert.match(thief.err, /occupied/);
     assert.deepEqual(gitLog(bench, 'thief'), []);
     assert.equal(existsSync(heldLock), true);
+    const limaHeld = JSON.parse(readFileSync(join(bench.root, 'lima.lock'), 'utf8'));
+    assert.equal(limaHeld.operations.length, 1);
+    assert.notEqual(limaHeld.phase, 'ready');
     rmSync(hold);
     await waitFor(() => eventsOf(bench).some((line) => line.startsWith(`hook-end mls-${cutId} `)));
   } finally {
@@ -535,6 +578,105 @@ test('equal app and equal dep is a no-op; a changed dep cuts one project release
     assert.ok(lines.some((line) => line.startsWith(`hook-end mls-${appId} `)));
   } finally {
     rmSync(heldLock, { recursive: true, force: true });
+    rmSync(bench.root, { recursive: true, force: true });
+  }
+});
+
+test('lima reservation: other owner, browser, inherited operation, dropped finish, and remote', { timeout: 60000 }, async () => {
+  const bench = makeBench();
+  const lockPath = join(bench.root, 'lima.lock');
+  try {
+    const id = '102047';
+    const { local, remote } = pair(bench, id);
+    const base = head(remote);
+    commitFile(local, 'n.txt', 'n\n', 'n');
+
+    const other = await dispatch({
+      op: 'acquire', session: 'tester-a', projectId: '102047', origin: 'test', lockPath,
+    });
+    assert.equal(other.ok, true);
+    let refused = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'other' });
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.err, /session busy/);
+    assert.doesNotMatch(refused.err, /ownerId/);
+    assert.deepEqual(gitLog(bench, 'other'), []);
+    assert.equal(head(remote), base);
+    await dispatch({ op: 'end', ownerId: other.ownerId, lockPath });
+
+    const browserOwner = await dispatch({
+      op: 'acquire', session: 'publish', projectId: '102047', origin: 'test', lockPath,
+    });
+    const prep = await dispatch({
+      op: 'beginOperation', ownerId: browserOwner.ownerId, name: 'prep', phase: 'preparing', lockPath,
+    });
+    await dispatch({
+      op: 'finishOperation', ownerId: browserOwner.ownerId, operationId: prep.operationId, phase: 'ready', lockPath,
+    });
+    await dispatch({
+      op: 'bindBrowser', ownerId: browserOwner.ownerId, browserId: 'camp-responsavel', lockPath,
+    });
+    saveOwnerRef(limaProfile(bench), {
+      vm: 'lima-ubuntu24', session: 'publish', projectId: '102047', ownerId: browserOwner.ownerId, operationId: null,
+    });
+    refused = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'browser' });
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.err, /browser registered/);
+    assert.deepEqual(gitLog(bench, 'browser'), []);
+    assert.equal(head(remote), base);
+    await dispatch({
+      op: 'unbindBrowser', ownerId: browserOwner.ownerId, browserId: 'camp-responsavel', lockPath,
+    });
+    await dispatch({ op: 'end', ownerId: browserOwner.ownerId, lockPath });
+    rmSync(join(bench.root, 'lima-state'), { recursive: true, force: true });
+
+    const camp = await dispatch({
+      op: 'acquire', session: 'camp', projectId: '102047', origin: 'test', lockPath,
+    });
+    const operation = await dispatch({
+      op: 'beginOperation', ownerId: camp.ownerId, name: 'prepare', phase: 'preparing', lockPath,
+    });
+    saveOwnerRef(limaProfile(bench), {
+      vm: 'lima-ubuntu24', session: 'camp', projectId: '102047', ownerId: camp.ownerId, operationId: operation.operationId,
+    });
+    writeFileSync(join(bench.root, 'lima.log'), '');
+    const joined = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'inherit' });
+    assert.equal(joined.code, 0, joined.err);
+    const ops = limaLog(bench);
+    assert.ok(ops.includes('status'));
+    assert.equal(ops.includes('beginOperation'), false);
+    assert.equal(ops.includes('end'), false);
+    const held = JSON.parse(readFileSync(lockPath, 'utf8'));
+    assert.equal(held.operations.length, 1);
+    assert.equal(held.operations[0].id, operation.operationId);
+    assert.notEqual(head(remote), base);
+    await dispatch({
+      op: 'finishOperation', ownerId: camp.ownerId, operationId: operation.operationId, phase: 'ready', lockPath,
+    });
+    await dispatch({ op: 'end', ownerId: camp.ownerId, lockPath });
+    rmSync(join(bench.root, 'lima-state'), { recursive: true, force: true });
+
+    const again = commitFile(local, 'd.txt', 'd\n', 'd');
+    const dropped = await runCli(bench, [id, 'local', ...flags(bench)], {
+      actor: 'drop',
+      extraEnv: { COLLAB_LIMA_FAIL_OP: 'finishOperation' },
+    });
+    assert.equal(dropped.code, 0, dropped.err);
+    assert.equal(head(remote), again);
+    const retained = JSON.parse(readFileSync(lockPath, 'utf8'));
+    assert.equal(retained.operations.length, 1);
+    const follower = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'follower' });
+    assert.notEqual(follower.code, 0);
+    assert.match(follower.err, /occupied/);
+    assert.deepEqual(gitLog(bench, 'follower'), []);
+
+    const remoteOnly = pair(bench, '910099');
+    const kept = commitFile(remoteOnly.remote, 'vm.txt', 'vm\n', 'vm');
+    writeFileSync(join(bench.root, 'lima.log'), '');
+    const remoteRun = await runCli(bench, ['910099', 'remote', ...flags(bench)], { actor: 'remote-profile' });
+    assert.notEqual(remoteRun.code, 0);
+    assert.equal(head(remoteOnly.remote), kept);
+    assert.deepEqual(limaLog(bench), []);
+  } finally {
     rmSync(bench.root, { recursive: true, force: true });
   }
 });

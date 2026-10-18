@@ -42,6 +42,9 @@ import { runRedirectLogin } from './publishGitLogin.mjs';
 import { addMissingTsconfigPaths } from './syncTsconfigPaths.mjs';
 import { formatClientConfigWarn, validateClientConfigFile } from './validateClientConfig.mjs';
 import { createPublishLocalLock } from './publishGitLocalLock.mjs';
+import {
+  SUPPORTED_PROJECT, beginSession, callVm, endSession, loadOwnerRef, resolveLocalProfile, saveOwnerRef,
+} from '../tools/lima/session.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_REMOTE_BASE = '/data/mls-base';
@@ -104,6 +107,17 @@ function usage() {
 
 function fail(message, code = 1) {
   process.stderr.write(`${message}\n`);
+  requestExit(code);
+}
+
+function requestExit(code, { retain = false } = {}) {
+  if (limaControl) {
+    const error = new Error('publish exit');
+    error.limaExit = true;
+    error.exitCode = code;
+    error.limaRetain = retain || activeGuard?.state?.phase === 'retained';
+    throw error;
+  }
   process.exit(code);
 }
 
@@ -922,9 +936,30 @@ async function main() {
   }
 
   if (profile === 'local') {
-    activeGuard = createLocalPublishGuard();
-    await activeGuard.begin(ROOT);
+    try {
+      limaControl = await enterLimaReservation();
+    } catch (error) {
+      process.stderr.write(`${error.message}\n`);
+      process.exit(error.exitCode || 1);
+    }
   }
+
+  try {
+    if (profile === 'local') {
+      activeGuard = createLocalPublishGuard();
+      await activeGuard.begin(ROOT);
+    }
+    await publishTree({ id, profile, repo, url, env, projectName, align, autocommit, noDeps, conf });
+  } catch (error) {
+    if (error && error.limaExit) {
+      await leaveLima(limaControl, { retain: error.limaRetain === true });
+      process.exit(error.exitCode ?? 1);
+    }
+    throw error;
+  }
+}
+
+async function publishTree({ id, profile, repo, url, env, projectName, align, autocommit, noDeps, conf }) {
 
   const branch = gitOut(repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (branch !== 'main') {
@@ -969,7 +1004,7 @@ async function main() {
   if (rel === 'same') {
     if (!needsRebuildCommit(rel, changedDeps, missingDeps)) {
       process.stderr.write('[publishGit] already on the VM (HEAD = remote main) and no dep changed. Nothing to publish.\n');
-      process.exit(0);
+      requestExit(0);
     }
     // gb69: a release é do projeto publicado. Commit-marca em main para o hook
     // rodar (push da mesma SHA é Everything up-to-date e o hook não dispara).
@@ -1010,7 +1045,7 @@ async function main() {
     if (isAuthFailure(text)) failAuth(text);
     if (DIRTY_VM_RE.test(text)) {
       explainDirtyVm(text);
-      process.exit(1);
+      requestExit(1);
     }
     if (isNonFastForward(text) && !isPushDisconnect(text)) {
       fail(nonFastForwardMessage(profile, Boolean(decision.forceLease)));
@@ -1039,7 +1074,7 @@ async function main() {
   if (verdict.kind === 'disconnect-applied') {
     process.stderr.write(`${disconnectAppliedMessage(publishedSha)}\n`);
     if (profile === 'local') activeGuard?.conclude('disconnect-applied');
-    process.exit(0);
+    requestExit(0);
   }
   if (verdict.kind === 'disconnect-not-applied' || verdict.kind === 'push-error') {
     fail(pushNotAppliedMessage({ code: pushed.code, kind: verdict.kind, localSha: publishedSha, remoteShaAfter }));
@@ -1187,6 +1222,121 @@ export function shouldRetainLocalLock(kind) {
 const REMOTE_WRITE_PHASES = new Set(['deps', 'push/hook']);
 
 let activeGuard = null;
+let limaControl = null;
+
+const STANDALONE_LIMA_SESSION = 'publish';
+
+function inheritedLimaRef(profile) {
+  if (!existsSync(profile.stateDir)) return null;
+  const prefix = `${profile.alias}--`;
+  const matches = [];
+  for (const name of readdirSync(profile.stateDir)) {
+    if (!name.startsWith(prefix) || !name.endsWith('.json')) continue;
+    const session = name.slice(prefix.length, -'.json'.length);
+    if (session === STANDALONE_LIMA_SESSION) continue;
+    const ref = loadOwnerRef(profile, session);
+    if (ref?.operationId) matches.push(ref);
+  }
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    const error = new Error('lima reservation is ambiguous');
+    error.exitCode = 1;
+    throw error;
+  }
+  return null;
+}
+
+async function enterLimaReservation() {
+  const profile = resolveLocalProfile(ROOT);
+  const inherited = inheritedLimaRef(profile);
+  if (inherited) {
+    const reply = await callVm(profile, { op: 'status', ownerId: inherited.ownerId });
+    const status = reply.json || {};
+    if (!status.owned) {
+      const error = new Error('owner file does not match the reservation');
+      error.exitCode = 1;
+      throw error;
+    }
+    if ((status.browsers || []).length > 0) {
+      const error = new Error('browser registered; publish refused');
+      error.exitCode = 1;
+      throw error;
+    }
+    return { profile, session: inherited.session, ref: inherited, nested: true };
+  }
+
+  const own = loadOwnerRef(profile, STANDALONE_LIMA_SESSION);
+  if (own?.operationId) {
+    const error = new Error('lima reservation occupied');
+    error.exitCode = 73;
+    throw error;
+  }
+  if (own) {
+    const reply = await callVm(profile, { op: 'status', ownerId: own.ownerId });
+    const status = reply.json || {};
+    if (status.owned && (status.browsers || []).length > 0) {
+      const error = new Error('browser registered; publish refused');
+      error.exitCode = 1;
+      throw error;
+    }
+    if (status.owned && (status.phase === 'failed' || (status.operations || []).length > 0)) {
+      const error = new Error('lima reservation occupied');
+      error.exitCode = 73;
+      throw error;
+    }
+  }
+
+  const begun = await beginSession(profile, STANDALONE_LIMA_SESSION, SUPPORTED_PROJECT);
+  const started = await callVm(profile, {
+    op: 'beginOperation',
+    ownerId: begun.ref.ownerId,
+    name: 'publish',
+    phase: 'preparing',
+  });
+  const json = started.json || {};
+  if (!json.ok) {
+    if (!begun.resumed) {
+      try { await endSession(profile, STANDALONE_LIMA_SESSION); } catch { /* an uncertain end stays occupied */ }
+    }
+    const error = new Error(`lima publish refused (${json.code || 'operation'})`);
+    error.exitCode = json.exitCode || 1;
+    throw error;
+  }
+  const ref = { ...begun.ref, operationId: json.operationId };
+  saveOwnerRef(profile, ref);
+  return { profile, session: STANDALONE_LIMA_SESSION, ref, nested: false };
+}
+
+async function leaveLima(ctx, { retain }) {
+  if (!ctx || ctx.nested) return;
+  if (retain) {
+    try {
+      await callVm(ctx.profile, {
+        op: 'finishOperation',
+        ownerId: ctx.ref.ownerId,
+        operationId: ctx.ref.operationId,
+        uncertain: true,
+      });
+    } catch { /* the reservation stays occupied when the failure cannot be recorded */ }
+    return;
+  }
+  let finished;
+  try {
+    finished = await callVm(ctx.profile, {
+      op: 'finishOperation',
+      ownerId: ctx.ref.ownerId,
+      operationId: ctx.ref.operationId,
+      phase: 'ready',
+    });
+  } catch {
+    return;
+  }
+  if (!finished.json?.ok) return;
+  saveOwnerRef(ctx.profile, { ...ctx.ref, operationId: null });
+  try {
+    await endSession(ctx.profile, ctx.session);
+  } catch { /* proved finish, unproved end: the reservation stays */ }
+}
 
 export function createLocalPublishGuard(options = {}) {
   const lock = options.lock ?? createPublishLocalLock(options);
@@ -1273,17 +1423,17 @@ function reportBuildMarker(text) {
   const okMatch = MARKER_OK.exec(text);
   if (okMatch) {
     process.stderr.write(`release ${okMatch[1]} active on the VM\n`);
-    process.exit(0);
+    requestExit(0);
   }
   if (MARKER_ERR.test(text)) {
     const excerpt = tscExcerpt(text);
     if (excerpt) process.stderr.write(`\n${excerpt}\n`);
     process.stderr.write('[publishGit] build vermelho na VM (push aceito; a release anterior segue no ar).\n');
-    process.exit(1);
+    requestExit(1);
   }
 
   process.stderr.write(`${MISSING_HOOK_MSG}\n`);
-  process.exit(1);
+  requestExit(1);
 }
 
 function invokedAsMain() {
