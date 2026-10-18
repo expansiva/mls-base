@@ -1,0 +1,245 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import {
+  CLAIM_TIMEOUT_MS, LONG_TIMEOUT_MS, beginSession, bindLimaBrowser, callVm, loadOwnerRef, resolveLocalProfile, withLimaOperation,
+} from './session.mjs';
+
+const LIMA = fileURLToPath(new URL('./lima.mjs', import.meta.url));
+
+function sshFakeSource() {
+  return `#!/usr/bin/env node
+import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const stdin = Buffer.concat(chunks);
+const argv = process.argv.slice(2);
+const remote = argv[argv.length - 1] || '';
+appendFileSync(process.env.LIMA_SSH_LOG, JSON.stringify({
+  argv,
+  hasDispatch: stdin.includes('export async function dispatch'),
+  remoteStarts: remote.startsWith('node --input-type=module - '),
+}) + '\\n');
+if (process.env.LIMA_SSH_FAIL === '1') process.exit(255);
+const quoted = remote.slice('node --input-type=module - '.length);
+const json = quoted.startsWith("'") ? quoted.slice(1, -1).replaceAll("'\\\\''", "'") : quoted;
+const child = spawn(process.execPath, ['--input-type=module', '-', json], { stdio: ['pipe', 'inherit', 'inherit'] });
+child.stdin.end(stdin);
+child.on('close', (code) => process.exit(code ?? 1));
+`;
+}
+
+function bench() {
+  const root = mkdtempSync(join(tmpdir(), 'lima-s2-'));
+  const sshConfig = join(root, 'ssh_config');
+  const stateDir = join(root, 'state');
+  const lockPath = join(root, 'lima.lock');
+  const sshLog = join(root, 'ssh.log');
+  const sshBin = join(root, 'ssh');
+  const sshScript = join(root, 'ssh.mjs');
+  writeFileSync(sshConfig, 'Host lima-ubuntu24\n  HostName 127.0.0.1\n');
+  writeFileSync(sshScript, sshFakeSource());
+  writeFileSync(sshBin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(sshScript)} "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(root, '.env'), [
+    'PUBLISH_LOCAL_SSH_HOST=127.0.0.1',
+    `PUBLISH_LOCAL_SSH_CONFIG=${sshConfig}`,
+    'PUBLISH_LOCAL_REMOTE_BASE=/data/mls-base',
+    '',
+  ].join('\n'));
+  const env = {
+    ...process.env,
+    LIMA_SSH_BIN: sshBin,
+    LIMA_SSH_LOG: sshLog,
+    LIMA_LOCK_PATH: lockPath,
+    LIMA_STATE_DIR: stateDir,
+    LIMA_PROJECT_ROOT: root,
+    LIMA_SSH_FAIL: '',
+  };
+  const profile = { sshConfig, alias: 'lima-ubuntu24', root, stateDir };
+  const options = { sshBin, lockPath, env: { LIMA_SSH_LOG: sshLog, LIMA_SSH_FAIL: '' } };
+  return { root, stateDir, lockPath, sshLog, env, profile, options };
+}
+
+function runCli(args, env) {
+  return new Promise((resolvePromise) => {
+    const child = spawn(process.execPath, [LIMA, ...args], { env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('close', (code) => resolvePromise({ code, stdout, stderr }));
+  });
+}
+
+function sshLines(sshLog) {
+  let text = '';
+  try {
+    text = readFileSync(sshLog, 'utf8').trim();
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (!text) return [];
+  return text.split('\n').map((line) => JSON.parse(line));
+}
+
+test('PUBLISH_LOCAL_SSH_CONFIG expands $HOME and ${HOME}', () => {
+  const home = mkdtempSync(join(tmpdir(), 'lima-home-'));
+  const sshConfig = join(home, '.lima', 'ubuntu24', 'ssh.config');
+  mkdirSync(join(home, '.lima', 'ubuntu24'), { recursive: true });
+  writeFileSync(sshConfig, 'Host lima-ubuntu24\n  HostName 127.0.0.1\n');
+  const env = { HOME: home, LIMA_STATE_DIR: join(home, 'state') };
+  for (const value of ['$HOME/.lima/ubuntu24/ssh.config', '${HOME}/.lima/ubuntu24/ssh.config']) {
+    const root = mkdtempSync(join(tmpdir(), 'lima-s2-home-'));
+    writeFileSync(join(root, '.env'), `PUBLISH_LOCAL_SSH_CONFIG=${value}\n`);
+    const profile = resolveLocalProfile(root, env);
+    assert.equal(profile.sshConfig, sshConfig);
+  }
+});
+
+test('deadlines stay separate and help does not open ssh', async () => {
+  assert.ok(LONG_TIMEOUT_MS > CLAIM_TIMEOUT_MS);
+  const box = bench();
+  const help = await runCli(['help'], box.env);
+  assert.equal(help.code, 0);
+  assert.match(help.stdout, /begin 102047/u);
+  assert.equal(sshLines(box.sshLog).length, 0);
+});
+
+test('ssh bench receives quoted argv and stdin, and the reservation survives the CLI', async () => {
+  const box = bench();
+  const begun = await runCli(['begin', '102047', '--session', 'campanha-a'], box.env);
+  assert.equal(begun.code, 0, begun.stderr);
+  const view = JSON.parse(begun.stdout);
+  assert.equal(view.session, 'campanha-a');
+  assert.equal(view.phase, 'reserved');
+  assert.equal(Object.hasOwn(view, 'ownerId'), false);
+  const log = sshLines(box.sshLog).at(-1);
+  assert.deepEqual(log.argv.slice(0, 3), ['-F', box.profile.sshConfig, 'lima-ubuntu24']);
+  assert.equal(log.remoteStarts, true);
+  assert.equal(log.hasDispatch, true);
+  const ref = loadOwnerRef(box.profile, 'campanha-a');
+  assert.equal(typeof ref.ownerId, 'string');
+  assert.equal((statSync(join(box.stateDir, 'lima-ubuntu24--campanha-a.json')).mode & 0o777), 0o600);
+  const status = await runCli(['status', '--session', 'campanha-a'], box.env);
+  assert.equal(status.code, 0, status.stderr);
+  const again = JSON.parse(status.stdout);
+  assert.equal(again.held, true);
+  assert.equal(again.owned, true);
+  assert.equal(Object.hasOwn(again, 'ownerId'), false);
+  assert.equal(readFileSync(box.lockPath, 'utf8').includes('"phase":"reserved"'), true);
+});
+
+test('remote host, wrong project and prepare do not succeed', async () => {
+  const box = bench();
+  const remote = await runCli(['begin', '102047', '--session', 'a', '--host', 'vm.example'], box.env);
+  assert.notEqual(remote.code, 0);
+  assert.match(remote.stderr, /remote host/u);
+  const other = await runCli(['begin', '102056', '--session', 'a'], box.env);
+  assert.notEqual(other.code, 0);
+  assert.match(other.stderr, /102047/u);
+  const prepared = await runCli(['prepare', '102047', '--session', 'a'], box.env);
+  assert.equal(prepared.code, 2);
+  assert.match(prepared.stderr, /refused until s7/u);
+  assert.match(prepared.stderr, /db: migrate/u);
+  assert.doesNotMatch(`${prepared.stdout}${prepared.stderr}`, /ready/u);
+  assert.equal(sshLines(box.sshLog).length, 0);
+  const reset = await runCli(['prepare', '102047', '--session', 'a', '--db', 'reset'], box.env);
+  assert.equal(reset.code, 2);
+  assert.match(reset.stderr, /db: reset/u);
+});
+
+test('a second session with the same name is refused and the owner can resume', async () => {
+  const box = bench();
+  const first = await runCli(['begin', '102047', '--session', 'same'], box.env);
+  assert.equal(first.code, 0, first.stderr);
+  const other = { ...box.env, LIMA_STATE_DIR: join(box.root, 'other-state') };
+  const second = await runCli(['begin', '102047', '--session', 'same'], other);
+  assert.equal(second.code, 73, second.stderr);
+  assert.equal(`${second.stdout}${second.stderr}`.includes('ownerId'), false);
+  const resumed = await runCli(['begin', '102047', '--session', 'same'], box.env);
+  assert.equal(resumed.code, 0, resumed.stderr);
+  const body = JSON.parse(resumed.stdout);
+  assert.equal(body.resumed, true);
+  assert.equal(body.owned, true);
+  assert.equal(Object.hasOwn(body, 'ownerId'), false);
+});
+
+test('end is refused while an operation is active, and ssh failure is closed', async () => {
+  const box = bench();
+  await beginSession(box.profile, 'op', '102047', box.options);
+  let ended;
+  await withLimaOperation(box.profile, { session: 'op', projectId: '102047', name: 'publish' }, async () => {
+    ended = await runCli(['end', '--session', 'op'], box.env);
+  }, box.options);
+  assert.notEqual(ended.code, 0);
+  assert.match(`${ended.stdout}${ended.stderr}`, /still-held|operation/u);
+  assert.equal(readFileSync(box.lockPath, 'utf8').includes('"operations"'), true);
+  const failed = await runCli(['begin', '102047', '--session', 'down'], {
+    ...box.env,
+    LIMA_SSH_FAIL: '1',
+    LIMA_STATE_DIR: join(box.root, 'down'),
+  });
+  assert.notEqual(failed.code, 0);
+  assert.match(failed.stderr, /ssh failed/u);
+});
+
+test('an inherited operation does not reacquire, and an uncertain error retains the lock', async () => {
+  const box = bench();
+  let depth = 0;
+  await withLimaOperation(box.profile, { session: 'temp', projectId: '102047', name: 'seed' }, async (outer) => {
+    depth += 1;
+    await withLimaOperation(box.profile, { session: 'temp', projectId: '102047', name: 'seed-again' }, async (inner) => {
+      assert.equal(inner.operationId, outer.operationId);
+      depth += 1;
+    }, box.options);
+  }, box.options);
+  assert.equal(depth, 2);
+  assert.equal(sshLines(box.sshLog).some((line) => line.argv.at(-1).includes('"op":"acquire"')), true);
+  assert.throws(() => readFileSync(box.lockPath, 'utf8'));
+
+  const kept = bench();
+  await assert.rejects(() => withLimaOperation(
+    kept.profile,
+    { session: 'held', projectId: '102047', name: 'reset' },
+    async () => { throw new Error('disconnected'); },
+    kept.options,
+  ));
+  assert.match(readFileSync(kept.lockPath, 'utf8'), /"phase":"failed"/u);
+});
+
+test('browser bind uses the owner file and ignores a foreign id', async () => {
+  const box = bench();
+  await beginSession(box.profile, 'browsers', '102047', box.options);
+  const ref = loadOwnerRef(box.profile, 'browsers');
+  const denied = await callVm(box.profile, { op: 'beginOperation', ownerId: 'not-the-owner', name: 'nope' }, box.options);
+  assert.equal(denied.json.ok, false);
+  assert.equal(Object.hasOwn(denied.json, 'ownerId'), false);
+  const started = await callVm(box.profile, {
+    op: 'beginOperation', ownerId: ref.ownerId, name: 'prep', phase: 'ready',
+  }, box.options);
+  assert.equal(started.json.ok, true);
+  const finished = await callVm(box.profile, {
+    op: 'finishOperation', ownerId: ref.ownerId, operationId: started.json.operationId, phase: 'ready',
+  }, box.options);
+  assert.equal(finished.json.phase, 'ready');
+  const bound = await bindLimaBrowser(box.profile, 'browsers', 'campanha-responsavel', box.options);
+  assert.equal(bound.phase, 'testing');
+  assert.deepEqual(bound.browsers, ['campanha-responsavel']);
+  const browserBin = join(box.root, 'browser');
+  writeFileSync(browserBin, '#!/bin/sh\nprintf "%s\\n" "$@" >> "$LIMA_BROWSER_LOG"\nexit 1\n', { mode: 0o755 });
+  const browserLog = join(box.root, 'browser.log');
+  const open = await runCli(['end', '--session', 'browsers'], {
+    ...box.env,
+    LIMA_BROWSER_BIN: browserBin,
+    LIMA_BROWSER_LOG: browserLog,
+  });
+  assert.match(readFileSync(browserLog, 'utf8'), /-s=campanha-responsavel\nclose/u);
+  assert.notEqual(open.code, 0);
+  assert.match(`${open.stdout}${open.stderr}`, /browsers still open/u);
+  assert.match(readFileSync(box.lockPath, 'utf8'), /campanha-responsavel/u);
+});
