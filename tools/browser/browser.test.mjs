@@ -5,15 +5,22 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { beginSession, resolveLocalProfile, withLimaOperation } from '../lima/session.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LAUNCHER_SRC = path.join(HERE, 'browser.mjs');
+const LIMA_SRC = path.resolve(HERE, '../lima');
 
 function scratch() {
-  const dir = mkdtempSync(path.join(tmpdir(), 'rt74-browser-'));
+  const parent = mkdtempSync(path.join(tmpdir(), 'rt74-browser-'));
+  const dir = path.join(parent, 'pack');
+  mkdirSync(path.join(dir, '.playwright'), { recursive: true });
   copyFileSync(LAUNCHER_SRC, path.join(dir, 'browser.mjs'));
-  mkdirSync(path.join(dir, '.playwright'));
   copyFileSync(path.join(HERE, '.playwright', 'cli.config.json'), path.join(dir, '.playwright', 'cli.config.json'));
+  const lima = path.join(parent, 'lima');
+  mkdirSync(lima);
+  copyFileSync(path.join(LIMA_SRC, 'session.mjs'), path.join(lima, 'session.mjs'));
+  copyFileSync(path.join(LIMA_SRC, 'sessionVm.mjs'), path.join(lima, 'sessionVm.mjs'));
   return dir;
 }
 
@@ -43,7 +50,7 @@ function command() {
 fs.appendFileSync(process.env.RT74_LOG, JSON.stringify({
   args, cwd: process.cwd(), update: process.env.NO_UPDATE_NOTIFIER, cmd: command(),
 }) + '\\n');
-if (command() === 'close' || args.includes('--help')) process.exit(0);
+if (command() === 'close' || args.includes('--help')) process.exit(process.env.RT74_CLOSE_CODE ? Number(process.env.RT74_CLOSE_CODE) : 0);
 if (process.env.RT74_CODE) process.exit(Number(process.env.RT74_CODE));
 if (process.env.RT74_SLEEP) {
   setTimeout(() => process.exit(0), Number(process.env.RT74_SLEEP));
@@ -80,12 +87,60 @@ function readLog(file) {
   return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
+function writeFakeSsh(file) {
+  writeExe(file, `#!/usr/bin/env node
+const { spawn } = require('child_process');
+const remote = process.argv[process.argv.length - 1];
+const match = /^node --input-type=module - ([\\s\\S]+)$/.exec(remote);
+if (!match) {
+  process.stderr.write('bad remote\\n');
+  process.exit(1);
+}
+let payload = match[1];
+if (payload.startsWith("'") && payload.endsWith("'")) payload = payload.slice(1, -1);
+const child = spawn(process.execPath, ['--input-type=module', '-', payload], { stdio: 'inherit' });
+child.on('exit', (code) => process.exit(code == null ? 1 : code));
+`);
+}
+
+async function makeBench(campaign = 'codex-ts01') {
+  const dir = mkdtempSync(path.join(tmpdir(), 'rt89-bench-'));
+  const stateDir = path.join(dir, 'state');
+  mkdirSync(stateDir, { mode: 0o700 });
+  const lockPath = path.join(dir, 'lima.lock');
+  const sshBin = path.join(dir, 'ssh');
+  writeFakeSsh(sshBin);
+  const project = path.join(dir, 'proj');
+  mkdirSync(project);
+  const sshConfig = path.join(dir, 'ssh.config');
+  writeFileSync(sshConfig, 'Host lima-ubuntu24\n  HostName 127.0.0.1\n');
+  writeFileSync(path.join(project, '.env'), `PUBLISH_LOCAL_SSH_CONFIG=${sshConfig}\n`);
+  const env = {
+    LIMA_PROJECT_ROOT: project,
+    LIMA_STATE_DIR: stateDir,
+    LIMA_SSH_BIN: sshBin,
+    LIMA_LOCK_PATH: lockPath,
+  };
+  const profile = resolveLocalProfile(project, { ...process.env, ...env });
+  const options = { sshBin, lockPath };
+  await beginSession(profile, campaign, '102047', options);
+  await withLimaOperation(profile, {
+    session: campaign, projectId: '102047', name: 'prepare', phase: 'ready',
+  }, async () => {}, options);
+  return { dir, env, campaign, lockPath };
+}
+
+function readLock(lockPath) {
+  return JSON.parse(readFileSync(lockPath, 'utf8'));
+}
+
 test('cwd externo não muda a raiz do pacote nem o Chromium do config', async () => {
   const root = scratch();
   installFakeCli(root);
+  const bench = await makeBench();
   const log = path.join(root, 'log');
   const away = mkdtempSync(path.join(tmpdir(), 'rt74-away-'));
-  const result = await run(root, ['-s=codex-rt74-1', 'open', 'http://localhost:2047'], { RT74_LOG: log }, away);
+  const result = await run(root, ['--lima-session', bench.campaign, '-s=codex-rt74-1', 'open', 'http://localhost:2047'], { RT74_LOG: log, ...bench.env }, away);
   assert.equal(result.code, 0);
   const [call] = readLog(log);
   assert.equal(call.cwd, realpathSync(root));
@@ -95,6 +150,7 @@ test('cwd externo não muda a raiz do pacote nem o Chromium do config', async ()
   assert.equal(config.browser.browserName, 'chromium');
   assert.equal(call.args.at(-1), '--idle-timeout=300000');
   assert.equal(call.args.includes('--browser=chromium'), false);
+  assert.equal(call.args.some((arg) => String(arg).includes('lima-session')), false);
   rmSync(root, { recursive: true, force: true });
   rmSync(away, { recursive: true, force: true });
 });
@@ -192,21 +248,25 @@ test('recusa outro motor, attach, CDP, close-all e perfil humano sem subir o CLI
 test('a mesma sessão segue entre comandos, com argumento que tem espaço', async () => {
   const root = scratch();
   installFakeCli(root);
+  const bench = await makeBench('codex-ts01');
   const log = path.join(root, 'log');
-  const env = { RT74_LOG: log };
-  const first = await run(root, ['-s=claude-rt74-7', 'goto', 'http://localhost:2047'], env);
-  const second = await run(root, ['--', '-s=claude-rt74-7', 'fill', 'e1', 'ola mundo', '--', 'keep'], env);
-  assert.equal(first.code, 0);
-  assert.equal(second.code, 0);
+  const env = { RT74_LOG: log, ...bench.env };
+  const opened = await run(root, ['--lima-session', bench.campaign, '-s=codex-ts01-responsavel', 'open', 'http://localhost:2047'], env);
+  assert.equal(opened.code, 0, opened.stderr);
+  const first = await run(root, ['-s=codex-ts01-responsavel', 'goto', 'http://localhost:2047'], env);
+  const second = await run(root, ['--', '-s=codex-ts01-responsavel', 'fill', 'e1', 'ola mundo', '--', 'keep'], env);
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(second.code, 0, second.stderr);
   const lines = readLog(log);
-  assert.equal(lines.length, 2);
-  assert.equal(lines[0].args.includes('-s=claude-rt74-7'), true);
-  assert.equal(lines[1].args.includes('-s=claude-rt74-7'), true);
-  assert.equal(lines[1].args.includes('ola mundo'), true);
-  assert.equal(lines[1].args.includes('--'), true);
-  assert.equal(lines[1].args.includes('keep'), true);
-  assert.equal(lines[0].cmd, 'goto');
-  assert.equal(lines[1].cmd, 'fill');
+  assert.equal(lines.length, 3);
+  assert.equal(lines[1].args.includes('-s=codex-ts01-responsavel'), true);
+  assert.equal(lines[2].args.includes('-s=codex-ts01-responsavel'), true);
+  assert.equal(lines[2].args.includes('ola mundo'), true);
+  assert.equal(lines[2].args.includes('--'), true);
+  assert.equal(lines[2].args.includes('keep'), true);
+  assert.equal(lines[1].cmd, 'goto');
+  assert.equal(lines[2].cmd, 'fill');
+  assert.equal(lines.some((line) => line.args.some((arg) => String(arg).includes('lima-session'))), false);
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -214,14 +274,17 @@ test('filho recebe NO_UPDATE_NOTIFIER e o pai não; erro do CLI passa intacto', 
   const root = scratch();
   installFakeCli(root);
   const log = path.join(root, 'log');
+  const bench = await makeBench();
   delete process.env.NO_UPDATE_NOTIFIER;
-  const ok = await run(root, ['list'], { RT74_LOG: log });
+  const ok = await run(root, ['list'], { RT74_LOG: log, ...bench.env });
   assert.equal(ok.code, 0);
   assert.equal(readLog(log)[0].update, '1');
   assert.equal(process.env.NO_UPDATE_NOTIFIER, undefined);
-  const bad = await run(root, ['-s=codex-rt74-1', 'click', 'e1'], { RT74_LOG: log, RT74_CODE: '4' });
+  const opened = await run(root, ['--lima-session', bench.campaign, '-s=codex-rt74-1', 'open', 'http://localhost:2047'], { RT74_LOG: log, ...bench.env });
+  assert.equal(opened.code, 0, opened.stderr);
+  const bad = await run(root, ['-s=codex-rt74-1', 'click', 'e1'], { RT74_LOG: log, RT74_CODE: '4', ...bench.env });
   assert.equal(bad.code, 4);
-  assert.equal(readLog(log).length, 2);
+  assert.equal(readLog(log).length, 3);
   assert.equal(readLog(log).some((line) => line.cmd === 'close'), false);
   rmSync(root, { recursive: true, force: true });
 });
@@ -229,9 +292,11 @@ test('filho recebe NO_UPDATE_NOTIFIER e o pai não; erro do CLI passa intacto', 
 test('headed não impõe idle; open headless impõe cinco minutos', async () => {
   const root = scratch();
   installFakeCli(root);
+  const bench = await makeBench();
   const log = path.join(root, 'log');
-  await run(root, ['-s=codex-rt74-1', 'open', '--headed'], { RT74_LOG: log });
-  await run(root, ['-s=codex-rt74-1', 'open', 'http://localhost:2047'], { RT74_LOG: log });
+  const env = { RT74_LOG: log, ...bench.env };
+  await run(root, ['--lima-session', bench.campaign, '-s=codex-rt74-1', 'open', '--headed'], env);
+  await run(root, ['-s=codex-rt74-1', 'open', 'http://localhost:2047'], env);
   const lines = readLog(log);
   assert.equal(lines[0].args.includes('--idle-timeout=300000'), false);
   assert.equal(lines[1].args.includes('--idle-timeout=300000'), true);
@@ -241,8 +306,12 @@ test('headed não impõe idle; open headless impõe cinco minutos', async () => 
 test('eval, find e click não recebem --config; o close de limpeza também não', async () => {
   const root = scratch();
   installFakeCli(root);
+  const bench = await makeBench();
   const log = path.join(root, 'log');
-  const env = { RT74_LOG: log };
+  const env = { RT74_LOG: log, ...bench.env };
+  const opened = await run(root, ['--lima-session', bench.campaign, '-s=codex-rt74-1', 'open', 'http://localhost:2047'], env);
+  assert.equal(opened.code, 0, opened.stderr);
+  writeFileSync(log, '');
   for (const args of [
     ['-s=codex-rt74-1', 'eval', '1'],
     ['-s=codex-rt74-1', 'find', 'Save'],
@@ -255,7 +324,7 @@ test('eval, find e click não recebem --config; o close de limpeza também não'
   assert.deepEqual(calls.map((line) => line.cmd), ['eval', 'find', 'click']);
   for (const call of calls) assert.equal(call.args.includes('--config'), false, call.cmd);
 
-  const timed = await run(root, ['-s=codex-rt74-9', 'open', 'http://localhost:2047'], {
+  const timed = await run(root, ['--lima-session', bench.campaign, '-s=codex-rt74-9', 'open', 'http://localhost:2047'], {
     ...env,
     RT74_SLEEP: '20000',
     BROWSER_TOOL_OP_MS: '300',
@@ -263,9 +332,9 @@ test('eval, find e click não recebem --config; o close de limpeza também não'
   });
   assert.equal(timed.code, 1);
   const lines = readLog(log);
-  const opened = lines.find((line) => line.cmd === 'open');
+  const openedCall = lines.find((line) => line.cmd === 'open');
   const closed = lines.find((line) => line.cmd === 'close');
-  assert.equal(opened.args[0], '--config');
+  assert.equal(openedCall.args[0], '--config');
   assert.equal(closed.args.includes('--config'), false);
   assert.equal(closed.args.includes('-s=codex-rt74-9'), true);
   rmSync(root, { recursive: true, force: true });
@@ -274,10 +343,12 @@ test('eval, find e click não recebem --config; o close de limpeza também não'
 test('timeout encerra só a sessão nomeada e não vira sucesso', async () => {
   const root = scratch();
   installFakeCli(root);
+  const bench = await makeBench();
   const log = path.join(root, 'log');
   const started = Date.now();
-  const result = await run(root, ['-s=codex-rt74-9', 'open', 'http://localhost:2047'], {
+  const result = await run(root, ['--lima-session', bench.campaign, '-s=codex-rt74-9', 'open', 'http://localhost:2047'], {
     RT74_LOG: log,
+    ...bench.env,
     RT74_SLEEP: '20000',
     BROWSER_TOOL_OP_MS: '300',
     BROWSER_TOOL_CLEANUP_MS: '2000',
@@ -290,17 +361,21 @@ test('timeout encerra só a sessão nomeada e não vira sucesso', async () => {
   assert.equal(lines[1].args.includes('-s=codex-rt74-9'), true);
   assert.equal(JSON.stringify(lines).includes('close-all'), false);
   assert.equal(JSON.stringify(lines).includes('kill-all'), false);
+  assert.equal(existsSync(bench.lockPath), true);
   rmSync(root, { recursive: true, force: true });
 });
 
 test('interrupção também fecha só a sessão nomeada', async () => {
   const root = scratch();
   installFakeCli(root);
+  const bench = await makeBench();
   const log = path.join(root, 'log');
+  const opened = await run(root, ['--lima-session', bench.campaign, '-s=claude-rt74-3', 'open', 'http://localhost:2047'], { RT74_LOG: log, ...bench.env });
+  assert.equal(opened.code, 0, opened.stderr);
   const result = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(root, 'browser.mjs'), '-s=claude-rt74-3', 'press', 'Enter'], {
       cwd: tmpdir(),
-      env: { ...process.env, RT74_LOG: log, RT74_SLEEP: '20000', BROWSER_TOOL_OP_MS: '15000' },
+      env: { ...process.env, ...bench.env, RT74_LOG: log, RT74_SLEEP: '20000', BROWSER_TOOL_OP_MS: '15000' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stderr = '';
@@ -344,12 +419,25 @@ test('scripts da raiz encaminham os argumentos e o id da sessão', async () => {
   const nmExisted = existsSync(nm);
   const previous = existed ? readFileSync(bin) : null;
   installFakeCli(HERE);
+  const bench = await makeBench();
   const log = path.join(mkdtempSync(path.join(tmpdir(), 'rt74-script-')), 'log');
   try {
+    const opened = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [path.join(HERE, 'browser.mjs'), '--lima-session', bench.campaign, '-s=codex-rt74-script', 'open', 'http://localhost:2047'], {
+        cwd: repo,
+        env: { ...process.env, ...bench.env, RT74_LOG: log },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.on('error', reject);
+      child.on('exit', (code) => resolve({ code, stderr }));
+    });
+    assert.equal(opened.code, 0, opened.stderr);
     const result = await new Promise((resolve, reject) => {
       const child = spawn('pnpm', ['run', 'browser', '--', '-s=codex-rt74-script', 'fill', 'e1', 'ola mundo'], {
         cwd: repo,
-        env: { ...process.env, RT74_LOG: log },
+        env: { ...process.env, ...bench.env, RT74_LOG: log },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -360,7 +448,7 @@ test('scripts da raiz encaminham os argumentos e o id da sessão', async () => {
       child.on('exit', (code) => resolve({ code, stdout, stderr }));
     });
     assert.equal(result.code, 0, result.stderr);
-    const [call] = readLog(log);
+    const call = readLog(log).at(-1);
     assert.equal(call.args.includes('-s=codex-rt74-script'), true);
     assert.equal(call.args.includes('ola mundo'), true);
     assert.equal(call.cmd, 'fill');
@@ -382,5 +470,89 @@ test('ação de browser sem sessão não chega ao CLI', async () => {
   const listed = await run(root, ['list'], { RT74_LOG: log });
   assert.equal(listed.code, 0);
   assert.equal(readLog(log)[0].cmd, 'list');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('sem posse ou com operação ativa o CLI falso não recebe a ação', async () => {
+  const root = scratch();
+  installFakeCli(root);
+  const bench = await makeBench('codex-ts01');
+  const log = path.join(root, 'log');
+  const denied = await run(root, ['--lima-session', 'outra', '-s=outra-responsavel', 'open', 'http://localhost:2047'], { RT74_LOG: log, ...bench.env });
+  assert.notEqual(denied.code, 0);
+  assert.equal(existsSync(log), false);
+  const profile = resolveLocalProfile(bench.env.LIMA_PROJECT_ROOT, { ...process.env, ...bench.env });
+  await withLimaOperation(profile, {
+    session: bench.campaign, projectId: '102047', name: 'publish', phase: 'ready',
+  }, async () => {
+    const during = await run(root, ['--lima-session', bench.campaign, '-s=codex-ts01-responsavel', 'open', 'http://localhost:2047'], { RT74_LOG: log, ...bench.env });
+    assert.notEqual(during.code, 0, during.stderr);
+    assert.equal(existsSync(log), false);
+  }, { sshBin: bench.env.LIMA_SSH_BIN, lockPath: bench.env.LIMA_LOCK_PATH });
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('duas jars do mesmo dono funcionam e outra campanha não abre', async () => {
+  const root = scratch();
+  installFakeCli(root);
+  const bench = await makeBench('codex-ts01');
+  const log = path.join(root, 'log');
+  const env = { RT74_LOG: log, ...bench.env };
+  const responsavel = await run(root, ['--lima-session', bench.campaign, '-s=codex-ts01-responsavel', 'open', 'http://localhost:2047'], env);
+  const membro = await run(root, ['--lima-session', bench.campaign, '-s=codex-ts01-membro', 'open', 'http://localhost:2047'], env);
+  assert.equal(responsavel.code, 0, responsavel.stderr);
+  assert.equal(membro.code, 0, membro.stderr);
+  const lock = readLock(bench.lockPath);
+  assert.deepEqual(lock.browsers.map((item) => item.id).sort(), ['codex-ts01-membro', 'codex-ts01-responsavel']);
+  const other = await makeBench('claude-ts02');
+  const blocked = await run(root, ['--lima-session', other.campaign, '-s=claude-ts02-responsavel', 'open', 'http://localhost:2047'], { RT74_LOG: log, ...other.env, LIMA_LOCK_PATH: bench.env.LIMA_LOCK_PATH });
+  assert.notEqual(blocked.code, 0);
+  assert.equal(readLog(log).every((line) => line.args.includes('-s=claude-ts02-responsavel') === false), true);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('run-code passa pelo mesmo guard e a associação persiste entre processos', async () => {
+  const root = scratch();
+  installFakeCli(root);
+  const bench = await makeBench('codex-ts01');
+  const log = path.join(root, 'log');
+  const env = { RT74_LOG: log, ...bench.env };
+  const bare = await run(root, ['-s=codex-ts01-responsavel', 'run-code', 'document.title'], env);
+  assert.notEqual(bare.code, 0);
+  assert.equal(existsSync(log), false);
+  const opened = await run(root, ['--lima-session', bench.campaign, '-s=codex-ts01-responsavel', 'open', 'http://localhost:2047'], env);
+  assert.equal(opened.code, 0, opened.stderr);
+  const coded = await run(root, ['-s=codex-ts01-responsavel', 'run-code', 'document.title'], env);
+  assert.equal(coded.code, 0, coded.stderr);
+  assert.equal(readLog(log).at(-1).cmd, 'run-code');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('close não libera a campanha e fechamento incerto retém a reserva', async () => {
+  const root = scratch();
+  installFakeCli(root);
+  const bench = await makeBench('codex-ts01');
+  const log = path.join(root, 'log');
+  const env = { RT74_LOG: log, ...bench.env };
+  const opened = await run(root, ['--lima-session', bench.campaign, '-s=codex-ts01-responsavel', 'open', 'http://localhost:2047'], env);
+  assert.equal(opened.code, 0, opened.stderr);
+  const closed = await run(root, ['-s=codex-ts01-responsavel', 'close'], env);
+  assert.equal(closed.code, 0, closed.stderr);
+  const after = readLock(bench.lockPath);
+  assert.equal(after.session, 'codex-ts01');
+  assert.equal(after.browsers.length, 0);
+  assert.equal(after.phase === 'ready' || after.phase === 'testing', true);
+  const again = await run(root, ['--lima-session', bench.campaign, '-s=codex-ts01-membro', 'open', 'http://localhost:2047'], env);
+  assert.equal(again.code, 0, again.stderr);
+  const uncertain = await run(root, ['-s=codex-ts01-membro', 'close'], { ...env, RT74_CLOSE_CODE: '1' });
+  assert.notEqual(uncertain.code, 0);
+  const retained = readLock(bench.lockPath);
+  assert.equal(retained.phase, 'failed');
+  assert.equal(retained.browsers.some((item) => item.id === 'codex-ts01-membro'), true);
+  assert.equal(existsSync(bench.lockPath), true);
+  const stale = await run(root, ['-s=jar-antiga', 'close'], env);
+  assert.equal(stale.code, 0, stale.stderr);
+  assert.equal(readLock(bench.lockPath).phase, 'failed');
+  assert.equal(readLog(log).some((line) => line.cmd === 'close' && line.args.includes('-s=jar-antiga')), true);
   rmSync(root, { recursive: true, force: true });
 });

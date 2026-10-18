@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import {
   CLAIM_TIMEOUT_MS, LONG_TIMEOUT_MS, beginSession, bindLimaBrowser, callVm, loadOwnerRef, resolveLocalProfile, withLimaOperation,
 } from './session.mjs';
+
+const BROWSER = fileURLToPath(new URL('../browser/browser.mjs', import.meta.url));
+const BROWSER_CONFIG = fileURLToPath(new URL('../browser/.playwright/cli.config.json', import.meta.url));
 
 const LIMA = fileURLToPath(new URL('./lima.mjs', import.meta.url));
 
@@ -245,6 +248,93 @@ test('browser bind uses the owner file and ignores a foreign id', async () => {
   assert.notEqual(open.code, 0);
   assert.match(`${open.stdout}${open.stderr}`, /browsers still open/u);
   assert.match(readFileSync(box.lockPath, 'utf8'), /campanha-responsavel/u);
+});
+
+function installBenchLauncher(box) {
+  const pack = join(box.root, 'pack');
+  const lima = join(box.root, 'lima');
+  mkdirSync(join(pack, '.playwright'), { recursive: true });
+  mkdirSync(join(pack, 'node_modules', '@playwright', 'cli'), { recursive: true });
+  mkdirSync(lima);
+  copyFileSync(BROWSER, join(pack, 'browser.mjs'));
+  copyFileSync(fileURLToPath(new URL('./session.mjs', import.meta.url)), join(lima, 'session.mjs'));
+  copyFileSync(fileURLToPath(new URL('./sessionVm.mjs', import.meta.url)), join(lima, 'sessionVm.mjs'));
+  copyFileSync(BROWSER_CONFIG, join(pack, '.playwright', 'cli.config.json'));
+  writeFileSync(join(pack, 'node_modules', '@playwright', 'cli', 'playwright-cli.js'), `
+const fs = require('fs');
+const args = process.argv.slice(2);
+function command() {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') continue;
+    if (a.startsWith('-')) {
+      if (!a.includes('=') && ['--config', '-s', '--session', '--browser', '--profile'].includes(a)) i += 1;
+      continue;
+    }
+    return a;
+  }
+  return '';
+}
+fs.appendFileSync(process.env.RT74_LOG, JSON.stringify({ args, cmd: command() }) + '\\n');
+if (command() === 'close') process.exit(process.env.RT74_CLOSE_CODE ? Number(process.env.RT74_CLOSE_CODE) : 0);
+process.exit(0);
+`);
+  const bin = join(box.root, 'browser-launcher');
+  writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(pack, 'browser.mjs'))} "$@"\n`, { mode: 0o755 });
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
+function runLauncher(box, args, env) {
+  return new Promise((resolvePromise) => {
+    const child = spawn(process.execPath, [join(box.root, 'pack', 'browser.mjs'), ...args], { env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('close', (code) => resolvePromise({ code, stdout, stderr }));
+  });
+}
+
+test('end releases after the launcher already unbound a closed browser', async () => {
+  const box = bench();
+  const launcher = installBenchLauncher(box);
+  const log = join(box.root, 'pw.log');
+  const env = { ...box.env, LIMA_BROWSER_BIN: launcher, RT74_LOG: log };
+  await beginSession(box.profile, 'codex-ts01', '102047', box.options);
+  await withLimaOperation(box.profile, {
+    session: 'codex-ts01', projectId: '102047', name: 'prepare', phase: 'ready',
+  }, async () => {}, box.options);
+  const responsavel = await runLauncher(box, ['--lima-session', 'codex-ts01', '-s=codex-ts01-responsavel', 'open', 'http://localhost:2047'], env);
+  const membro = await runLauncher(box, ['--lima-session', 'codex-ts01', '-s=codex-ts01-membro', 'open', 'http://localhost:2047'], env);
+  assert.equal(responsavel.code, 0, responsavel.stderr);
+  assert.equal(membro.code, 0, membro.stderr);
+  const closed = await runLauncher(box, ['-s=codex-ts01-responsavel', 'close'], env);
+  assert.equal(closed.code, 0, closed.stderr);
+  const ended = await runCli(['end', '--session', 'codex-ts01'], env);
+  assert.equal(ended.code, 0, ended.stderr);
+  assert.equal(existsSync(box.lockPath), false);
+  const calls = readFileSync(log, 'utf8');
+  assert.match(calls, /-s=codex-ts01-membro/u);
+  assert.match(calls, /"cmd":"close"/u);
+});
+
+test('an unproved launcher close keeps the reservation', async () => {
+  const box = bench();
+  const launcher = installBenchLauncher(box);
+  const log = join(box.root, 'pw.log');
+  const env = { ...box.env, LIMA_BROWSER_BIN: launcher, RT74_LOG: log };
+  await beginSession(box.profile, 'codex-ts01', '102047', box.options);
+  await withLimaOperation(box.profile, {
+    session: 'codex-ts01', projectId: '102047', name: 'prepare', phase: 'ready',
+  }, async () => {}, box.options);
+  const opened = await runLauncher(box, ['--lima-session', 'codex-ts01', '-s=codex-ts01-responsavel', 'open', 'http://localhost:2047'], env);
+  assert.equal(opened.code, 0, opened.stderr);
+  const ended = await runCli(['end', '--session', 'codex-ts01'], { ...env, RT74_CLOSE_CODE: '1' });
+  assert.notEqual(ended.code, 0);
+  assert.match(`${ended.stdout}${ended.stderr}`, /browsers still open/u);
+  const lock = JSON.parse(readFileSync(box.lockPath, 'utf8'));
+  assert.equal(lock.browsers.some((item) => item.id === 'codex-ts01-responsavel'), true);
 });
 
 const RELEASE = {

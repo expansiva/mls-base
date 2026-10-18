@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Launcher fino do Playwright CLI (Chromium). Não instala nada sozinho.
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { platform } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { bindLimaBrowser, loadOwnerRef, resolveLocalProfile, statusSession, unbindLimaBrowser } from '../lima/session.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG = path.join(ROOT, '.playwright', 'cli.config.json');
@@ -20,7 +21,7 @@ const HOST_PLATFORM = process.env.BROWSER_TOOL_PLATFORM || platform();
 const GLOBAL = new Set(['help', 'version', 'list']);
 const VALUE_FLAGS = new Set([
   '-s', '--session', '--config', '--browser', '--profile', '--idle-timeout',
-  '--filename', '--device', '--extension', '--cdp', '--channel',
+  '--filename', '--device', '--extension', '--cdp', '--channel', '--lima-session',
 ]);
 
 const children = new Set();
@@ -42,10 +43,11 @@ try {
 }
 
 async function main(argv) {
-  if (argv.length === 0 || wantsHelp(argv)) return helpAndForward();
-  const command = firstCommand(argv);
+  const stripped = stripLimaSession(argv);
+  if (stripped.argv.length === 0 || wantsHelp(stripped.argv)) return helpAndForward();
+  const command = firstCommand(stripped.argv);
   if (command === 'setup') return setup();
-  const refusal = refusalReason(argv, command);
+  const refusal = refusalReason(stripped.argv, command);
   if (refusal) {
     console.error(refusal);
     return 2;
@@ -54,24 +56,31 @@ async function main(argv) {
     console.error(missingDepMessage());
     return 1;
   }
-  const session = sessionName(argv);
-  if (!GLOBAL.has(command) && command !== 'version' && !session) {
+  const session = sessionName(stripped.argv);
+  if (!GLOBAL.has(command) && !session) {
     console.error('Name the session: -s=<name> (e.g. -s=codex-rt74-<id> or -s=claude-rt74-<id>).');
     return 2;
   }
-  const forwarded = withDefaults(argv, command);
+  const gate = await gateBench(command, session, stripped.campaign);
+  if (!gate.ok) {
+    console.error(gate.message);
+    return gate.code;
+  }
+  const forwarded = withDefaults(stripped.argv, command);
   const result = await runChild(process.execPath, [CLI_BIN, ...forwarded], {
     cwd: ROOT,
     env: cliEnv(),
     timeoutMs: OP_MS,
   });
   if (result.timed || interrupted) {
-    await closeNamedSession(session);
+    const proved = await closeNamedSession(session);
+    await settleBrowser(gate, session, !proved);
     console.error(result.timed
       ? `Operation timed out after ${OP_MS} ms on session ${session || '(unnamed)'}.`
       : 'Operation interrupted.');
     return 1;
   }
+  if (command === 'close' && gate.linked) await settleBrowser(gate, session, result.code !== 0);
   return result.code;
 }
 
@@ -100,6 +109,8 @@ function localHelp() {
     `  node ${self} setup`,
     '',
     'Named session, reused for the round (do not mint a new id per command):',
+    'The lima campaign is one reservation; each jar is its own -s name.',
+    `  node ${self} --lima-session <campaign> -s=<campaign>-responsavel open http://localhost:2047`,
     `  node ${self} -s=codex-rt74-<id> open http://localhost:2047`,
     `  node ${self} -s=codex-rt74-<id> find Sign in`,
     `  node ${self} -s=codex-rt74-<id> snapshot --depth=4`,
@@ -255,6 +266,116 @@ function firstCommand(argv) {
   return '';
 }
 
+function stripLimaSession(argv) {
+  const out = [];
+  let campaign = '';
+  for (let i = 0; i < argv.length; i++) {
+    const flag = flagValue(argv, i, '--lima-session');
+    if (flag.present) {
+      campaign = flag.value;
+      if (argv[i] === '--lima-session') i += 1;
+      continue;
+    }
+    out.push(argv[i]);
+  }
+  return { argv: out, campaign };
+}
+
+function browserIds(status) {
+  return (status.browsers || []).map((item) => (typeof item === 'string' ? item : item.id));
+}
+
+function assocPath(profile, browserId) {
+  return path.join(profile.stateDir, `browser--${browserId}.json`);
+}
+
+function loadAssoc(profile, browserId) {
+  const file = assocPath(profile, browserId);
+  if (!existsSync(file)) return null;
+  try {
+    const assoc = JSON.parse(readFileSync(file, 'utf8'));
+    if (!assoc || assoc.browserId !== browserId || typeof assoc.session !== 'string') return null;
+    return assoc;
+  } catch {
+    return null;
+  }
+}
+
+function saveAssoc(profile, browserId, session) {
+  mkdirSync(profile.stateDir, { recursive: true, mode: 0o700 });
+  chmodSync(profile.stateDir, 0o700);
+  const file = assocPath(profile, browserId);
+  writeFileSync(file, `${JSON.stringify({ browserId, session, vm: profile.alias })}\n`, { mode: 0o600 });
+  chmodSync(file, 0o600);
+}
+
+async function gateBench(command, session, campaign) {
+  if (GLOBAL.has(command)) return { ok: true, linked: false };
+  let profile;
+  try {
+    profile = resolveLocalProfile();
+  } catch (error) {
+    return { ok: false, code: 1, message: error instanceof Error ? error.message : String(error) };
+  }
+  const assoc = loadAssoc(profile, session);
+  if (command === 'close' && !assoc) return { ok: true, linked: false, profile };
+  if (!assoc) {
+    if (command !== 'open' || !campaign) {
+      return { ok: false, code: 2, message: 'Bench browser requires --lima-session <campaign> on the first open. Close a known jar instead of reusing it.' };
+    }
+    const ref = loadOwnerRef(profile, campaign);
+    if (!ref) return { ok: false, code: 2, message: 'no local owner reference for this campaign' };
+    let status;
+    try {
+      status = await statusSession(profile, campaign);
+    } catch (error) {
+      return { ok: false, code: 1, message: error instanceof Error ? error.message : String(error) };
+    }
+    if (!status.owned || (status.phase !== 'ready' && status.phase !== 'testing')) {
+      return { ok: false, code: status.exitCode || 73, message: `bench reservation is not ready (${status.phase || status.code || 'unavailable'})` };
+    }
+    if ((status.operations || []).length > 0) {
+      return { ok: false, code: 1, message: 'bench operation is active; browser open is refused' };
+    }
+    try {
+      await bindLimaBrowser(profile, campaign, session);
+    } catch (error) {
+      return { ok: false, code: error.exitCode || 1, message: error instanceof Error ? error.message : String(error) };
+    }
+    saveAssoc(profile, session, campaign);
+    return { ok: true, linked: true, profile, campaign };
+  }
+  if (campaign && campaign !== assoc.session) {
+    return { ok: false, code: 2, message: 'this jar is already associated with another campaign' };
+  }
+  let status;
+  try {
+    status = await statusSession(profile, assoc.session);
+  } catch (error) {
+    return { ok: false, code: 1, message: error instanceof Error ? error.message : String(error) };
+  }
+  if (!status.owned) return { ok: false, code: 73, message: 'bench reservation is not owned by this campaign' };
+  if (status.phase === 'failed') return { ok: false, code: 1, message: 'bench reservation is failed' };
+  if ((status.operations || []).length > 0 && command !== 'close') {
+    return { ok: false, code: 1, message: 'bench operation is active; browser action is refused' };
+  }
+  const bound = browserIds(status).includes(session);
+  if (!bound && command !== 'close') {
+    return { ok: false, code: 2, message: 'jar is not registered on the reservation; close it instead of taking it over' };
+  }
+  return { ok: true, linked: bound, profile, campaign: assoc.session };
+}
+
+async function settleBrowser(gate, session, uncertain) {
+  if (!gate.linked || !gate.profile || !session) return;
+  try {
+    const result = await unbindLimaBrowser(gate.profile, gate.campaign, session, { uncertain });
+    if (!uncertain && result.ok) rmSync(assocPath(gate.profile, session), { force: true });
+  } catch {
+    /* an unproved close keeps the association and the reservation */
+  }
+}
+
 function sessionName(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -266,13 +387,14 @@ function sessionName(argv) {
 }
 
 async function closeNamedSession(session) {
-  if (!session || !existsSync(CLI_BIN)) return;
+  if (!session || !existsSync(CLI_BIN)) return false;
   cleaning = true;
-  await runChild(process.execPath, [CLI_BIN, `-s=${session}`, 'close'], {
+  const result = await runChild(process.execPath, [CLI_BIN, `-s=${session}`, 'close'], {
     cwd: ROOT,
     env: cliEnv(),
     timeoutMs: CLEANUP_MS,
   });
+  return result.code === 0 && !result.timed && !interrupted;
 }
 
 function missingDepMessage() {

@@ -259,9 +259,14 @@ export async function endSession(profile, session, options = {}) {
     error.exitCode = 1;
     throw error;
   }
-  for (const browserId of browsers) {
+  const after = await vmOp(profile, { op: 'status', ownerId: ref.ownerId }, options);
+  if (!after.ok || !after.owned) {
+    throw limaError('browser close was not registered', 'unbind', { uncertain: true, result: publicView(after) });
+  }
+  const still = (after.browsers || []).map((item) => (typeof item === 'string' ? item : item.id));
+  for (const browserId of still) {
     const unbound = await vmOp(profile, { op: 'unbindBrowser', ownerId: ref.ownerId, browserId }, options);
-    if (!unbound.ok) {
+    if (!unbound.ok && unbound.code !== 'unknown-browser') {
       throw limaError('browser close was not registered', 'unbind', { uncertain: true, result: publicView(unbound) });
     }
   }
