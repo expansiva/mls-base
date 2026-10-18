@@ -113,6 +113,31 @@ Quatro ids, com papéis diferentes:
 
 O email `alias.<projectId>@runtime.test` liga os dois stores. `cmOrgId` `runtime-test:<projectId>` é o tenant da bancada, não o id da Company. `cmTarget` é `http://127.0.0.1:8180`. As origens são só `localhost` e `127.0.0.1` na porta do slot.
 
-Limite: preparação local. Não autentica o navegador e não prova mensagem nem papel. Não chamar os endpoints da sessão antes da rt86.
+Limite desta preparação: não autentica o navegador e não prova mensagem nem Task. Isso é a sessão abaixo e, na VM, a prova da rt86.
 
 Repetir o mesmo comando depois de um banco novo. Email e sub reaproveitam as pessoas e os humanos; a `cookieKey` já gravada permanece. Se o cm falhar, o MDM fica como está e o manifesto anterior não é trocado. Rodar o comando de novo retoma o que faltou.
+
+## Sessão de teste no browser, só na lima
+
+O supervisor grava na `.env` **da lima**, e em nenhum outro lugar:
+
+```
+LOCAL_TEST_SESSION_ENABLED=true
+LOCAL_TEST_SESSIONS_FILE=/etc/collab/local-tests/102047.json
+```
+
+Um reload do app depois dessa gravação. Trocar de pessoa não reinicia o app. A flag e o arquivo não entram na release, no cfe nem no repositório. Não imprimir `cookieKey`, token de serviço nem o conteúdo do manifesto.
+
+Dois perfis limpos da ferramenta, um por pessoa. Sem outra aba dessa origem durante a troca: o seletor apaga `msgDB`, `serviceCollabMessages` e `collabMessages_userId` e, se outra aba bloquear o IndexedDB, não troca a sessão. Sem perfil humano e sem o Google Chrome de marca.
+
+```
+rtk pnpm run browser -- -s=responsavel open http://localhost:2047/__test/session
+rtk pnpm run browser -- -s=responsavel click "getByRole('button', { name: 'responsavel' })"
+rtk pnpm run browser -- -s=responsavel open http://localhost:2047/<rota-do-modulo>
+rtk pnpm run browser -- -s=membro open http://localhost:2047/__test/session
+rtk pnpm run browser -- -s=membro click "getByRole('button', { name: 'membro' })"
+```
+
+A página diz "Local test session". Os botões são `responsavel`, `membro` e `Leave session`. A troca navega para `/`. Para uma rota do módulo, abrir essa rota depois da seleção. `reload` (F5) conserva a seleção. `Leave session` ou `GET /exec/logout` saem. Desligar a flag e recarregar o app revoga o mecanismo; a rota `/__test/session` responde 404.
+
+Conferir os dois lados pelo JSON, não por screenshot: `/session/info` traz `userId` (o sub), `person.mdmId` e a mesma `company.mdmId`; `/whoami` traz o `cmUserId` da pessoa selecionada. Os quatro ids continuam distintos. A prova de mensagem real e de Task é a rt86 na lima, com upstream de verdade. O teste de composição desta receita usa upstream controlado e não substitui essa prova.
