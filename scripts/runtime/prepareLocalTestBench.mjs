@@ -376,16 +376,20 @@ function isDirect() {
   return path.resolve(entry) === path.resolve(fileURLToPath(import.meta.url));
 }
 
+async function remoteMain() {
+  const { summary } = await runOnVm({
+    argv: process.argv.slice(2),
+    manifestDir: process.env.LOCAL_TEST_BENCH_MANIFEST_DIR || undefined,
+  });
+  process.stdout.write(summary);
+}
+
 if (process.env.LOCAL_TEST_BENCH_ROLE === 'remote') {
-  runOnVm({ argv: process.argv.slice(2) })
-    .then(({ summary }) => {
-      process.stdout.write(summary);
-    })
-    .catch((error) => {
-      const resume = error?.resume ? `resume: ${error.resume}\n` : '';
-      process.stderr.write(`${resume}${error instanceof Error ? error.message : String(error)}\n`);
-      process.exitCode = 1;
-    });
+  remoteMain().catch((error) => {
+    const resume = error?.resume ? `resume: ${error.resume}\n` : '';
+    process.stderr.write(`${resume}${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
 } else if (isDirect()) {
   hostMain().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

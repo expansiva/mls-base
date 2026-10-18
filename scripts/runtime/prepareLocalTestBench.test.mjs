@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -194,6 +195,42 @@ test('reexecução conserva a chave e a saída não traz cookie nem senha', () =
     origins: ['http://*', `http://127.0.0.1:${box.port}`],
   }), /allowedOrigins/);
   assert.throws(() => publicSummary({ ...saved, organizationKey: 'has-DATABASE_URL' }, first.manifestFile), /leak/);
+  rmSync(box.base, { recursive: true, force: true });
+});
+
+test('caminho remoto real aguarda o retorno e publica o resumo sem cookie', () => {
+  const box = fixture();
+  const dir = path.join(box.base, 'manifests');
+  mkdirSync(dir);
+  const seedJs = path.join(box.release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'seedLocalTest.js');
+  writeFileSync(seedJs, `process.stdout.write(${JSON.stringify(`${JSON.stringify(mdmFragment())}\n`)});\n`);
+  writeFileSync(
+    path.join(box.base, 'scripts', 'runtime', 'seedLocalTestCm.mjs'),
+    `process.stdout.write(${JSON.stringify(`${JSON.stringify(cmFragment())}\n`)});\n`,
+  );
+  const script = new URL('./prepareLocalTestBench.mjs', import.meta.url).pathname;
+  const result = spawnSync(process.execPath, [
+    script,
+    '--project', '102047',
+    '--runtime-root', box.alias,
+    '--cm-root', box.cmRoot,
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      LOCAL_TEST_BENCH_ROLE: 'remote',
+      LOCAL_TEST_BENCH_MANIFEST_DIR: dir,
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal((result.stderr ?? '').includes('then is not a function'), false);
+  assert.match(result.stdout, /^manifest: /);
+  assert.equal(result.stdout.includes('cookieKey'), false);
+  assert.equal(result.stdout.includes(SECRET), false);
+  const saved = JSON.parse(readFileSync(path.join(dir, '102047.json'), 'utf8'));
+  assert.equal(saved.personas.responsavel.personMdmId, 'mdm-r');
+  assert.equal(saved.personas.membro.cmUserId, 'cm-m');
+  assert.equal((statSync(path.join(dir, '102047.json')).mode & 0o777), 0o600);
   rmSync(box.base, { recursive: true, force: true });
 });
 
