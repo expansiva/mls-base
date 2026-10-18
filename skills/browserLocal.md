@@ -91,3 +91,28 @@ Perfil em disco só quando a sessão precisa sobreviver ao fecho do browser, num
 No Chromium o service worker continua controlando a página nos F5, e `context.serviceWorkers()` existe nesse motor. Para cache e service worker, ler as APIs da própria página (CacheStorage, registration) e os logs ou contadores que o harness já emite. Não bloquear o service worker e não usar `route` para medir cache HTTP: o routing desliga esse cache.
 
 O harness Puppeteer/Firefox anterior continua disponível. Sem perfil humano e sem o Google Chrome de marca.
+
+## Bancada de duas pessoas na lima
+
+Pré-requisitos, já na lima: runtime do app com o seed MDM compilado na release, collab-messages instalado, bancos de teste existentes. Este comando não roda migrate, não recria schema e não instala outro browser. A pasta `/etc/collab/local-tests` precisa ser gravável pelo usuário da lima (modo 0700, arquivo 0600); se a permissão faltar, o supervisor libera. Não copiar `.env` nem token para o Mac.
+
+Na raiz do `mls-base`, um comando. Os caminhos são os da VM. O SSH é só o alias `lima-ubuntu24`.
+
+```
+node scripts/runtime/prepareLocalTestBench.mjs --project 102047 --runtime-root <release-do-app> --cm-root <cm-local>
+```
+
+O manifesto fica em `/etc/collab/local-tests/102047.json` (o id muda com o projeto), fora da release, do git e dos estáticos. A saída mostra o caminho e os ids da bancada. A `cookieKey` não aparece.
+
+Quatro ids, com papéis diferentes:
+
+- alias `responsavel` ou `membro` — perfil de teste, não um papel real; os dois seguem com o super do alpha
+- sub `local-test:<projectId>:<alias>` — identidade local estável
+- `personMdmId` — a pessoa no MDM
+- `cmUserId` — o humano no cm, diferente do email, do sub e do id MDM
+
+O email `alias.<projectId>@runtime.test` liga os dois stores. `cmOrgId` `runtime-test:<projectId>` é o tenant da bancada, não o id da Company. `cmTarget` é `http://127.0.0.1:8180`. As origens são só `localhost` e `127.0.0.1` na porta do slot.
+
+Limite: preparação local. Não autentica o navegador e não prova mensagem nem papel. Não chamar os endpoints da sessão antes da rt86.
+
+Repetir o mesmo comando depois de um banco novo. Email e sub reaproveitam as pessoas e os humanos; a `cookieKey` já gravada permanece. Se o cm falhar, o MDM fica como está e o manifesto anterior não é trocado. Rodar o comando de novo retoma o que faltou.
