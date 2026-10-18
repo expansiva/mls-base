@@ -33,10 +33,10 @@ Headless é o padrão. Idle da sessão headless: 5 min. Prazo: 60 s por operaç�
 
 ## Comandos
 
-Na raiz do `mls-base` (o `--` entrega os argumentos ao launcher):
+Na raiz do `mls-base` (o `--` entrega os argumentos ao launcher). A bancada do 102047 exige a campanha de [`limaLocal.md`](limaLocal.md): o primeiro `open` leva `--lima-session <campanha>`. Os comandos seguintes da mesma jar não repetem a opção.
 
 ```
-rtk pnpm run browser -- -s=codex-<id> open http://localhost:2047
+rtk pnpm run browser -- --lima-session codex-<id> -s=codex-<id> open http://localhost:2047
 rtk pnpm run browser -- -s=codex-<id> find "Entrar"
 rtk pnpm run browser -- -s=codex-<id> snapshot e12 --depth=4
 rtk pnpm run browser -- -s=codex-<id> click e12
@@ -54,7 +54,7 @@ Claude Code, a mesma sequência com `-s=claude-<id>`.
 Fora do `mls-base`:
 
 ```
-node /Volumes/WagnerSSD1/collab/mls-base/tools/browser/browser.mjs -s=codex-<id> open http://localhost:2047
+node /Volumes/WagnerSSD1/collab/mls-base/tools/browser/browser.mjs --lima-session codex-<id> -s=codex-<id> open http://localhost:2047
 node /Volumes/WagnerSSD1/collab/mls-base/tools/browser/browser.mjs -s=claude-<id> find "Entrar"
 node /Volumes/WagnerSSD1/collab/mls-base/tools/browser/browser.mjs -s=claude-<id> close
 ```
@@ -94,15 +94,13 @@ O harness Puppeteer/Firefox anterior continua disponível. Sem perfil humano e s
 
 ## Bancada de duas pessoas na lima
 
-Pré-requisitos, já na lima: runtime do app com o seed MDM compilado na release, collab-messages instalado, bancos de teste existentes. Este comando não roda migrate, não recria schema e não instala outro browser. A pasta `/etc/collab/local-tests` precisa ser gravável pelo usuário da lima (modo 0700, arquivo 0600); se a permissão faltar, o supervisor libera. Não copiar `.env` nem token para o Mac.
+Preparar o 102047, reservar a campanha e ler o recibo é só [`limaLocal.md`](limaLocal.md). Este arquivo não é a receita de preparação.
 
-Na raiz do `mls-base`, um comando. Os caminhos são os da VM. O SSH é só o alias `lima-ubuntu24`.
+O seed `scripts/runtime/prepareLocalTestBench.mjs` continua sendo o mecanismo interno que grava o manifesto e o par MDM/cm. Ele só roda dentro da reserva da campanha. Chamá-lo direto, sem essa reserva, recusa antes de semear. Não é o comando do tester.
 
-```
-node scripts/runtime/prepareLocalTestBench.mjs --project 102047 --runtime-root <release-do-app> --cm-root <cm-local>
-```
+Pré-requisitos, já na lima: runtime do app com o seed MDM compilado na release, collab-messages instalado, bancos de teste existentes. O browser não roda migrate, não recria schema e não instala outro browser. A pasta `/etc/collab/local-tests` precisa ser gravável pelo usuário da lima (modo 0700, arquivo 0600); se a permissão faltar, o supervisor libera. Não copiar `.env` nem token para o Mac. O lock da campanha é `/etc/collab/local-tests/lima.lock`, distinto do manifesto.
 
-O manifesto fica em `/etc/collab/local-tests/102047.json` (o id muda com o projeto), fora da release, do git e dos estáticos. A saída mostra o caminho e os ids da bancada. A `cookieKey` não aparece.
+O manifesto fica em `/etc/collab/local-tests/102047.json`, fora da release, do git e dos estáticos. O recibo do prepare mostra os ids da bancada. A `cookieKey` não aparece.
 
 Quatro ids, com papéis diferentes:
 
@@ -141,11 +139,11 @@ Trocar de pessoa não reinicia o app. Desligar é apagar as duas linhas e `pm2 d
 Dois perfis limpos da ferramenta, um por pessoa. `open` só uma vez por sessão: `open` numa sessão que já existe relança o browser com cookies vazios (medido em 18/10/2026). Depois dele, navegar com `goto`. Sessão sem cookie (novo `open`, ou o idle da sessão headless) cai no login de teste da lima (`CBE_TEST_*`), que grava um `cauth` falso, e o `/session/info` vem sem pessoa: basta selecionar de novo, porque o login com a pessoa selecionada expira esse `cauth`. Para uma rodada longa, abrir com `--idle-timeout=3600000`. Clicar só depois de o seletor carregar. Sem outra aba dessa origem durante a troca: o seletor apaga `msgDB`, `serviceCollabMessages` e `collabMessages_userId` e, se outra aba bloquear o IndexedDB, não troca a sessão. Sem perfil humano e sem o Google Chrome de marca.
 
 ```
-rtk pnpm run browser -- -s=responsavel open --idle-timeout=3600000 http://localhost:2047/__test/session
-rtk pnpm run browser -- -s=responsavel click "getByRole('button', { name: 'responsavel' })"
-rtk pnpm run browser -- -s=responsavel goto http://localhost:2047/<rota-do-modulo>
-rtk pnpm run browser -- -s=membro open --idle-timeout=3600000 http://localhost:2047/__test/session
-rtk pnpm run browser -- -s=membro click "getByRole('button', { name: 'membro' })"
+rtk pnpm run browser -- --lima-session codex-ts01 -s=codex-ts01-responsavel open --idle-timeout=3600000 http://localhost:2047/__test/session
+rtk pnpm run browser -- -s=codex-ts01-responsavel click "getByRole('button', { name: 'responsavel' })"
+rtk pnpm run browser -- -s=codex-ts01-responsavel goto http://localhost:2047/<rota-do-modulo>
+rtk pnpm run browser -- --lima-session codex-ts01 -s=codex-ts01-membro open --idle-timeout=3600000 http://localhost:2047/__test/session
+rtk pnpm run browser -- -s=codex-ts01-membro click "getByRole('button', { name: 'membro' })"
 ```
 
 A página diz "Local test session". Os botões são `responsavel`, `membro` e `Leave session`. A troca navega para `/`. Para uma rota do módulo, abrir essa rota depois da seleção. `reload` (F5) conserva a seleção. `Leave session` ou `GET /exec/logout` saem. Apagar as duas linhas do `env` do app e `pm2 delete` + `pm2 start <arquivo>` revoga o mecanismo; a rota `/__test/session` responde 404.

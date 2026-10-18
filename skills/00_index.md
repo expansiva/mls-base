@@ -46,6 +46,7 @@ Cross-cutting:
 - [`mlsProjectsArch.md`](mlsProjectsArch.md) — project layout in production; three implementations of the mls lib surface (cfe / host CLI / runtime VM).
 - [`browserLocal.md`](browserLocal.md) — browsing/clicking a screen from Codex or Claude Code on the Mac: `pnpm run browser -- -s=<client>-<id> …` (Playwright CLI + Chromium; never branded Google Chrome or a human profile); setup once, named session, read only the region you need.
 - [`publishLima.md`](publishLima.md) — publishing an app to lima: changed dependencies go along as working-tree snapshots, what the local lock protects and what to check first (dirty app/deps, `.collab-msg.lock`).
+- [`limaLocal.md`](limaLocal.md) — preparing and reserving the lima bench for a test campaign: `pnpm run lima:preparar -- 102047 --session <c> --db migrate|reset`, one `lima.lock` per campaign, and how publish, seed and `tools/browser` respect it.
 
 ## Rules that hold everywhere
 

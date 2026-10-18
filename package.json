@@ -35,7 +35,8 @@
         "test:1_mechanical": "AGENT_LIVE_TESTS=0 node scripts/run-tests.mjs --all",
         "test:2_llm": "AGENT_LIVE_TESTS=1 node scripts/run-tests.mjs --all",
         "browser": "node tools/browser/browser.mjs",
-        "browser:setup": "node tools/browser/browser.mjs setup"
+        "browser:setup": "node tools/browser/browser.mjs setup",
+        "lima:preparar": "node tools/lima/lima.mjs prepare"
     },
     "dependencies": {
         "@aws-sdk/client-dynamodb": "^3.922.0",
