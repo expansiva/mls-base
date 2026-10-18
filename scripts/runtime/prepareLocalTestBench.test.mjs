@@ -266,6 +266,28 @@ test('entrada direta do host: exit 0 com o resumo e exit 1 com a falha', () => {
   rmSync(failBin, { recursive: true, force: true });
 });
 
+test('--member-role válido chega ao seed e o inválido recusa no host', () => {
+  const box = fixture();
+  const calls = [];
+  const role = 'tarefas.MembroEquipe';
+  const argv = ['--project', '102047', '--member-role', role, '--runtime-root', box.alias, '--cm-root', box.cmRoot];
+  runOnVm({ argv, spawnSync: spawner(calls), manifestDir: path.join(box.base, 'manifests') });
+  assert.equal(calls[0].bin, 'node');
+  assert.deepEqual(calls[0].args.slice(1), ['--member-role', role]);
+  assert.match(sshArgs('102047', '/r', '/c', [role])[1], /'--member-role' 'tarefas\.MembroEquipe'/);
+  assert.throws(
+    () => parseArgs(['--project', '102047', '--runtime-root', '/r', '--cm-root', '/c', '--member-role', 'tarefas.membro']),
+    /not <moduleId>\.<Tipo>/,
+  );
+  let spawned = false;
+  assert.throws(() => hostMain(
+    ['--project', '102047', '--runtime-root', '/r', '--cm-root', '/c', '--member-role', '1bad.Role'],
+    () => { spawned = true; return { status: 0, stdout: '', stderr: '' }; },
+  ), /not <moduleId>\.<Tipo>/);
+  assert.equal(spawned, false);
+  rmSync(box.base, { recursive: true, force: true });
+});
+
 test('o host só chama ssh lima-ubuntu24 e recusa stdout com cookie', () => {
   let seen;
   hostMain(['--project', '102047', '--runtime-root', '/rel', '--cm-root', '/cm'], (cmd, args) => {

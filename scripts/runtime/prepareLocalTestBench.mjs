@@ -49,24 +49,32 @@ export function allowedOriginsFor(port) {
   return [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
 }
 
+const MEMBER_ROLE = /^[A-Za-z][A-Za-z0-9]*\.[A-Z][A-Za-z0-9]*$/;
+
 export function parseArgs(argv) {
   let project = '';
   let runtimeRoot = '';
   let cmRoot = '';
+  const memberRoles = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--project') project = argv[++i] ?? '';
     else if (arg === '--runtime-root') runtimeRoot = argv[++i] ?? '';
     else if (arg === '--cm-root') cmRoot = argv[++i] ?? '';
+    else if (arg === '--member-role') {
+      const role = argv[++i] ?? '';
+      if (!MEMBER_ROLE.test(role)) throw new Error(`--member-role '${role}' is not <moduleId>.<Tipo>`);
+      memberRoles.push(role);
+    }
     else if (arg.startsWith('--')) throw new Error(`unknown argument ${arg}`);
     else throw new Error(`unexpected argument ${arg}`);
   }
   if (!runtimeRoot) throw new Error('--runtime-root is required');
   if (!cmRoot) throw new Error('--cm-root is required');
-  return { project: assertProjectId(project), runtimeRoot, cmRoot };
+  return { project: assertProjectId(project), runtimeRoot, cmRoot, memberRoles };
 }
 
-export function remoteShellCommand(project, runtimeRoot, cmRoot) {
+export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = []) {
   const parts = [
     'env',
     'LOCAL_TEST_BENCH_ROLE=remote',
@@ -80,11 +88,12 @@ export function remoteShellCommand(project, runtimeRoot, cmRoot) {
     '--cm-root',
     cmRoot,
   ];
+  for (const role of memberRoles) parts.push('--member-role', role);
   return parts.map(shQuote).join(' ');
 }
 
-export function sshArgs(project, runtimeRoot, cmRoot) {
-  return [SSH_ALIAS, remoteShellCommand(project, runtimeRoot, cmRoot)];
+export function sshArgs(project, runtimeRoot, cmRoot, memberRoles = []) {
+  return [SSH_ALIAS, remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles)];
 }
 
 export function testDatabaseUrlFromEnvText(text) {
@@ -315,7 +324,7 @@ export function runOnVm(options) {
     existsSync, readFileSync, realpathSync, mkdirSync, writeFileSync, renameSync, chmodSync,
   };
   const spawn = options.spawnSync ?? spawnSync;
-  const { project, runtimeRoot, cmRoot } = parseArgs(options.argv);
+  const { project, runtimeRoot, cmRoot, memberRoles } = parseArgs(options.argv);
   if (!fs.existsSync(cmRoot)) throw new Error('cm root is missing');
   const slot = inspectSlot(runtimeRoot, project, fs);
   const manifestFile = path.join(options.manifestDir ?? MANIFEST_DIR, `${project}.json`);
@@ -324,7 +333,9 @@ export function runOnVm(options) {
   const childEnv = { ...process.env, DATABASE_URL_TEST: databaseUrl };
   let mdm;
   try {
-    mdm = spawnSeed(spawn, ['node', slot.seedJs], slot.resolvedRoot, childEnv, 'mdm');
+    const seedArgs = ['node', slot.seedJs];
+    for (const role of memberRoles) seedArgs.push('--member-role', role);
+    mdm = spawnSeed(spawn, seedArgs, slot.resolvedRoot, childEnv, 'mdm');
   } catch (error) {
     error.resume = 'mdm';
     throw error;
@@ -355,7 +366,7 @@ export function runOnVm(options) {
 
 export function hostMain(argv = process.argv.slice(2), spawn = spawnSync) {
   const args = parseArgs(argv);
-  const command = sshArgs(args.project, args.runtimeRoot, args.cmRoot);
+  const command = sshArgs(args.project, args.runtimeRoot, args.cmRoot, args.memberRoles);
   if (command[0] !== SSH_ALIAS) throw new Error('ssh target is not lima-ubuntu24');
   const source = readFileSync(fileURLToPath(import.meta.url));
   const result = spawn('ssh', command, { input: source, encoding: 'utf8' });
