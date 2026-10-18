@@ -23,12 +23,42 @@ for await (const chunk of process.stdin) chunks.push(chunk);
 const stdin = Buffer.concat(chunks);
 const argv = process.argv.slice(2);
 const remote = argv[argv.length - 1] || '';
+const benchCall = remote.includes('prepareBench.mjs');
 appendFileSync(process.env.LIMA_SSH_LOG, JSON.stringify({
   argv,
   hasDispatch: stdin.includes('export async function dispatch'),
   remoteStarts: remote.startsWith('node --input-type=module - '),
+  bench: benchCall,
+  stdin: benchCall ? stdin.toString('utf8') : undefined,
 }) + '\\n');
 if (process.env.LIMA_SSH_FAIL === '1') process.exit(255);
+if (benchCall) {
+  if (process.env.LIMA_FAIL === 'bench') {
+    process.stdout.write(JSON.stringify({ ok: false, ready: false, code: 'bench', message: 'seed failed' }) + '\\n');
+    process.exit(1);
+  }
+  let body = {};
+  try { body = JSON.parse(stdin.toString('utf8') || '{}'); } catch { body = {}; }
+  const same = body.db === 'migrate';
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    ready: true,
+    db: body.db,
+    release: { id: 'rel-1', client: '102047', versionRef: 'abc', platformCommit: 'def', libs: 'pin', monaco: 'pin' },
+    migrate: same ? { executed: false, reused: true, ok: true, modules: ['tarefas'] } : { executed: false },
+    reset: same ? null : { ok: true, rebuilt: true, modules: ['tarefas'] },
+    modules: ['tarefas'],
+    seed: {
+      companyMdmId: 'co-1', organizationKey: 'org',
+      personas: {
+        responsavel: { cmUserId: 'cm-r', personMdmId: 'mdm-r' },
+        membro: { cmUserId: 'cm-m', personMdmId: 'mdm-m' },
+      },
+    },
+    limits: ['cm history preserved'],
+  }) + '\\n');
+  process.exit(0);
+}
 const quoted = remote.slice('node --input-type=module - '.length);
 const json = quoted.startsWith("'") ? quoted.slice(1, -1).replaceAll("'\\\\''", "'") : quoted;
 const child = spawn(process.execPath, ['--input-type=module', '-', json], { stdio: ['pipe', 'inherit', 'inherit'] });
@@ -365,27 +395,6 @@ export async function prepareSources(input) {
     },
   };
 }
-export async function prepareBench(input) {
-  note('bench:' + input.db);
-  if (process.env.LIMA_FAIL === 'bench') throw new Error('seed failed');
-  const same = input.db === 'migrate';
-  return {
-    ready: true,
-    db: input.db,
-    release: ${JSON.stringify(RELEASE)},
-    migrate: same ? { executed: false, reused: true, ok: true, modules: ['tarefas'] } : { executed: false },
-    reset: same ? null : { ok: true, rebuilt: true, modules: ['tarefas'] },
-    modules: ['tarefas'],
-    seed: {
-      companyMdmId: 'co-1', organizationKey: 'org',
-      personas: {
-        responsavel: { cmUserId: 'cm-r', personMdmId: 'mdm-r' },
-        membro: { cmUserId: 'cm-m', personMdmId: 'mdm-m' },
-      },
-    },
-    limits: ['cm history preserved'],
-  };
-}
 `;
 }
 
@@ -423,7 +432,17 @@ test('prepare reaches ready, repeats migrate, resets explicitly, and keeps the l
   const again = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], env);
   assert.equal(again.code, 0, again.stderr);
   assert.equal(JSON.parse(again.stdout).company.companyMdmId, 'co-1');
-  assert.match(readFileSync(stageLogOf(env), 'utf8'), /bench:migrate/u);
+  const benchCalls = sshLines(box.sshLog).filter((row) => row.bench);
+  assert.equal(benchCalls.length >= 1, true);
+  const sent = JSON.parse(benchCalls[0].stdin);
+  assert.equal(sent.runtimeRoot, '/data/mls-base/current-102047');
+  assert.equal(sent.cmRoot, '/data/msg.collab.codes/current');
+  assert.equal(sent.db, 'migrate');
+  assert.equal(sent.projectId, '102047');
+  assert.equal(typeof sent.operation.ownerId, 'string');
+  assert.equal(typeof sent.operation.operationId, 'string');
+  assert.equal(Object.hasOwn(JSON.parse(JSON.stringify(RELEASE)), 'runtimeRoot'), false);
+  assert.equal(sent.runtimeRoot === RELEASE.versionRef, false);
   const reset = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'reset'], env);
   assert.equal(reset.code, 0, reset.stderr);
   assert.equal(JSON.parse(reset.stdout).reset.rebuilt, true);
@@ -466,6 +485,7 @@ test('a failure in sources or bench is not ready and does not unlock', async () 
     assert.equal(existsSync(join(box.stateDir, 'lima-receipt-campanha.json')), false, fail);
     const diagnosis = readFileSync(join(box.stateDir, 'lima-receipt-campanha.diagnosis.json'), 'utf8');
     assert.match(diagnosis, /"ready":false/u);
+    if (fail === 'bench') assert.match(diagnosis, /seed failed/u);
     assert.match(readFileSync(box.lockPath, 'utf8'), /"phase":"failed"/u);
     const ended = await runCli(['end', '--session', 'campanha'], env);
     assert.notEqual(ended.code, 0, fail);

@@ -3,14 +3,50 @@
  * A URL do banco segue só para o processo filho; o recibo leva o nome do banco.
  */
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { inspectSlot, runOnVm, testDatabaseUrlFromEnvText } from '../../scripts/runtime/prepareLocalTestBench.mjs';
 import { TEST_DATABASE_NAME, declaredTestMode } from '../../scripts/runtime/vmApps.mjs';
+import { DEFAULT_LOCK_PATH, dispatch } from './sessionVm.mjs';
 
 export const BENCH_PROJECT_ID = '102047';
 export const BENCH_APP = 'app2047';
 export const MEMBER_ROLE = 'tarefas.MembroEquipe';
+export const VM_RUNTIME_ROOT = '/data/mls-base/current-102047';
+export const VM_CM_ROOT = '/data/msg.collab.codes/current';
+export const VM_BENCH_SCRIPT = '/data/mls-base/tools/lima/prepareBench.mjs';
+
+export const PROBE_DATABASE_SQL = 'SELECT current_database() AS current_database';
+export const PROBE_ACTIVITY_SQL = `SELECT application_name, client_addr::text AS client_addr, datname
+FROM pg_stat_activity
+WHERE datname = current_database() AND pid <> pg_backend_pid()`;
+export const PROBE_SCOPE_SQL = `SELECT c.relname AS name
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname !~ '^pg_'`;
+export const PROBE_DEPENDENTS_SQL = `SELECT dep.relname AS name, dep.relkind AS kind, src.relname AS on_table
+FROM pg_constraint con
+JOIN pg_class src ON src.oid = con.confrelid
+JOIN pg_class dep ON dep.oid = con.conrelid
+WHERE con.contype = 'f'
+  AND src.relname = ANY($1::text[])
+  AND NOT (dep.relname = ANY($1::text[]))
+UNION
+SELECT v.relname, v.relkind, t.relname
+FROM pg_depend d
+JOIN pg_rewrite r ON r.oid = d.objid
+JOIN pg_class v ON v.oid = r.ev_class
+JOIN pg_class t ON t.oid = d.refobjid
+WHERE d.refclassid = 'pg_class'::regclass
+  AND v.relkind = 'v'
+  AND t.relkind = 'r'
+  AND t.relname = ANY($1::text[])
+  AND NOT (v.relname = ANY($1::text[]))`;
+export const PROBE_COUNT_SQL = `SELECT s.name AS name,
+  (xpath('/row/c/text()', query_to_xml(format('SELECT count(*)::int AS c FROM public.%I', s.name), false, true, '')))[1]::text::int AS n
+FROM unnest($1::text[]) AS s(name)`;
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 const STAMP_FIELDS = ['id', 'client', 'versionRef', 'platformCommit', 'libs', 'monaco'];
 
@@ -189,6 +225,78 @@ function assertReceiptSafe(receipt) {
   }
 }
 
+export function confirmBenchOperation(operation) {
+  if (!operation || typeof operation.ownerId !== 'string' || typeof operation.operationId !== 'string' || typeof operation.lockPath !== 'string') {
+    return { ok: false, code: 'operation', message: 'bench operation is missing' };
+  }
+  const status = dispatch({
+    op: 'status',
+    ownerId: operation.ownerId,
+    lockPath: operation.lockPath,
+  });
+  const operations = Array.isArray(status.operations) ? status.operations : [];
+  const registered = operations.some((item) => item.id === operation.operationId);
+  if (status.owned !== true || !registered) {
+    return { ok: false, code: 'operation', message: 'bench operation is not registered for this owner' };
+  }
+  return { ok: true };
+}
+
+function loadPg(runtimeRoot) {
+  const require = createRequire(path.join(runtimeRoot, 'node_modules', 'pg', 'package.json'));
+  return require('pg');
+}
+
+function countsOf(rows) {
+  const counts = new Map();
+  for (const row of rows || []) {
+    if (typeof row?.name !== 'string') continue;
+    counts.set(row.name, Number(row.n));
+  }
+  return counts;
+}
+
+/** Lê o pg da release. Sem INSERT/UPDATE/DDL. scopeCleared e seedsOk saem das contagens. */
+export async function probeWithPg(client, request = {}) {
+  const database = await client.query(PROBE_DATABASE_SQL);
+  const currentDatabase = database.rows?.[0]?.current_database;
+  const activityResult = await client.query(PROBE_ACTIVITY_SQL);
+  const scopeResult = await client.query(PROBE_SCOPE_SQL);
+  const scopeTables = (scopeResult.rows || []).map((row) => row.name).filter((name) => typeof name === 'string');
+  const seedTables = (request.seedTables || []).filter((name) => scopeTables.includes(name));
+  const dependents = scopeTables.length
+    ? await client.query(PROBE_DEPENDENTS_SQL, [scopeTables])
+    : { rows: [] };
+  let scopeCleared;
+  let seedsOk;
+  if (request.phase === 'after') {
+    const counted = scopeTables.length ? await client.query(PROBE_COUNT_SQL, [scopeTables]) : { rows: [] };
+    const counts = countsOf(counted.rows);
+    const seeds = new Set(seedTables);
+    scopeCleared = scopeTables.length > 0;
+    seedsOk = seedTables.length > 0;
+    for (const name of scopeTables) {
+      const n = counts.get(name);
+      if (seeds.has(name)) {
+        if (!(n > 0)) seedsOk = false;
+      } else if (n !== 0) {
+        scopeCleared = false;
+      }
+    }
+  }
+  return {
+    currentDatabase,
+    activity: (activityResult.rows || []).map((row) => ({
+      datname: row.datname,
+      applicationName: row.application_name,
+      clientAddr: row.client_addr,
+    })),
+    externalDependents: dependents.rows || [],
+    scopeCleared,
+    seedsOk,
+  };
+}
+
 /**
  * @param {object} input
  * @param {'migrate'|'reset'} input.db
@@ -197,10 +305,20 @@ function assertReceiptSafe(receipt) {
  * @param {Function} input.probe ({ database }) => { currentDatabase, activity, externalDependents, scopeCleared, seedsOk }
  * @param {{ ok?: boolean, script?: string, database?: string, projectId?: string }} [input.priorMigrate]
  */
-export function prepareBench(input) {
+export async function prepareBench(input) {
   const fs = input.fs ?? defaultFs;
   const spawn = input.spawnSync ?? spawnSync;
   const projectId = input.projectId ?? BENCH_PROJECT_ID;
+  if (input.operation) {
+    const confirmed = confirmBenchOperation(input.operation);
+    if (!confirmed.ok) {
+      const error = new BenchError(confirmed.message, {
+        ok: false, phase: 'refused', ready: false, retainLock: true, ddlStarted: false, code: confirmed.code,
+      });
+      error.code = confirmed.code;
+      throw error;
+    }
+  }
   if (projectId !== BENCH_PROJECT_ID) {
     throw new Error(`project ${projectId} is outside this bench`);
   }
@@ -220,8 +338,18 @@ export function prepareBench(input) {
   }
   const databaseUrl = testDatabaseUrlFromEnvText(fs.readFileSync(slot.envPath, 'utf8'));
   const identity = assertLocalTestTarget(databaseUrl);
-  if (typeof input.probe !== 'function') throw new Error('database probe is required');
-  const before = input.probe({ database: identity.database, phase: 'before' }) ?? {};
+  let client = null;
+  const probe = typeof input.probe === 'function'
+    ? input.probe
+    : async (call) => {
+      if (!client) {
+        const pg = loadPg(slot.resolvedRoot);
+        client = new pg.Client({ connectionString: databaseUrl });
+        await client.connect();
+      }
+      return probeWithPg(client, { ...call, seedTables: input.seedTables });
+    };
+  const before = await Promise.resolve(probe({ database: identity.database, phase: 'before' })) ?? {};
   if (before.currentDatabase !== identity.database) {
     throw new Error('current_database is not the local test database');
   }
@@ -300,7 +428,7 @@ export function prepareBench(input) {
       suspended = true;
       baseReceipt.stoppedOnly = BENCH_APP;
       if (input.db === 'reset') {
-        const again = input.probe({ database: identity.database, phase: 'stopped' }) ?? {};
+        const again = await Promise.resolve(probe({ database: identity.database, phase: 'stopped' })) ?? {};
         const still = assessResetExclusive({
           consumers: { known: true, others: [] },
           activity: again.activity,
@@ -327,7 +455,7 @@ export function prepareBench(input) {
         throw new BenchError(error.message, receipt);
       }
       if (input.db === 'reset') {
-        const after = input.probe({ database: identity.database, phase: 'after' }) ?? {};
+        const after = await Promise.resolve(probe({ database: identity.database, phase: 'after' })) ?? {};
         if (after.scopeCleared !== true || after.seedsOk !== true) {
           const receipt = failedReceipt(baseReceipt, 'reset did not clear scope rows and reapply schema seeds');
           receipt.ddlStarted = true;
@@ -421,5 +549,64 @@ export function prepareBench(input) {
       throw new BenchError(redact(error.message), receipt);
     }
     throw new Error(redact(error.message));
+  } finally {
+    if (client) await client.end().catch(() => {});
   }
+}
+
+function invokedDirectly() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return pathToFileURL(entry).href === import.meta.url;
+}
+
+async function main() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  if (!text) {
+    process.stderr.write('prepareBench: JSON command on stdin\n');
+    process.exit(2);
+  }
+  let command;
+  try {
+    command = JSON.parse(text);
+  } catch {
+    process.stdout.write(`${JSON.stringify({ ok: false, ready: false, code: 'bad-json' })}\n`);
+    process.exit(2);
+  }
+  const operation = command.operation;
+  if (!operation || typeof operation !== 'object') {
+    process.stdout.write(`${JSON.stringify({ ok: false, ready: false, code: 'operation', message: 'bench operation is missing' })}\n`);
+    process.exit(1);
+  }
+  if (!operation.lockPath) operation.lockPath = DEFAULT_LOCK_PATH;
+  try {
+    const receipt = await prepareBench({
+      db: command.db,
+      projectId: command.projectId,
+      runtimeRoot: command.runtimeRoot,
+      cmRoot: command.cmRoot,
+      operation,
+      seedTables: command.seedTables,
+    });
+    process.stdout.write(`${JSON.stringify(receipt)}\n`);
+    process.exit(0);
+  } catch (error) {
+    const body = {
+      ok: false,
+      ready: false,
+      code: error.code || 'bench',
+      message: redact(error.message),
+      ...(error.receipt || {}),
+    };
+    delete body.error;
+    body.message = redact(error.message);
+    process.stdout.write(`${JSON.stringify(body)}\n`);
+    process.exit(1);
+  }
+}
+
+if (invokedDirectly()) {
+  main();
 }

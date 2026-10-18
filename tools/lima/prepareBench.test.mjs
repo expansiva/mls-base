@@ -4,7 +4,9 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { prepareBench, BenchError } from './prepareBench.mjs';
+import {
+  BenchError, PROBE_ACTIVITY_SQL, PROBE_COUNT_SQL, PROBE_DATABASE_SQL, PROBE_DEPENDENTS_SQL, PROBE_SCOPE_SQL, prepareBench, probeWithPg,
+} from './prepareBench.mjs';
 
 const SECRET_URL = 'postgres://bench_user:bench_secret@127.0.0.1:5432/collab_app_test';
 
@@ -125,13 +127,13 @@ function harness(tree, logFile, extras = {}) {
   };
 }
 
-test('migrate uses the verified release and restarts only app2047', () => {
+test('migrate uses the verified release and restarts only app2047', async () => {
   const tree = benchTree();
   const logFile = path.join(tree.root, 'log.ndjson');
   const envBefore = readFileSync(path.join(tree.remote, '.env'), 'utf8');
   const otherBefore = readFileSync(path.join(tree.remote, 'pm2.apps.d', 'app2043.config.js'), 'utf8');
   const box = harness(tree, logFile);
-  const receipt = box.run('migrate');
+  const receipt = await box.run('migrate');
   const log = readLog(logFile);
   assert.equal(receipt.ok, true);
   assert.equal(receipt.phase, 'ready');
@@ -160,11 +162,11 @@ test('migrate uses the verified release and restarts only app2047', () => {
   assert.equal(receipt.cm.historyPreserved, true);
 });
 
-test('reset is a different script and checks scope after ddl', () => {
+test('reset is a different script and checks scope after ddl', async () => {
   const tree = benchTree();
   const logFile = path.join(tree.root, 'log.ndjson');
   const box = harness(tree, logFile);
-  const receipt = box.run('reset');
+  const receipt = await box.run('reset');
   const log = readLog(logFile);
   const scripts = log.filter((row) => row.cmd === process.execPath).map((row) => row.args[0]);
   assert.equal(scripts.length, 1);
@@ -176,12 +178,12 @@ test('reset is a different script and checks scope after ddl', () => {
   assert.equal(box.order.indexOf('seed') > box.order.indexOf('probe:after'), true);
 });
 
-test('reuses a proven migrate of the same artifact', () => {
+test('reuses a proven migrate of the same artifact', async () => {
   const tree = benchTree();
   const logFile = path.join(tree.root, 'log.ndjson');
   const box = harness(tree, logFile);
   const script = path.join(tree.release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'migrate.js');
-  const receipt = box.run('migrate', {
+  const receipt = await box.run('migrate', {
     priorMigrate: { ok: true, script, database: 'collab_app_test', projectId: '102047' },
   });
   assert.equal(receipt.migrate.reused, true);
@@ -192,11 +194,11 @@ test('reuses a proven migrate of the same artifact', () => {
   assert.equal(box.order.includes('seed'), true);
 });
 
-test('refuses a shared or unknown consumer before ddl', () => {
+test('refuses a shared or unknown consumer before ddl', async () => {
   const shared = benchTree({ shared: true });
   const logFile = path.join(shared.root, 'log.ndjson');
   const box = harness(shared, logFile);
-  assert.throws(() => box.run('reset'), (error) => {
+  await assert.rejects(() => box.run('reset'), (error) => {
     assert.equal(error instanceof BenchError, true);
     assert.equal(error.receipt.ddlStarted, false);
     assert.equal(error.receipt.reset.refused, true);
@@ -210,7 +212,7 @@ test('refuses a shared or unknown consumer before ddl', () => {
   const boxUnknown = harness(unknown, logUnknown, {
     probe: () => ({ currentDatabase: 'collab_app_test', activity: [{ datname: 'collab_app_test' }], externalDependents: [] }),
   });
-  assert.throws(() => boxUnknown.run('reset'), /unknown|migrate remains available/);
+  await assert.rejects(() => boxUnknown.run('reset'), /unknown|migrate remains available/);
   assert.equal(readLog(logUnknown).length, 0);
 
   const dependents = benchTree();
@@ -222,17 +224,17 @@ test('refuses a shared or unknown consumer before ddl', () => {
       externalDependents: undefined,
     }),
   });
-  assert.throws(() => boxDeps.run('reset'), /unknown/);
+  await assert.rejects(() => boxDeps.run('reset'), /unknown/);
   assert.equal(readLog(logDeps).length, 0);
 });
 
-test('a failed reset after ddl stays failed and does not restart the app', () => {
+test('a failed reset after ddl stays failed and does not restart the app', async () => {
   const tree = benchTree({
     resetBody: 'console.error("ddl started"); process.exit(1);\n',
   });
   const logFile = path.join(tree.root, 'log.ndjson');
   const box = harness(tree, logFile);
-  assert.throws(() => box.run('reset'), (error) => {
+  await assert.rejects(() => box.run('reset'), (error) => {
     assert.equal(error instanceof BenchError, true);
     assert.equal(error.receipt.phase, 'failed');
     assert.equal(error.receipt.ready, false);
@@ -247,6 +249,84 @@ test('a failed reset after ddl stays failed and does not restart the app', () =>
   assert.equal(box.order.includes('seed'), false);
   assert.equal(readFileSync(path.join(tree.cm, 'history.txt'), 'utf8'), 'cm-history-kept\n');
   assert.equal(JSON.stringify(log).includes('2043'), false);
+});
+
+test('vm stdin refuses a missing operation before any ddl', () => {
+  const tree = benchTree({
+    resetBody: 'require("fs").writeFileSync(process.env.BENCH_DDL_MARKER, "ran\\n"); process.exit(0);\n',
+  });
+  const marker = path.join(tree.root, 'ddl-ran');
+  const child = spawnSync(process.execPath, [new URL('./prepareBench.mjs', import.meta.url).pathname], {
+    input: JSON.stringify({
+      db: 'reset',
+      projectId: '102047',
+      runtimeRoot: tree.release,
+      cmRoot: tree.cm,
+    }),
+    encoding: 'utf8',
+    env: { ...process.env, BENCH_DDL_MARKER: marker },
+  });
+  assert.notEqual(child.status, 0);
+  const body = JSON.parse(child.stdout);
+  assert.equal(body.code, 'operation');
+  assert.equal(body.ready, false);
+  assert.equal(existsSync(marker), false);
+});
+
+test('an unregistered operation is refused before the probe', async () => {
+  const tree = benchTree();
+  let probed = false;
+  await assert.rejects(() => prepareBench({
+    db: 'reset',
+    runtimeRoot: tree.release,
+    cmRoot: tree.cm,
+    operation: { ownerId: 'ab'.repeat(16), operationId: 'missing', lockPath: path.join(tree.root, 'lima.lock') },
+    probe: () => { probed = true; },
+    spawnSync: () => { throw new Error('ddl'); },
+  }), /not registered/);
+  assert.equal(probed, false);
+});
+
+function fakePg(script) {
+  const seen = [];
+  return {
+    seen,
+    async query(sql, params) {
+      seen.push(sql);
+      if (/insert|update|delete|drop|truncate|alter/iu.test(sql)) throw new Error('probe wrote');
+      return script(sql, params);
+    },
+  };
+}
+
+test('pg probe reads counts and does not invent a cleared scope', async () => {
+  const client = fakePg((sql) => {
+    if (sql === PROBE_DATABASE_SQL) return { rows: [{ current_database: 'collab_app_test' }] };
+    if (sql === PROBE_ACTIVITY_SQL) return { rows: [{ application_name: 'other', client_addr: '127.0.0.1/32', datname: 'collab_app_test' }] };
+    if (sql === PROBE_SCOPE_SQL) return { rows: [{ name: 'tarefas_task' }, { name: 'schema_seed' }] };
+    if (sql === PROBE_DEPENDENTS_SQL) return { rows: [{ name: 'outside_view', kind: 'v', on_table: 'tarefas_task' }] };
+    if (sql === PROBE_COUNT_SQL) return { rows: [{ name: 'tarefas_task', n: 4 }, { name: 'schema_seed', n: 0 }] };
+    throw new Error(`unexpected sql ${sql}`);
+  });
+  const dirty = await probeWithPg(client, { phase: 'after', seedTables: ['schema_seed'] });
+  assert.equal(dirty.currentDatabase, 'collab_app_test');
+  assert.equal(dirty.activity[0].applicationName, 'other');
+  assert.equal(dirty.activity[0].clientAddr, '127.0.0.1/32');
+  assert.equal(dirty.externalDependents[0].name, 'outside_view');
+  assert.equal(dirty.scopeCleared, false);
+  assert.equal(dirty.seedsOk, false);
+  const clean = fakePg((sql) => {
+    if (sql === PROBE_DATABASE_SQL) return { rows: [{ current_database: 'collab_app_test' }] };
+    if (sql === PROBE_ACTIVITY_SQL) return { rows: [] };
+    if (sql === PROBE_SCOPE_SQL) return { rows: [{ name: 'tarefas_task' }, { name: 'schema_seed' }] };
+    if (sql === PROBE_DEPENDENTS_SQL) return { rows: [] };
+    if (sql === PROBE_COUNT_SQL) return { rows: [{ name: 'tarefas_task', n: 0 }, { name: 'schema_seed', n: 1 }] };
+    throw new Error(`unexpected sql ${sql}`);
+  });
+  const after = await probeWithPg(clean, { phase: 'after', seedTables: ['schema_seed'] });
+  assert.equal(after.scopeCleared, true);
+  assert.equal(after.seedsOk, true);
+  assert.equal(client.seen.some((sql) => /insert|update|delete|drop/iu.test(sql)), false);
 });
 
 test('receipt stays free of the database url', () => {

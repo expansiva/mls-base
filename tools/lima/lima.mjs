@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process';
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { prepareBench } from './prepareBench.mjs';
+import { VM_BENCH_SCRIPT, VM_CM_ROOT, VM_RUNTIME_ROOT } from './prepareBench.mjs';
 import { planLocalSources, prepareSources } from './prepareSources.mjs';
 import {
   LONG_TIMEOUT_MS,
@@ -193,8 +194,67 @@ function buildReceipt({ parsed, profile, sources, bench }) {
 }
 
 async function loadStages(env) {
-  if (!env.LIMA_PREPARE_STAGES) return { prepareSources, prepareBench, planLocalSources };
+  if (!env.LIMA_PREPARE_STAGES) return { prepareSources, planLocalSources };
   return import(pathToFileURL(env.LIMA_PREPARE_STAGES).href);
+}
+
+function runSsh(sshBin, args, input, timeoutMs, env) {
+  return new Promise((resolvePromise) => {
+    const child = spawn(sshBin, args, { stdio: ['pipe', 'pipe', 'pipe'], env });
+    const out = [];
+    const err = [];
+    let timed = false;
+    const timer = setTimeout(() => {
+      timed = true;
+      child.kill('SIGTERM');
+    }, timeoutMs);
+    child.stdout.on('data', (chunk) => out.push(chunk));
+    child.stderr.on('data', (chunk) => err.push(chunk));
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolvePromise({ code: 1, timed, stdout: '', stderr: error.message });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolvePromise({
+        code: code ?? 1,
+        timed,
+        stdout: Buffer.concat(out).toString('utf8'),
+        stderr: Buffer.concat(err).toString('utf8'),
+      });
+    });
+    child.stdin.end(input);
+  });
+}
+
+function lastJson(stdout) {
+  const line = String(stdout).trim().split(/\n/u).filter(Boolean).pop() || '';
+  if (!line) return null;
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+async function prepareBenchOnVm(profile, env, payload) {
+  const sshBin = env.LIMA_SSH_BIN || 'ssh';
+  const remote = `node ${VM_BENCH_SCRIPT}`;
+  const result = await runSsh(
+    sshBin,
+    ['-F', profile.sshConfig, profile.alias, remote],
+    JSON.stringify(payload),
+    LONG_TIMEOUT_MS,
+    { ...process.env, ...env },
+  );
+  if (result.timed) {
+    return { ok: false, ready: false, code: 'ssh', message: 'bench ssh timed out' };
+  }
+  const json = lastJson(result.stdout);
+  if (!json) {
+    return { ok: false, ready: false, code: 'bench', message: result.stderr.trim() || 'bench ssh returned no receipt' };
+  }
+  return json;
 }
 
 async function vm(profile, command, env) {
@@ -304,19 +364,14 @@ export async function runPrepare(parsed, profile, env = process.env) {
   }
   if (!sources?.ok) await fail(sources?.code || 'sources', sources?.message || 'source prepare failed', sources?.uncertain !== false);
 
-  let bench;
-  try {
-    bench = await stages.prepareBench({
-      db: parsed.db,
-      projectId: parsed.projectId,
-      runtimeRoot: sources.evidence?.release?.runtimeRoot,
-      sources,
-      browsersOpen: false,
-    });
-  } catch (error) {
-    await fail(error.code || 'bench', error.receipt?.error || error.message);
-  }
-  if (!bench?.ready) await fail(bench?.code || 'bench', 'bench did not become ready', false);
+  const bench = await prepareBenchOnVm(profile, env, {
+    db: parsed.db,
+    projectId: parsed.projectId,
+    runtimeRoot: VM_RUNTIME_ROOT,
+    cmRoot: VM_CM_ROOT,
+    operation: { ownerId: ref.ownerId, operationId: ref.operationId, lockPath: options.lockPath },
+  });
+  if (!bench?.ready) await fail(bench?.code || 'bench', bench?.message || 'bench did not become ready', true);
 
   let receipt;
   try {
