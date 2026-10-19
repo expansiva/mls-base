@@ -188,7 +188,11 @@ function buildReceipt({ parsed, profile, sources, bench }) {
       membro: personas.membro?.cmUserId || null,
     },
     limits: bench.limits || [],
+    workflowMemory: bench.workflowMemory,
   };
+  if (!receipt.workflowMemory || typeof receipt.workflowMemory !== 'object') {
+    throw Object.assign(new Error('receipt is missing workflow memory topology'), { code: 'receipt' });
+  }
   if (!receipt.release || RELEASE_FIELDS.some((field) => receipt.release[field] == null || receipt.release[field] === '')) {
     throw Object.assign(new Error('receipt is missing release fields'), { code: 'receipt' });
   }
