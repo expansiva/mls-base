@@ -4,7 +4,9 @@ Receita única para Codex e Claude Code, no terminal do Mac, a partir do cwd `ml
 
 Esta receita prepara o app **102047** na lima de teste e reserva a bancada para uma campanha. Outro id é recusado. Não há perfil remoto, `--host`, teste em VM de produção, nem aprovação extra para o localhost já autorizado.
 
-O runtime prepara e atualiza a bancada entre rodadas. O tester reserva, lê o recibo, usa a UI local e encerra a campanha ao terminar. O tester não muda código, `.env` ou flag, não publica para corrigir falha de produto, não apaga o lock e não usa SSH, git ou SQL crus para contornar ocupação. Atualizar a raiz `mls-base` na lima também não é um `git push` manual: entra pelo `prepare`. `scripts/vm.mjs` opera o collab-sites remoto e não serve esta bancada.
+**Quem prepara (Wagner, 19/10/2026):** *"vamos alterar isto porque dificultou para mim [...] vc só entra em caso de erros ou coisas complicadas, assim evita este ping pong"*. O tester prepara a própria campanha com `prepare`, usa a UI local e encerra com `end`. O supervisor do runtime só entra quando algo dá errado: prepare que não chega a `ready`, reserva em `failed` ou com operação incerta (`recover`), topologia do PM2, ref local órfã ou outra campanha ocupando a bancada sem dono que responda.
+
+O tester não muda código, `.env` ou flag, não publica para corrigir falha de produto, não apaga o lock e não usa SSH, git ou SQL crus para contornar ocupação ou erro. Atualizar a raiz `mls-base` na lima também não é um `git push` manual: entra pelo `prepare`. `scripts/vm.mjs` opera o collab-sites remoto e não serve esta bancada.
 
 ## Campanha e jars
 
@@ -71,12 +73,35 @@ A preparação lê o PM2 depois do health. A bancada fica pronta como infraestru
 
 O recibo `ready` descreve a topologia observada. Não é aceite do ciclo, não afirma integração durável de Task/steps e não libera reteste do workflow em memória de processo. A preparação de infraestrutura não comprova esse ciclo; ele espera a integração durável em Task/steps e um recibo específico. Outro processo atender em seguida, ou um restart, é situação normal desse workflow durável: a receita não manda o tester evitá-la reduzindo workers, segurando a release ou contornando guard ou lock. O histórico de falhas permanece. `end` encerra a campanha e não apaga esse histórico.
 
-## Entrega da campanha ao tester
+## O tester prepara a própria campanha
 
-`begin` sozinho deixa a reserva em `reserved`, e o browser só liga em `ready` (medido em 18/10/2026: `bench reservation is not ready`).
-Quem deixa `ready` é o `prepare`, que é do runtime. Por isso o runtime prepara **com o nome da campanha do tester** (ex.:
-`lima prepare 102047 --session tester-ts02 --db migrate`); a referência de posse fica no temp do mesmo usuário do Mac, e o tester só
-abre as jars com `--lima-session tester-ts02` e dá o `end` ao terminar. Próxima rodada, campanha nova preparada pelo runtime.
+`begin` sozinho deixa a reserva em `reserved`, e o browser só liga em `ready` (medido em 18/10/2026: `bench reservation is not ready`). Quem deixa `ready` é o `prepare`. O tester roda, do cwd `mls-base`:
+
+```
+node tools/lima/lima.mjs status
+node tools/lima/lima.mjs prepare 102047 --session tester-<rodada> --db migrate
+```
+
+Depois abre as jars com `--lima-session tester-<rodada>` e dá o `end` ao terminar. Próxima rodada, campanha nova.
+
+**O que o `prepare` faz:**
+- Publica o que está no HEAD de cada repo do Mac, inclusive commits de outras sessões, e recusa repo sujo.
+- Roda o migrate no banco de teste. Não há reset.
+- Reinicia o app2047. O app2043 e o app2052 também reiniciam quando a release da plataforma muda.
+- Leva poucos minutos.
+
+**Antes de rodar:**
+- `status` com `held:false`. Se outra campanha estiver ativa, esperar o dono; não apagar lock.
+- Os repos que entram no publish (raiz `mls-base`, 102047 e dependências) sem arquivo sujo. Arquivo sujo de outra sessão não é do tester: não commitar nem guardar. Esperar o dono ou chamar o supervisor.
+
+**Quando chamar o supervisor do runtime** (arquivo `fromTester_*` no pool do runtime, com a saída bruta):
+- `prepare` sai com código diferente de zero ou sem `ready:true`;
+- `status` mostra `phase:"failed"` ou operação `uncertain`. Não repetir o `prepare` por conta própria: a reserva fica retida até o `recover`, que é do supervisor;
+- `publish:git` recusado com "owner file does not match the reservation" ou "lima reservation is ambiguous" (ref local órfã);
+- `healthOk` falso, menos de 2 workers online ou app fora do ar;
+- qualquer coisa que peça SSH, PM2, SQL ou `.env`.
+
+**O recibo é o JSON do próprio `prepare`.** Release, SHAs, `healthOk`, `runtimeTopology` e limites: anotar na task do tester. O `todo/runtime/docs/bancada_tester_102047.md` guarda só o último recibo do supervisor e as condições gerais.
 
 ## Browser
 
