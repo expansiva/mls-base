@@ -102,13 +102,13 @@ test('pm2AppConfig é o arquivo canônico (sites buildPm2AppConfig deve copiar b
 `);
 });
 
-test('bancada com banco de teste e sessão local anuncia um worker; flag incompleta ou modo comum ficam em dois', () => {
+test('bancada com banco de teste e sessão local conserva dois workers em cluster', () => {
   const session = { file: '/etc/collab/local-tests/102099.json' };
   const bench = pm2AppConfig('102099', 2099, '/data/mls-base', 'http://127.0.0.1:8180', true, session);
   assert.match(bench, /cwd: "\/data\/mls-base\/current-102099"/u);
-  assert.match(bench, /instances: 1,/u);
+  assert.match(bench, /instances: 2,/u);
   assert.match(bench, /exec_mode: 'cluster',/u);
-  assert.match(bench, /COLLAB_WORKER_COUNT: "1",/u);
+  assert.match(bench, /COLLAB_WORKER_COUNT: "2",/u);
   assert.match(bench, /MSG_PROXY_TARGET: "http:\/\/127\.0\.0\.1:8180"/u);
   assert.match(bench, /LOCAL_TEST_SESSION_ENABLED: "true"/u);
   assert.match(bench, /LOCAL_TEST_SESSIONS_FILE: "\/etc\/collab\/local-tests\/102099.json"/u);
@@ -116,13 +116,20 @@ test('bancada com banco de teste e sessão local anuncia um worker; flag incompl
 
   const onlySession = pm2AppConfig('102099', 2099, '/data/mls-base', undefined, false, session);
   assert.match(onlySession, /instances: 2,/u);
+  assert.match(onlySession, /exec_mode: 'cluster',/u);
   assert.match(onlySession, /COLLAB_WORKER_COUNT: "2"/u);
   assert.equal(onlySession.includes('DATABASE_URL_TEST'), false);
 
   const onlyDatabase = pm2AppConfig('102099', 2099, '/data/mls-base', undefined, true);
   assert.match(onlyDatabase, /instances: 2,/u);
+  assert.match(onlyDatabase, /exec_mode: 'cluster',/u);
   assert.match(onlyDatabase, /COLLAB_WORKER_COUNT: "2"/u);
   assert.equal(onlyDatabase.includes('LOCAL_TEST_SESSION'), false);
+
+  const neither = pm2AppConfig('102099', 2099, '/data/mls-base', undefined, false);
+  assert.match(neither, /instances: 2,/u);
+  assert.match(neither, /exec_mode: 'cluster',/u);
+  assert.match(neither, /COLLAB_WORKER_COUNT: "2"/u);
 
   withRoot((root) => {
     mkdirSync(join(root, 'mls-102099', 'l5'), { recursive: true });
@@ -139,7 +146,7 @@ test('bancada com banco de teste e sessão local anuncia um worker; flag incompl
   });
 });
 
-test('ensureProjectApp da bancada declarada fica em um worker e a reexecução não reescreve', () => {
+test('ensureProjectApp da bancada declarada fica em dois workers e a reexecução não reescreve', () => {
   withRoot((root) => {
     mkdirSync(join(root, 'mls-102099', 'l5'), { recursive: true });
     writeFileSync(join(root, 'mls-102099', 'l5', 'project.json'), JSON.stringify({ appEnv: 'development' }));
@@ -152,8 +159,9 @@ test('ensureProjectApp da bancada declarada fica em um worker e a reexecução n
     const first = ensureProjectApp({ root, projectId: '102099', remoteBase: '/data/mls-base' });
     assert.equal(first.wrote, true);
     const bench = readFileSync(join(root, 'pm2.apps.d', 'app2099.config.js'), 'utf8');
-    assert.match(bench, /instances: 1,/u);
-    assert.match(bench, /COLLAB_WORKER_COUNT: "1"/u);
+    assert.match(bench, /instances: 2,/u);
+    assert.match(bench, /exec_mode: 'cluster',/u);
+    assert.match(bench, /COLLAB_WORKER_COUNT: "2"/u);
     assert.match(bench, /LOCAL_TEST_SESSIONS_FILE: "\/etc\/collab\/local-tests\/102099.json"/u);
     assert.match(bench, /DATABASE_URL_TEST:/u);
     const neighbor = readFileSync(join(root, 'pm2.apps.d', 'app2043.config.js'), 'utf8');
@@ -164,6 +172,36 @@ test('ensureProjectApp da bancada declarada fica em um worker e a reexecução n
     assert.equal(readFileSync(join(root, 'pm2.apps.d', 'app2099.config.js'), 'utf8'), bench);
     assert.equal(readFileSync(join(root, 'pm2.apps.d', 'app2043.config.js'), 'utf8'), neighbor);
   });
+});
+
+test('ensureProjectApp conserva dois workers em cluster nas combinações parciais de banco e sessão', () => {
+  const session = { file: '/etc/collab/local-tests/102099.json' };
+  const layouts = [
+    { appEnv: 'production', session: false },
+    { appEnv: 'development', session: false },
+    { appEnv: 'production', session: true },
+  ];
+  for (const layout of layouts) {
+    withRoot((root) => {
+      mkdirSync(join(root, 'mls-102099', 'l5'), { recursive: true });
+      writeFileSync(join(root, 'mls-102099', 'l5', 'project.json'), JSON.stringify({ appEnv: layout.appEnv }));
+      mkdirSync(join(root, 'pm2.apps.d'), { recursive: true });
+      if (layout.session) {
+        writeFileSync(
+          join(root, 'pm2.apps.d', 'app2099.config.js'),
+          pm2AppConfig('102099', 2099, '/data/mls-base', undefined, false, session),
+        );
+      }
+      writeFileSync(join(root, 'pm2.config.js'), pm2AggregatorConfig());
+      ensureProjectApp({ root, projectId: '102099', remoteBase: '/data/mls-base' });
+      const written = readFileSync(join(root, 'pm2.apps.d', 'app2099.config.js'), 'utf8');
+      assert.match(written, /instances: 2,/u);
+      assert.match(written, /exec_mode: 'cluster',/u);
+      assert.match(written, /COLLAB_WORKER_COUNT: "2"/u);
+      const again = ensureProjectApp({ root, projectId: '102099', remoteBase: '/data/mls-base' });
+      assert.equal(again.wrote, false);
+    });
+  }
 });
 
 test('ensureProjectApp preserva a sessão local da lima e ignora valor que não é o par válido', () => {

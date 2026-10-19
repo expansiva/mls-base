@@ -105,7 +105,7 @@ function envBlock(projectId, port, msgProxyTarget, databaseUrlTestExprText, loca
 /** Conteúdo de pm2.apps.d/app<porta>.config.js. */
 export function pm2AppConfig(projectId, port, remoteBase, msgProxyTarget, databaseUrlTest = false, localTestSession) {
   const appName = appNameOf(port);
-  const workerCount = databaseUrlTest && localTestSession ? 1 : 2;
+  const workerCount = 2;
   return `module.exports = {
   name: ${JSON.stringify(appName)},
   script: './dist/local/_102034_/l1/server/layer_1_external/transport/http/startServer.js',
