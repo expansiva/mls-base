@@ -2,6 +2,8 @@
 // vmInit.mjs — `pnpm vm:init <id>`: one command for "start the VM, put the
 // project there (clone of mls-102039, renumbered), clone it here, ready to change and push".
 //
+// Must run on Mac (lima) AND Windows (multipass). Read mls-base/skills/crossPlatform.md first.
+//
 //   1. the lima (Mac) or multipass (Windows) instance is up and answering ssh
 //   2. the platform is on the VM (scripts/runtime/projectInit.mjs; the model is cloned from GitHub)
 //   3. the project is BORN ON THE VM — `projectInit.mjs --from-model` over ssh does it

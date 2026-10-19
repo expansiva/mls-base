@@ -1,4 +1,5 @@
 // Fontes do 102047 a partir do Mac. Não migra, não semeia e não marca a reserva como ready.
+// Must run on Mac (lima) AND Windows (multipass). Read mls-base/skills/crossPlatform.md first.
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';

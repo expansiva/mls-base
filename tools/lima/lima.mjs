@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Must run on Mac (lima) AND Windows (multipass). Read mls-base/skills/crossPlatform.md first.
 import { spawn } from 'node:child_process';
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

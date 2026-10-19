@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Launcher fino do Playwright CLI (Chromium). Não instala nada sozinho.
+// Must run on Mac (lima) AND Windows (multipass). Read mls-base/skills/crossPlatform.md first.
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { platform } from 'node:os';

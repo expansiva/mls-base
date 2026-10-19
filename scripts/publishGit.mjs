@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // scripts/publishGit.mjs — publish ONE mls-* project to the VM via git push.
 //
+// Must run on Mac (lima) AND Windows (multipass). Read mls-base/skills/crossPlatform.md first.
+//
 // Day-to-day path: change a project locally, commit, push. The VM hook
 // (gitPostReceive) compiles and either cuts a release or prints the tsc error.
 // Exit code follows the BUILD (A1: a red build can still accept the push).
