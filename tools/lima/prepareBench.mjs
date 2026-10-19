@@ -193,6 +193,19 @@ function runNode(spawn, script, cwd, env) {
   return result;
 }
 
+function onlineWorkerCounts(raw, appName) {
+  let list;
+  try {
+    list = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(list)) return null;
+  return list
+    .filter((row) => row?.name === appName && row?.pm2_env?.status === 'online')
+    .map((row) => (row.pm2_env.COLLAB_WORKER_COUNT === undefined ? null : String(row.pm2_env.COLLAB_WORKER_COUNT)));
+}
+
 function defaultPm2(spawn) {
   return {
     stop(name) {
@@ -202,6 +215,11 @@ function defaultPm2(spawn) {
     restart(configPath) {
       const result = spawn('pm2', ['restart', configPath, '--update-env'], { encoding: 'utf8' });
       if (!result || result.status !== 0) throw new Error('pm2 restart failed');
+    },
+    describe(name) {
+      const result = spawn('pm2', ['jlist'], { encoding: 'utf8' });
+      if (!result || result.status !== 0) throw new Error('pm2 jlist failed');
+      return onlineWorkerCounts(result.stdout, name);
     },
   };
 }
@@ -560,6 +578,29 @@ export async function prepareBench(input) {
       receipt.observedRelease = health?.release ?? stamp;
       throw new BenchError(receipt.error, receipt);
     }
+    const workerCounts = typeof pm2.describe === 'function'
+      ? pm2.describe(BENCH_APP)
+      : onlineWorkerCounts('', BENCH_APP);
+    const singleWorker = Array.isArray(workerCounts)
+      && workerCounts.length === 1
+      && workerCounts[0] === '1';
+    if (!singleWorker) {
+      const receipt = failedReceipt(
+        baseReceipt,
+        `workflow memory needs one online worker with COLLAB_WORKER_COUNT=1; online=${Array.isArray(workerCounts) ? workerCounts.length : 'unreadable'}`,
+      );
+      receipt.seed = baseReceipt.seed;
+      receipt.observedRelease = health.release ?? stamp;
+      receipt.healthOk = true;
+      receipt.workflowMemory = {
+        scope: 'process',
+        workers: Array.isArray(workerCounts) ? workerCounts.length : null,
+        counts: workerCounts,
+        restartLosesOccurrences: true,
+        cmIntegrated: false,
+      };
+      throw new BenchError(receipt.error, receipt);
+    }
     const receipt = {
       ...baseReceipt,
       ok: true,
@@ -569,6 +610,12 @@ export async function prepareBench(input) {
       ddlStarted: needsDdl,
       observedRelease: health.release ?? stamp,
       healthOk: true,
+      workflowMemory: {
+        scope: 'process',
+        workers: 1,
+        restartLosesOccurrences: true,
+        cmIntegrated: false,
+      },
     };
     delete receipt.error;
     delete receipt.resetSummary;

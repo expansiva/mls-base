@@ -67,6 +67,10 @@ O seed interno continua `scripts/runtime/prepareLocalTestBench.mjs` (`--member-r
 
 O recibo pronto fica no temp do Mac (`lima-receipt-<sessão>.json`), escrito só depois de todos os checks. Traz sessão, fase, instante, VM, projeto, origem `localhost`, stamp da release (`id`, `client`, `versionRef`, `platformCommit`, `libs`, `monaco`), SHAs, árvores das dependências, resultado migrate/reset, módulos, Company, personas, CMids e limites. Falha apaga o recibo pronto e deixa um diagnóstico ao lado. Não promete perfis C14/C15, aviso diário nem integração How. O alpha das duas personas permanece. A instalação npm não é reproduzível byte a byte (pin `collabLibs` do Mac; lockfile fora, Wagner 04/09).
 
+A bancada que usa a porta de memória só fica pronta com um worker online e `COLLAB_WORKER_COUNT` igual a 1, lidos do PM2 depois do health. Dois workers, worker antigo ainda online ou metadado ausente deixam a preparação não pronta e a reserva retida. O recibo traz `workflowMemory` com `scope: process`, `workers: 1`, `restartLosesOccurrences: true` e `cmIntegrated: false`. Serviço cm ou uma Task de bancada não tornam `cmIntegrated` verdadeiro.
+
+Reteste do ciclo em memória: criar uma tarefa nova depois da última preparação. Durante o ciclo não publicar nem reiniciar. `end` encerra a campanha e não grava o Map. Tarefa de outra release pode seguir sem ocorrência; este contorno não a recupera. Isso não é o aceite da porta durável no cm.
+
 ## Entrega da campanha ao tester
 
 `begin` sozinho deixa a reserva em `reserved`, e o browser só liga em `ready` (medido em 18/10/2026: `bench reservation is not ready`).

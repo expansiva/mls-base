@@ -70,8 +70,23 @@ function recordingSpawn(logFile) {
     if (cmd === process.execPath) {
       return spawnSync(cmd, args, { cwd: opts.cwd, env: opts.env, encoding: 'utf8' });
     }
-    return { status: 0, stdout: '', stderr: '' };
+    const stdout = cmd === 'pm2' && args[0] === 'jlist' ? jlistOnline([{ count: '1' }]) : '';
+    return { status: 0, stdout, stderr: '' };
   };
+}
+
+function jlistOnline(workers, extraEnv = {}) {
+  return JSON.stringify(workers.map((worker, index) => ({
+    name: worker.name ?? 'app2047',
+    pid: worker.pid ?? 4000 + index,
+    pm2_env: {
+      status: worker.status ?? 'online',
+      COLLAB_WORKER_COUNT: worker.count,
+      DATABASE_URL_TEST: SECRET_URL,
+      cookieKey: 'super-secret-cookie-value',
+      ...extraEnv,
+    },
+  })));
 }
 
 function readLog(file) {
@@ -149,8 +164,8 @@ test('migrate uses the verified release and restarts only app2047', async () => 
   assert.equal(node.project, '102047');
   assert.equal(node.hasUrl, true);
   assert.equal(JSON.stringify(log).includes('resetLocalDb'), false);
-  assert.deepEqual(log.filter((row) => row.cmd === 'pm2').map((row) => row.args[0]), ['stop', 'restart']);
-  assert.equal(log.filter((row) => row.cmd === 'pm2').every((row) => row.args.join(' ').includes('app2047') && !row.args.join(' ').includes('2043')), true);
+  assert.deepEqual(log.filter((row) => row.cmd === 'pm2').map((row) => row.args[0]), ['stop', 'restart', 'jlist']);
+  assert.equal(log.filter((row) => row.cmd === 'pm2' && row.args[0] !== 'jlist').every((row) => row.args.join(' ').includes('app2047') && !row.args.join(' ').includes('2043')), true);
   assert.equal(box.order.indexOf('seed') > box.order.indexOf('probe:before'), true);
   assert.ok(box.seedArgv[0].includes('--member-role'));
   assert.ok(box.seedArgv[0].includes('tarefas.MembroEquipe'));
@@ -162,6 +177,13 @@ test('migrate uses the verified release and restarts only app2047', async () => 
   assert.equal(readFileSync(path.join(tree.remote, '.env'), 'utf8'), envBefore);
   assert.equal(readFileSync(path.join(tree.remote, 'pm2.apps.d', 'app2043.config.js'), 'utf8'), otherBefore);
   assert.equal(receipt.cm.historyPreserved, true);
+  assert.deepEqual(receipt.workflowMemory, {
+    scope: 'process',
+    workers: 1,
+    restartLosesOccurrences: true,
+    cmIntegrated: false,
+  });
+  assert.equal(JSON.stringify(receipt).includes('bench_secret'), false);
 });
 
 test('reset is a different script and checks scope after ddl', async () => {
@@ -192,7 +214,7 @@ test('reuses a proven migrate of the same artifact', async () => {
   assert.equal(receipt.migrate.executed, false);
   const reusedLog = readLog(logFile);
   assert.equal(reusedLog.some((row) => String(row.args?.[0] || '').includes('migrate.js')), false);
-  assert.equal(reusedLog.some((row) => row.cmd === 'pm2'), false);
+  assert.deepEqual(reusedLog.filter((row) => row.cmd === 'pm2').map((row) => row.args[0]), ['jlist']);
   assert.equal(box.order.includes('seed'), true);
 });
 
@@ -295,6 +317,7 @@ test('the real session lock is awaited before ddl', async () => {
     operation: { ownerId: acquired.ownerId, operationId: begun.operationId, lockPath },
     probe: () => { probed = true; return { currentDatabase: 'collab_app_test', activity: [], externalDependents: [] }; },
     spawnSync: (cmd, args, opts) => {
+      if (cmd === 'pm2' && args[0] === 'jlist') return { status: 0, stdout: jlistOnline([{ count: '1' }]), stderr: '' };
       if (cmd === 'pm2') return { status: 0, stdout: '', stderr: '' };
       return spawnSync(cmd, args, opts);
     },
@@ -385,6 +408,7 @@ test('seed writes the manifest through the real runOnVm fs', async () => {
     waitHook: () => {},
     health: () => ({ ok: true }),
     spawnSync: (cmd, args = [], opts = {}) => {
+      if (cmd === 'pm2' && args[0] === 'jlist') return { status: 0, stdout: jlistOnline([{ count: '1' }]), stderr: '' };
       if (cmd === 'pm2') return { status: 0, stdout: '', stderr: '' };
       const script = String(args[0] ?? '');
       if (script.endsWith('seedLocalTest.js')) return { status: 0, stdout: `${JSON.stringify(mdm)}\n`, stderr: '' };
@@ -442,6 +466,45 @@ test('pg probe reads counts and does not invent a cleared scope', async () => {
   assert.equal(after.scopeCleared, true);
   assert.equal(after.seedsOk, true);
   assert.equal(client.seen.some((sql) => /insert|update|delete|drop/iu.test(sql)), false);
+});
+
+test('receipt waits for one online worker and count 1', async () => {
+  const tree = benchTree();
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const two = harness(tree, logFile, {});
+  const spawnTwo = (cmd, args = [], opts = {}) => {
+    const recorded = recordingSpawn(logFile)(cmd, args, opts);
+    if (cmd === 'pm2' && args[0] === 'jlist') {
+      return { status: 0, stdout: jlistOnline([{ count: '1' }, { count: '1', pid: 4002 }]), stderr: '' };
+    }
+    return recorded;
+  };
+  await assert.rejects(() => two.run('migrate', { spawnSync: spawnTwo }), (error) => {
+    assert.equal(error.receipt.ready, false);
+    assert.equal(error.receipt.retainLock, true);
+    assert.equal(error.receipt.workflowMemory.workers, 2);
+    assert.equal(error.receipt.workflowMemory.cmIntegrated, false);
+    assert.equal(JSON.stringify(error.receipt).includes(SECRET_URL), false);
+    assert.equal(JSON.stringify(error.receipt).includes('cookie'), false);
+    return true;
+  });
+
+  const missing = harness(benchTree(), path.join(tree.root, 'missing.ndjson'));
+  await assert.rejects(() => missing.run('migrate', {
+    spawnSync: (cmd, args = [], opts = {}) => {
+      if (cmd === 'pm2' && args[0] === 'jlist') {
+        return { status: 0, stdout: jlistOnline([{ count: undefined }]), stderr: '' };
+      }
+      if (cmd === 'pm2') return { status: 0, stdout: '', stderr: '' };
+      return spawnSync(cmd, args, opts);
+    },
+  }), (error) => {
+    assert.equal(error.receipt.ready, false);
+    assert.equal(error.receipt.retainLock, true);
+    assert.deepEqual(error.receipt.workflowMemory.counts, [null]);
+    assert.equal(JSON.stringify(error.receipt).includes('bench_secret'), false);
+    return true;
+  });
 });
 
 test('receipt stays free of the database url', () => {
