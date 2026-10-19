@@ -121,6 +121,12 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
+// A failed assertion must not leave the listener open and hang the runner.
+function stopServer(server) {
+  server.closeAllConnections();
+  if (server.listening) server.close();
+}
+
 async function reserve(tree) {
   const lockPath = path.join(tree.root, 'lima.lock');
   const acquired = await dispatch({
@@ -182,7 +188,7 @@ test('main keeps the stdin protocol and ignores health fields in the command', a
   assert.equal(JSON.parse(missingOut.text()).code, 'operation');
 });
 
-test('main probes the slot health URL through a real server and does not invent a release', async () => {
+test('main probes the slot health URL through a real server and does not invent a release', async (t) => {
   const tree = benchTree();
   const reservation = await reserve(tree);
   const slot = inspectSlot(tree.release, '102047', { existsSync, readFileSync, realpathSync });
@@ -198,6 +204,7 @@ test('main probes the slot health URL through a real server and does not invent 
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
   });
+  t.after(() => stopServer(server));
   const hits = [];
   let settled = false;
   const stdout = capture();
@@ -242,7 +249,7 @@ test('main probes the slot health URL through a real server and does not invent 
   assert.match(readFileSync(reservation.lockPath, 'utf8'), new RegExp(reservation.ownerId));
 });
 
-test('main refuses a real 200 without ok and keeps the lock', async () => {
+test('main refuses a real 200 without ok and keeps the lock', async (t) => {
   const tree = benchTree();
   const reservation = await reserve(tree);
   const before = readFileSync(reservation.lockPath);
@@ -251,6 +258,7 @@ test('main refuses a real 200 without ok and keeps the lock', async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: false }));
   });
+  t.after(() => stopServer(server));
   const hits = [];
   const stdout = capture();
   const code = await main({
