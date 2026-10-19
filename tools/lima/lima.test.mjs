@@ -56,6 +56,13 @@ if (benchCall) {
       },
     },
     limits: ['cm history preserved'],
+    ...(process.env.LIMA_HEALTH_OK === 'omit' ? {} : {
+      healthOk: process.env.LIMA_HEALTH_OK === 'false'
+        ? false
+        : process.env.LIMA_HEALTH_OK === 'string'
+          ? 'true'
+          : true,
+    }),
     ...(process.env.LIMA_RUNTIME_TOPOLOGY === 'omit' ? {} : {
       runtimeTopology: process.env.LIMA_RUNTIME_TOPOLOGY
         ? JSON.parse(process.env.LIMA_RUNTIME_TOPOLOGY)
@@ -447,6 +454,8 @@ test('prepare reaches ready, repeats migrate, refuses reset, and keeps the lock'
   const receipt = JSON.parse(readFileSync(view.receiptFile, 'utf8'));
   assert.equal(receipt.release.versionRef, 'abc');
   assert.equal(receipt.cmIds.membro, 'cm-m');
+  assert.equal(view.healthOk, true);
+  assert.equal(receipt.healthOk, true);
   assert.match(readFileSync(box.lockPath, 'utf8'), /"phase":"ready"/u);
   const again = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], env);
   assert.equal(again.code, 0, again.stderr);
@@ -514,6 +523,26 @@ test('prepare is not ready when runtime topology is missing, invalid, or diverge
     assert.match(diagnosis, /"ready":false/u, topology);
     assert.match(diagnosis, /runtime topology/u, topology);
     assert.match(readFileSync(box.lockPath, 'utf8'), /"phase":"failed"/u, topology);
+  }
+});
+
+test('prepare is not ready when bench health is absent, false, or only truthy', async () => {
+  const cases = ['omit', 'false', 'string'];
+  for (const health of cases) {
+    const box = bench();
+    const env = withStages(box, { LIMA_HEALTH_OK: health });
+    mkdirSync(box.stateDir, { recursive: true });
+    writeFileSync(join(box.stateDir, 'lima-receipt-campanha.json'), '{"ready":true,"phase":"ready"}\n');
+    const prepared = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], env);
+    assert.notEqual(prepared.code, 0, health);
+    assert.doesNotMatch(prepared.stdout, /"ready":true/u, health);
+    assert.equal(existsSync(join(box.stateDir, 'lima-receipt-campanha.json')), false, health);
+    const diagnosis = readFileSync(join(box.stateDir, 'lima-receipt-campanha.diagnosis.json'), 'utf8');
+    assert.match(diagnosis, /"ready":false/u, health);
+    assert.match(diagnosis, /health/u, health);
+    const lock = readFileSync(box.lockPath, 'utf8');
+    assert.match(lock, /"phase":"failed"/u, health);
+    assert.match(lock, /campanha/u, health);
   }
 });
 

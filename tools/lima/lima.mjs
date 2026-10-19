@@ -189,12 +189,16 @@ function buildReceipt({ parsed, profile, sources, bench }) {
     },
     limits: bench.limits || [],
     runtimeTopology: bench.runtimeTopology,
+    healthOk: bench.healthOk,
   };
   const topology = receipt.runtimeTopology;
   const topologyOk = topology !== null && typeof topology === 'object' && !Array.isArray(topology)
     && topology.expectedWorkers === 2 && topology.onlineWorkers === 2;
   if (!topologyOk) {
     throw Object.assign(new Error('receipt runtime topology is missing, invalid, or not two workers'), { code: 'receipt' });
+  }
+  if (receipt.healthOk !== true) {
+    throw Object.assign(new Error('receipt health is missing or not affirmed'), { code: 'receipt' });
   }
   if (!receipt.release || RELEASE_FIELDS.some((field) => receipt.release[field] == null || receipt.release[field] === '')) {
     throw Object.assign(new Error('receipt is missing release fields'), { code: 'receipt' });
