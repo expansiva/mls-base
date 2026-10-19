@@ -117,6 +117,8 @@ test('probe times out when headers arrive and the body never finishes', async ()
   const server = net.createServer((socket) => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
+    // The probe aborts the held body; the reset it causes here is the expected outcome.
+    socket.on('error', (error) => { if (error.code !== 'ECONNRESET') throw error; });
     socket.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n');
   });
   const port = await listen(server);
