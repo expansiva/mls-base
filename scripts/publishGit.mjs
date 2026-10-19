@@ -1234,66 +1234,67 @@ let limaControl = null;
 
 const STANDALONE_LIMA_SESSION = 'publish';
 
-function inheritedLimaRef(profile) {
-  if (!existsSync(profile.stateDir)) return null;
+function limaRefuse(message, exitCode = 1) {
+  const error = new Error(message);
+  error.exitCode = exitCode;
+  throw error;
+}
+
+function confirmedStatus(reply) {
+  if (!reply || reply.exitCode !== 0) limaRefuse('lima reservation status is uncertain');
+  const status = reply.json;
+  if (!status || status.ok !== true || typeof status.held !== 'boolean') {
+    limaRefuse('lima reservation status is uncertain');
+  }
+  return status;
+}
+
+async function limaStatus(profile, command = {}) {
+  let reply;
+  try {
+    reply = await callVm(profile, { op: 'status', ...command });
+  } catch (error) {
+    // Keep the class of failure (ssh, timeout) without echoing ssh output.
+    limaRefuse(`lima reservation status is uncertain (${error?.code || error?.name || 'error'})`);
+  }
+  return confirmedStatus(reply);
+}
+
+function listedSessionNames(profile) {
+  const names = new Set();
+  if (!existsSync(profile.stateDir)) return names;
   const prefix = `${profile.alias}--`;
-  const matches = [];
   for (const name of readdirSync(profile.stateDir)) {
     if (!name.startsWith(prefix) || !name.endsWith('.json')) continue;
     const session = name.slice(prefix.length, -'.json'.length);
-    if (session === STANDALONE_LIMA_SESSION) continue;
-    const ref = loadOwnerRef(profile, session);
-    if (ref?.operationId) matches.push(ref);
+    if (!session || session.includes('/') || session.includes('\\') || session.includes('..')) continue;
+    names.add(session);
   }
-  if (matches.length === 1) return matches[0];
-  if (matches.length > 1) {
-    const error = new Error('lima reservation is ambiguous');
-    error.exitCode = 1;
-    throw error;
+  return names;
+}
+
+function loadCanonicalRef(profile, session) {
+  if (!listedSessionNames(profile).has(session)) return null;
+  const ref = loadOwnerRef(profile, session);
+  if (!ref || ref.session !== session || ref.vm !== profile.alias || ref.projectId !== SUPPORTED_PROJECT) return null;
+  return ref;
+}
+
+function operationOf(status, operationId) {
+  if (!operationId) return null;
+  for (const item of status.operations || []) {
+    const id = typeof item === 'string' ? item : item?.id;
+    if (id === operationId) return item;
   }
   return null;
 }
 
-async function enterLimaReservation() {
-  const profile = resolveLocalProfile(ROOT);
-  const inherited = inheritedLimaRef(profile);
-  if (inherited) {
-    const reply = await callVm(profile, { op: 'status', ownerId: inherited.ownerId });
-    const status = reply.json || {};
-    if (!status.owned) {
-      const error = new Error('owner file does not match the reservation');
-      error.exitCode = 1;
-      throw error;
-    }
-    if ((status.browsers || []).length > 0) {
-      const error = new Error('browser registered; publish refused');
-      error.exitCode = 1;
-      throw error;
-    }
-    return { profile, session: inherited.session, ref: inherited, nested: true };
-  }
+function refuseUnsafeCampaign(status) {
+  if ((status.browsers || []).length > 0) limaRefuse('browser registered; publish refused');
+  if (status.phase === 'failed') limaRefuse('lima reservation occupied', 73);
+}
 
-  const own = loadOwnerRef(profile, STANDALONE_LIMA_SESSION);
-  if (own?.operationId) {
-    const error = new Error('lima reservation occupied');
-    error.exitCode = 73;
-    throw error;
-  }
-  if (own) {
-    const reply = await callVm(profile, { op: 'status', ownerId: own.ownerId });
-    const status = reply.json || {};
-    if (status.owned && (status.browsers || []).length > 0) {
-      const error = new Error('browser registered; publish refused');
-      error.exitCode = 1;
-      throw error;
-    }
-    if (status.owned && (status.phase === 'failed' || (status.operations || []).length > 0)) {
-      const error = new Error('lima reservation occupied');
-      error.exitCode = 73;
-      throw error;
-    }
-  }
-
+async function acquirePublishReservation(profile) {
   const begun = await beginSession(profile, STANDALONE_LIMA_SESSION, SUPPORTED_PROJECT);
   const started = await callVm(profile, {
     op: 'beginOperation',
@@ -1313,6 +1314,36 @@ async function enterLimaReservation() {
   const ref = { ...begun.ref, operationId: json.operationId };
   saveOwnerRef(profile, ref);
   return { profile, session: STANDALONE_LIMA_SESSION, ref, nested: false };
+}
+
+async function enterLimaReservation() {
+  const profile = resolveLocalProfile(ROOT);
+  const status = await limaStatus(profile);
+  if (status.held === false) return acquirePublishReservation(profile);
+
+  const session = status.session;
+  if (typeof session !== 'string' || !session) limaRefuse('lima reservation status is uncertain');
+  const ref = loadCanonicalRef(profile, session);
+  if (!ref || ref.projectId !== status.projectId) {
+    limaRefuse(`lima reservation belongs to session ${session}`);
+  }
+
+  const owned = await limaStatus(profile, { ownerId: ref.ownerId });
+  if (owned.held !== true || owned.owned !== true || owned.session !== ref.session || owned.projectId !== ref.projectId) {
+    limaRefuse('owner file does not match the reservation');
+  }
+  refuseUnsafeCampaign(owned);
+
+  if (session === STANDALONE_LIMA_SESSION) {
+    if ((owned.operations || []).length > 0 || ref.operationId) {
+      limaRefuse('lima reservation occupied', 73);
+    }
+    return acquirePublishReservation(profile);
+  }
+
+  const current = operationOf(owned, ref.operationId);
+  if (!current || current.uncertain === true) limaRefuse('lima reservation occupied', 73);
+  return { profile, session, ref, nested: true };
 }
 
 async function leaveLima(ctx, { retain }) {

@@ -87,7 +87,28 @@ case "\$text" in
       echo "lima ssh dropped" >&2
       exit 255
     fi
-    exec "\$COLLAB_NODE" --input-type=module - "\$json"
+    if [ -n "\$COLLAB_LIMA_STATUS_BODY" ] && [ "\$op" = "status" ]; then
+      printf '%s\\n' "\$COLLAB_LIMA_STATUS_BODY"
+      exit 0
+    fi
+    vm_in=\$(cat)
+    printf '%s' "\$vm_in" | "\$COLLAB_NODE" --input-type=module - "\$json"
+    code=\$?
+    if [ -n "\$COLLAB_LIMA_ONCE" ] && [ "\$op" = "status" ] && [ ! -f "\$COLLAB_LIMA_ONCE" ]; then
+      : > "\$COLLAB_LIMA_ONCE"
+      if [ -n "\$COLLAB_LIMA_RACE_SESSION" ]; then
+        race=\$(printf '{"op":"acquire","session":"%s","projectId":"102047","origin":"test","lockPath":"%s"}' "\$COLLAB_LIMA_RACE_SESSION" "\$LIMA_LOCK_PATH")
+        printf '%s' "\$vm_in" | "\$COLLAB_NODE" --input-type=module - "\$race" >/dev/null
+      fi
+      if [ -n "\$COLLAB_LIMA_STEAL_SESSION" ]; then
+        owner=\$("\$COLLAB_NODE" -e "const fs=require('fs'); const s=JSON.parse(fs.readFileSync(process.env.LIMA_LOCK_PATH,'utf8')); process.stdout.write(s.ownerId||'')")
+        rec=\$(printf '{"op":"recover","expectedOwnerId":"%s","proof":{"hook":false,"operation":false,"browser":false},"lockPath":"%s"}' "\$owner" "\$LIMA_LOCK_PATH")
+        printf '%s' "\$vm_in" | "\$COLLAB_NODE" --input-type=module - "\$rec" >/dev/null
+        steal=\$(printf '{"op":"acquire","session":"%s","projectId":"102047","origin":"test","lockPath":"%s"}' "\$COLLAB_LIMA_STEAL_SESSION" "\$LIMA_LOCK_PATH")
+        printf '%s' "\$vm_in" | "\$COLLAB_NODE" --input-type=module - "\$steal" >/dev/null
+      fi
+    fi
+    exit "\$code"
     ;;
   *git-receive-pack*) sub=receive-pack ;;
   *git-upload-pack*) sub=upload-pack ;;
@@ -597,7 +618,7 @@ test('lima reservation: other owner, browser, inherited operation, dropped finis
     assert.equal(other.ok, true);
     let refused = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'other' });
     assert.notEqual(refused.code, 0);
-    assert.match(refused.err, /session busy/);
+    assert.match(refused.err, /belongs to session tester-a/);
     assert.doesNotMatch(refused.err, /ownerId/);
     assert.deepEqual(gitLog(bench, 'other'), []);
     assert.equal(head(remote), base);
@@ -638,6 +659,12 @@ test('lima reservation: other owner, browser, inherited operation, dropped finis
     saveOwnerRef(limaProfile(bench), {
       vm: 'lima-ubuntu24', session: 'camp', projectId: '102047', ownerId: camp.ownerId, operationId: operation.operationId,
     });
+    saveOwnerRef(limaProfile(bench), {
+      vm: 'lima-ubuntu24', session: 'old-camp', projectId: '102047', ownerId: 'a'.repeat(32), operationId: 'deadbeef',
+    });
+    saveOwnerRef(limaProfile(bench), {
+      vm: 'lima-ubuntu24', session: 'publish', projectId: '102047', ownerId: 'b'.repeat(32), operationId: 'cafebabe',
+    });
     writeFileSync(join(bench.root, 'lima.log'), '');
     const joined = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'inherit' });
     assert.equal(joined.code, 0, joined.err);
@@ -648,6 +675,8 @@ test('lima reservation: other owner, browser, inherited operation, dropped finis
     const held = JSON.parse(readFileSync(lockPath, 'utf8'));
     assert.equal(held.operations.length, 1);
     assert.equal(held.operations[0].id, operation.operationId);
+    assert.ok(existsSync(join(bench.root, 'lima-state', 'lima-ubuntu24--old-camp.json')));
+    assert.ok(existsSync(join(bench.root, 'lima-state', 'lima-ubuntu24--publish.json')));
     assert.notEqual(head(remote), base);
     await dispatch({
       op: 'finishOperation', ownerId: camp.ownerId, operationId: operation.operationId, phase: 'ready', lockPath,
@@ -676,6 +705,178 @@ test('lima reservation: other owner, browser, inherited operation, dropped finis
     assert.notEqual(remoteRun.code, 0);
     assert.equal(head(remoteOnly.remote), kept);
     assert.deepEqual(limaLog(bench), []);
+  } finally {
+    rmSync(bench.root, { recursive: true, force: true });
+  }
+});
+
+function proof() {
+  return { hook: false, operation: false, browser: false };
+}
+
+function staleRef(session, operationId = 'deadbeef') {
+  return { vm: 'lima-ubuntu24', session, projectId: '102047', ownerId: 'c'.repeat(32), operationId };
+}
+
+test('lima reservation: recover, end leftover, missing op, failed, uncertain status, race and steal', { timeout: 60000 }, async () => {
+  const bench = makeBench();
+  const lockPath = join(bench.root, 'lima.lock');
+  const profile = limaProfile(bench);
+  try {
+    const id = '102047';
+    const { local, remote } = pair(bench, id);
+    const base = head(remote);
+    const shaRecover = commitFile(local, 'r.txt', 'r\n', 'r');
+
+    const camp = await dispatch({
+      op: 'acquire', session: 'tester-ts02', projectId: '102047', origin: 'test', lockPath,
+    });
+    const op = await dispatch({
+      op: 'beginOperation', ownerId: camp.ownerId, name: 'prepare', phase: 'preparing', lockPath,
+    });
+    saveOwnerRef(profile, {
+      vm: 'lima-ubuntu24', session: 'tester-ts02', projectId: '102047', ownerId: camp.ownerId, operationId: op.operationId,
+    });
+    saveOwnerRef(profile, staleRef('old-a'));
+    saveOwnerRef(profile, staleRef('publish', 'cafebabe'));
+    const recovered = await dispatch({
+      op: 'recover', expectedOwnerId: camp.ownerId, proof: proof(), lockPath,
+    });
+    assert.equal(recovered.held, false);
+    assert.ok(existsSync(join(profile.stateDir, 'lima-ubuntu24--tester-ts02.json')));
+    const published = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'recover' });
+    assert.equal(published.code, 0, published.err);
+    assert.equal(head(remote), shaRecover);
+    assert.equal(existsSync(lockPath), false);
+    assert.ok(limaLog(bench).includes('acquire'));
+    assert.ok(limaLog(bench).includes('beginOperation'));
+    assert.ok(limaLog(bench).includes('finishOperation'));
+    assert.ok(existsSync(join(profile.stateDir, 'lima-ubuntu24--tester-ts02.json')));
+    assert.ok(existsSync(join(profile.stateDir, 'lima-ubuntu24--old-a.json')));
+
+    const ended = await dispatch({
+      op: 'acquire', session: 'tester-end', projectId: '102047', origin: 'test', lockPath,
+    });
+    await dispatch({ op: 'end', ownerId: ended.ownerId, lockPath });
+    saveOwnerRef(profile, {
+      vm: 'lima-ubuntu24', session: 'tester-end', projectId: '102047', ownerId: ended.ownerId, operationId: 'gone',
+    });
+    const shaEnd = commitFile(local, 'e.txt', 'e\n', 'e');
+    const afterEnd = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'after-end' });
+    assert.equal(afterEnd.code, 0, afterEnd.err);
+    assert.equal(head(remote), shaEnd);
+    assert.equal(existsSync(lockPath), false);
+
+    const missing = await dispatch({
+      op: 'acquire', session: 'camp-miss', projectId: '102047', origin: 'test', lockPath,
+    });
+    const liveOp = await dispatch({
+      op: 'beginOperation', ownerId: missing.ownerId, name: 'prepare', phase: 'preparing', lockPath,
+    });
+    saveOwnerRef(profile, {
+      vm: 'lima-ubuntu24', session: 'camp-miss', projectId: '102047', ownerId: missing.ownerId, operationId: 'not-in-status',
+    });
+    const beforeMiss = head(remote);
+    let refused = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'miss-op' });
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.err, /occupied/);
+    assert.deepEqual(gitLog(bench, 'miss-op'), []);
+    assert.equal(head(remote), beforeMiss);
+    assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).operations[0].id, liveOp.operationId);
+    await dispatch({
+      op: 'finishOperation', ownerId: missing.ownerId, operationId: liveOp.operationId, phase: 'ready', lockPath,
+    });
+    await dispatch({ op: 'end', ownerId: missing.ownerId, lockPath });
+
+    const failedOwner = await dispatch({
+      op: 'acquire', session: 'camp-fail', projectId: '102047', origin: 'test', lockPath,
+    });
+    const failOp = await dispatch({
+      op: 'beginOperation', ownerId: failedOwner.ownerId, name: 'prepare', phase: 'preparing', lockPath,
+    });
+    await dispatch({
+      op: 'finishOperation', ownerId: failedOwner.ownerId, operationId: failOp.operationId, uncertain: true, lockPath,
+    });
+    saveOwnerRef(profile, {
+      vm: 'lima-ubuntu24', session: 'camp-fail', projectId: '102047', ownerId: failedOwner.ownerId, operationId: failOp.operationId,
+    });
+    refused = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'failed' });
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.err, /occupied/);
+    assert.equal(head(remote), beforeMiss);
+    assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).phase, 'failed');
+    await dispatch({
+      op: 'recover', expectedOwnerId: failedOwner.ownerId, proof: proof(), lockPath,
+    });
+
+    const sshDrop = await runCli(bench, [id, 'local', ...flags(bench)], {
+      actor: 'ssh-drop',
+      extraEnv: { COLLAB_LIMA_FAIL_OP: 'status' },
+    });
+    assert.notEqual(sshDrop.code, 0);
+    assert.match(sshDrop.err, /uncertain/);
+    assert.deepEqual(gitLog(bench, 'ssh-drop'), []);
+    assert.ok(existsSync(join(profile.stateDir, 'lima-ubuntu24--old-a.json')));
+
+    const badJson = await runCli(bench, [id, 'local', ...flags(bench)], {
+      actor: 'bad-json',
+      extraEnv: { COLLAB_LIMA_STATUS_BODY: 'not-json' },
+    });
+    assert.notEqual(badJson.code, 0);
+    assert.match(badJson.err, /uncertain/);
+
+    const noHeld = await runCli(bench, [id, 'local', ...flags(bench)], {
+      actor: 'no-held',
+      extraEnv: { COLLAB_LIMA_STATUS_BODY: '{"ok":true}' },
+    });
+    assert.notEqual(noHeld.code, 0);
+    assert.match(noHeld.err, /uncertain/);
+
+    writeFileSync(lockPath, '{incomplete\n');
+    const incomplete = await runCli(bench, [id, 'local', ...flags(bench)], { actor: 'incomplete' });
+    assert.notEqual(incomplete.code, 0);
+    assert.match(incomplete.err, /uncertain/);
+    assert.equal(readFileSync(lockPath, 'utf8'), '{incomplete\n');
+    rmSync(lockPath, { force: true });
+
+    const raceOnce = join(bench.root, 'race.once');
+    const raced = await runCli(bench, [id, 'local', ...flags(bench)], {
+      actor: 'race',
+      extraEnv: {
+        COLLAB_LIMA_ONCE: raceOnce,
+        COLLAB_LIMA_RACE_SESSION: 'tester-race',
+      },
+    });
+    assert.notEqual(raced.code, 0);
+    assert.deepEqual(gitLog(bench, 'race'), []);
+    const racedLock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    assert.equal(racedLock.session, 'tester-race');
+    await dispatch({
+      op: 'recover', expectedOwnerId: racedLock.ownerId, proof: proof(), lockPath,
+    });
+
+    const live = await dispatch({
+      op: 'acquire', session: 'camp-live', projectId: '102047', origin: 'test', lockPath,
+    });
+    const livePrep = await dispatch({
+      op: 'beginOperation', ownerId: live.ownerId, name: 'prepare', phase: 'preparing', lockPath,
+    });
+    saveOwnerRef(profile, {
+      vm: 'lima-ubuntu24', session: 'camp-live', projectId: '102047', ownerId: live.ownerId, operationId: livePrep.operationId,
+    });
+    const stealOnce = join(bench.root, 'steal.once');
+    const stolen = await runCli(bench, [id, 'local', ...flags(bench)], {
+      actor: 'steal',
+      extraEnv: {
+        COLLAB_LIMA_ONCE: stealOnce,
+        COLLAB_LIMA_STEAL_SESSION: 'camp-thief',
+      },
+    });
+    assert.notEqual(stolen.code, 0);
+    assert.match(stolen.err, /owner file does not match/);
+    assert.deepEqual(gitLog(bench, 'steal'), []);
+    assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).session, 'camp-thief');
+    assert.equal(head(remote), shaEnd);
   } finally {
     rmSync(bench.root, { recursive: true, force: true });
   }
