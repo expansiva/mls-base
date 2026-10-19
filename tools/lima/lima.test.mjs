@@ -403,7 +403,7 @@ const log = process.env.LIMA_STAGE_LOG;
 const note = (line) => appendFileSync(log, line + '\\n');
 export async function planLocalSources() {
   note('plan');
-  return { rootSha: 'root', appSha: 'app', pin: { libs: 'pin' }, deps: [], blocked: [] };
+  return { rootSha: 'root', appSha: 'app', pin: { libs: 'pin' }, deps: [{ id: '102033', sha: 'dep', tree: 'deptree', subject: 'reload on draft cookie change' }], blocked: [] };
 }
 export async function prepareSources(input) {
   note('sources:' + input.db);
@@ -556,6 +556,7 @@ test('dry-run does not reserve, publish, or seed', async () => {
   assert.equal(view.held, false);
   assert.equal(view.db, 'migrate');
   assert.equal(view.plan.rootSha, 'root');
+  assert.deepEqual(view.plan.deps, [{ id: '102033', sha: 'dep', tree: 'deptree' }]);
   assert.equal(existsSync(box.lockPath), false);
   assert.equal(readFileSync(stageLogOf(env), 'utf8').trim(), 'plan');
   assert.equal(existsSync(join(box.stateDir, 'lima-receipt-campanha.json')), false);

@@ -305,7 +305,8 @@ export async function runPrepare(parsed, profile, env = process.env) {
         rootSha: plan.rootSha,
         appSha: plan.appSha,
         pin: plan.pin,
-        deps: plan.deps,
+        // Commit subjects are free text and trip the secret check; sha and tree identify the dependency.
+        deps: Array.isArray(plan.deps) ? plan.deps.map(({ id, sha, tree }) => ({ id, sha, tree })) : plan.deps,
         blocked: plan.blocked,
       },
       planError,
