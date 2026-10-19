@@ -24,9 +24,22 @@ function scratch() {
   return dir;
 }
 
+const WIN = process.platform === 'win32';
+
 function writeExe(file, body) {
   writeFileSync(file, body);
   chmodSync(file, 0o755);
+}
+
+// A fake command found through PATH. Windows does not run a shebang file: the shell
+// finds `<name>.cmd`, which hands the args to node. `body` is node code (CommonJS).
+function writeNodeCommand(dir, name, body) {
+  if (!WIN) {
+    writeExe(path.join(dir, name), `#!/usr/bin/env node\n${body}`);
+    return;
+  }
+  writeFileSync(path.join(dir, `${name}.cjs`), body);
+  writeFileSync(path.join(dir, `${name}.cmd`), `@"${process.execPath}" "%~dp0${name}.cjs" %*\r\n`);
 }
 
 function installFakeCli(root) {
@@ -62,7 +75,7 @@ function pnpmSentinel(dir) {
   const bin = path.join(dir, 'bin');
   mkdirSync(bin);
   const sentinel = path.join(dir, 'pnpm-called');
-  writeExe(path.join(bin, 'pnpm'), `#!/bin/sh\ntouch ${JSON.stringify(sentinel)}\nexit 0\n`);
+  writeNodeCommand(bin, 'pnpm', `require('fs').writeFileSync(${JSON.stringify(sentinel)}, '');\n`);
   return { bin, sentinel };
 }
 
@@ -87,9 +100,9 @@ function readLog(file) {
   return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
+// A .cjs, run by session.mjs under node (spawnArgsFor): the same fake on every platform.
 function writeFakeSsh(file) {
-  writeExe(file, `#!/usr/bin/env node
-const { spawn } = require('child_process');
+  writeFileSync(file, `const { spawn } = require('child_process');
 const remote = process.argv[process.argv.length - 1];
 const match = /^node --input-type=module - ([\\s\\S]+)$/.exec(remote);
 if (!match) {
@@ -108,7 +121,7 @@ async function makeBench(campaign = 'codex-ts01') {
   const stateDir = path.join(dir, 'state');
   mkdirSync(stateDir, { mode: 0o700 });
   const lockPath = path.join(dir, 'lima.lock');
-  const sshBin = path.join(dir, 'ssh');
+  const sshBin = path.join(dir, 'ssh.cjs');
   writeFakeSsh(sshBin);
   const project = path.join(dir, 'proj');
   mkdirSync(project);
@@ -160,8 +173,7 @@ test('setup no Mac é explícito, isolado e só pede o Chromium', async () => {
   const meta = mkdtempSync(path.join(tmpdir(), 'rt74-pnpm-'));
   const pnpmLog = path.join(meta, 'pnpm.jsonl');
   const pwLog = path.join(meta, 'pw.jsonl');
-  writeExe(path.join(meta, 'pnpm'), `#!/usr/bin/env node
-const fs = require('fs');
+  writeNodeCommand(meta, 'pnpm', `const fs = require('fs');
 const path = require('path');
 fs.appendFileSync(process.env.RT74_PNPM_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
 const dir = process.argv[process.argv.indexOf('--dir') + 1];
@@ -227,6 +239,11 @@ test('recusa outro motor, attach, CDP, close-all e perfil humano sem subir o CLI
   const home = path.join(root, 'home');
   const human = path.join(home, 'Library', 'Application Support', 'Firefox', 'Profiles', 'x');
   const chromeProfile = path.join(home, 'Library', 'Application Support', 'Chromium', 'Default');
+  const localAppData = path.join(home, 'AppData', 'Local');
+  const roamingAppData = path.join(home, 'AppData', 'Roaming');
+  const winChrome = path.join(localAppData, 'Google', 'Chrome', 'User Data', 'Default');
+  const winEdge = path.join(localAppData, 'Microsoft', 'Edge', 'User Data', 'Default');
+  const winFirefox = path.join(roamingAppData, 'Mozilla', 'Firefox', 'Profiles', 'x');
   const cases = [
     ['-s=codex-rt74-1', 'open', '--browser=chrome'],
     ['-s=codex-rt74-1', 'attach', '--cdp=http://127.0.0.1:9'],
@@ -236,9 +253,14 @@ test('recusa outro motor, attach, CDP, close-all e perfil humano sem subir o CLI
     ['kill-all'],
     ['-s=codex-rt74-1', 'open', '--profile', human],
     ['-s=codex-rt74-1', 'open', '--profile', chromeProfile],
+    ['-s=codex-rt74-1', 'open', '--profile', winChrome],
+    ['-s=codex-rt74-1', 'open', '--profile', winEdge],
+    ['-s=codex-rt74-1', 'open', '--profile', winFirefox],
   ];
   for (const args of cases) {
-    const result = await run(root, args, { RT74_LOG: log, HOME: home });
+    const result = await run(root, args, {
+      RT74_LOG: log, HOME: home, LOCALAPPDATA: localAppData, APPDATA: roamingAppData,
+    });
     assert.notEqual(result.code, 0, args.join(' '));
     assert.equal(existsSync(log), false, args.join(' '));
   }
@@ -365,7 +387,12 @@ test('timeout encerra só a sessão nomeada e não vira sucesso', async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test('interrupção também fecha só a sessão nomeada', async () => {
+test('interrupção também fecha só a sessão nomeada', async (t) => {
+  if (WIN) {
+    // child.kill('SIGINT') on Windows is TerminateProcess: no handler runs, nothing to observe.
+    t.skip('SIGINT cannot be delivered to a child on Windows');
+    return;
+  }
   const root = scratch();
   installFakeCli(root);
   const bench = await makeBench();
@@ -418,10 +445,11 @@ test('scripts da raiz encaminham os argumentos e o id da sessão', async () => {
   const existed = existsSync(bin);
   const nmExisted = existsSync(nm);
   const previous = existed ? readFileSync(bin) : null;
-  installFakeCli(HERE);
-  const bench = await makeBench();
-  const log = path.join(mkdtempSync(path.join(tmpdir(), 'rt74-script-')), 'log');
   try {
+    // Inside the try: a failure here must not leave the fake CLI in the real package.
+    installFakeCli(HERE);
+    const bench = await makeBench();
+    const log = path.join(mkdtempSync(path.join(tmpdir(), 'rt74-script-')), 'log');
     const opened = await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [path.join(HERE, 'browser.mjs'), '--lima-session', bench.campaign, '-s=codex-rt74-script', 'open', 'http://localhost:2047'], {
         cwd: repo,
@@ -435,7 +463,10 @@ test('scripts da raiz encaminham os argumentos e o id da sessão', async () => {
     });
     assert.equal(opened.code, 0, opened.stderr);
     const result = await new Promise((resolve, reject) => {
-      const child = spawn('pnpm', ['run', 'browser', '--', '-s=codex-rt74-script', 'fill', 'e1', 'ola mundo'], {
+      // pnpm is a .cmd on Windows: only the shell runs it, and the shell joins the args.
+      const spaced = WIN ? '"ola mundo"' : 'ola mundo';
+      const child = spawn('pnpm', ['run', 'browser', '--', '-s=codex-rt74-script', 'fill', 'e1', spaced], {
+        shell: WIN,
         cwd: repo,
         env: { ...process.env, ...bench.env, RT74_LOG: log },
         stdio: ['ignore', 'pipe', 'pipe'],

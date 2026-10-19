@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readDepIds, snapshotTree } from '../../scripts/publishGitDeps.mjs';
-import { loadOwnerRef, shQuote, statusSession } from './session.mjs';
+import { loadOwnerRef, shQuote, spawnArgsFor, statusSession } from './session.mjs';
 
 export const PROJECT_ID = '102047';
 export const VM_ROOT = '/data/mls-base';
@@ -109,7 +109,8 @@ function ssh(profile, command, options) {
   const sshBin = options.sshBin || process.env.LIMA_SSH_BIN || 'ssh';
   const timeoutMs = options.timeoutMs ?? 120000;
   return new Promise((resolve) => {
-    const child = spawn(sshBin, ['-F', profile.sshConfig, profile.alias, command], {
+    const [bin, binArgs] = spawnArgsFor(sshBin, ['-F', profile.sshConfig, profile.alias, command]);
+    const child = spawn(bin, binArgs, {
       env: { ...process.env, ...options.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -140,13 +141,18 @@ function ssh(profile, command, options) {
   });
 }
 
+// git runs GIT_SSH_COMMAND in sh on every platform: quoted, with `/` (Windows accepts it too).
+function shPath(value) {
+  return shQuote(String(value).replaceAll('\\', '/'));
+}
+
 async function pushRoot(root, profile, capturedSha, remoteSha, options) {
   const url = `ssh://${profile.alias}${VM_ROOT}`;
   const sshBin = options.sshBin || process.env.LIMA_SSH_BIN || 'ssh';
   const env = {
     ...process.env,
     ...options.env,
-    GIT_SSH_COMMAND: `${shQuote(sshBin)} -F ${shQuote(profile.sshConfig)}`,
+    GIT_SSH_COMMAND: `${spawnArgsFor(sshBin, []).flat().map(shPath).join(' ')} -F ${shPath(profile.sshConfig)}`,
   };
   return git(root, [
     'push',

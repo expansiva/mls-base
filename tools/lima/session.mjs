@@ -110,9 +110,19 @@ function vmSource() {
   return `${source}\nconst __limaCmd = JSON.parse(process.argv[process.argv.length - 1]);\nconst __limaResult = await dispatch(__limaCmd);\nprocess.stdout.write(JSON.stringify(__limaResult) + '\\n');\nprocess.exit(__limaResult.exitCode ?? (__limaResult.ok ? 0 : 1));\n`;
 }
 
+/**
+ * [command, args] to spawn. A LIMA_SSH_BIN / LIMA_BROWSER_BIN that is a node script (the
+ * test fakes) runs under this node: Windows spawns only real executables, never a shebang file.
+ */
+export function spawnArgsFor(bin, args) {
+  if (/\.[cm]?js$/iu.test(bin)) return [process.execPath, [bin, ...args]];
+  return [bin, args];
+}
+
 function runProcess(spawnFn, cmd, args, { input, timeoutMs, env }) {
   return new Promise((resolvePromise) => {
-    const child = spawnFn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], env });
+    const [bin, binArgs] = spawnArgsFor(cmd, args);
+    const child = spawnFn(bin, binArgs, { stdio: ['pipe', 'pipe', 'pipe'], env });
     const out = [];
     const err = [];
     let timed = false;

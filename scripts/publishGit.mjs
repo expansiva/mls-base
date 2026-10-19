@@ -294,11 +294,17 @@ function gitOut(cwd, args, env) {
   return result.stdout.trim();
 }
 
+// O git roda GIT_SSH_COMMAND num sh (também no Windows): `\` sem aspas some e
+// `C:\Users\x` vira `C:Usersx`. Barra normal serve aos dois mundos; aspas seguram espaço.
+function sshPathArg(path) {
+  return `'${String(path).replaceAll('\\', '/').replaceAll("'", `'\\''`)}'`;
+}
+
 function gitEnv(conf) {
   const env = { ...process.env };
   const parts = ['ssh'];
-  if (conf.SSH_CONFIG) parts.push('-F', conf.SSH_CONFIG);
-  if (conf.CERT) parts.push('-i', conf.CERT);
+  if (conf.SSH_CONFIG) parts.push('-F', sshPathArg(conf.SSH_CONFIG));
+  if (conf.CERT) parts.push('-i', sshPathArg(conf.CERT));
   if (parts.length > 1) env.GIT_SSH_COMMAND = parts.join(' ');
   return env;
 }

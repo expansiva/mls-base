@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
@@ -85,11 +85,10 @@ function bench() {
   const stateDir = join(root, 'state');
   const lockPath = join(root, 'lima.lock');
   const sshLog = join(root, 'ssh.log');
-  const sshBin = join(root, 'ssh');
-  const sshScript = join(root, 'ssh.mjs');
+  // A .mjs runs under node (session.mjs spawnArgsFor): no sh wrapper, so Windows runs it too.
+  const sshBin = join(root, 'ssh.mjs');
   writeFileSync(sshConfig, 'Host lima-ubuntu24\n  HostName 127.0.0.1\n');
-  writeFileSync(sshScript, sshFakeSource());
-  writeFileSync(sshBin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(sshScript)} "$@"\n`, { mode: 0o755 });
+  writeFileSync(sshBin, sshFakeSource(), { mode: 0o755 });
   writeFileSync(join(root, '.env'), [
     'PUBLISH_LOCAL_SSH_HOST=127.0.0.1',
     `PUBLISH_LOCAL_SSH_CONFIG=${sshConfig}`,
@@ -142,7 +141,8 @@ test('PUBLISH_LOCAL_SSH_CONFIG expands $HOME and ${HOME}', () => {
     const root = mkdtempSync(join(tmpdir(), 'lima-s2-home-'));
     writeFileSync(join(root, '.env'), `PUBLISH_LOCAL_SSH_CONFIG=${value}\n`);
     const profile = resolveLocalProfile(root, env);
-    assert.equal(profile.sshConfig, sshConfig);
+    // resolve() only normalizes separators: on Windows the expanded $HOME brings `\`, the rest `/`.
+    assert.equal(resolve(profile.sshConfig), sshConfig);
   }
 });
 
@@ -169,7 +169,10 @@ test('ssh bench receives quoted argv and stdin, and the reservation survives the
   assert.equal(log.hasDispatch, true);
   const ref = loadOwnerRef(box.profile, 'campanha-a');
   assert.equal(typeof ref.ownerId, 'string');
-  assert.equal((statSync(join(box.stateDir, 'lima-ubuntu24--campanha-a.json')).mode & 0o777), 0o600);
+  // Windows has no POSIX mode bits (it reports 0o666); there the user profile ACL guards the temp dir.
+  if (process.platform !== 'win32') {
+    assert.equal((statSync(join(box.stateDir, 'lima-ubuntu24--campanha-a.json')).mode & 0o777), 0o600);
+  }
   const status = await runCli(['status', '--session', 'campanha-a'], box.env);
   assert.equal(status.code, 0, status.stderr);
   const again = JSON.parse(status.stdout);
@@ -292,8 +295,8 @@ test('browser bind uses the owner file and ignores a foreign id', async () => {
   const bound = await bindLimaBrowser(box.profile, 'browsers', 'campanha-responsavel', box.options);
   assert.equal(bound.phase, 'testing');
   assert.deepEqual(bound.browsers, ['campanha-responsavel']);
-  const browserBin = join(box.root, 'browser');
-  writeFileSync(browserBin, '#!/bin/sh\nprintf "%s\\n" "$@" >> "$LIMA_BROWSER_LOG"\nexit 1\n', { mode: 0o755 });
+  const browserBin = join(box.root, 'browser.cjs');
+  writeFileSync(browserBin, "require('fs').appendFileSync(process.env.LIMA_BROWSER_LOG, process.argv.slice(2).map((a) => a + '\\n').join(''));\nprocess.exit(1);\n");
   const browserLog = join(box.root, 'browser.log');
   const open = await runCli(['end', '--session', 'browsers'], {
     ...box.env,
@@ -335,10 +338,8 @@ fs.appendFileSync(process.env.RT74_LOG, JSON.stringify({ args, cmd: command() })
 if (command() === 'close') process.exit(process.env.RT74_CLOSE_CODE ? Number(process.env.RT74_CLOSE_CODE) : 0);
 process.exit(0);
 `);
-  const bin = join(box.root, 'browser-launcher');
-  writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(pack, 'browser.mjs'))} "$@"\n`, { mode: 0o755 });
-  chmodSync(bin, 0o755);
-  return bin;
+  // session.mjs runs a .mjs LIMA_BROWSER_BIN under node, as the old sh wrapper did with exec.
+  return join(pack, 'browser.mjs');
 }
 
 function runLauncher(box, args, env) {

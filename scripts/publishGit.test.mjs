@@ -4,7 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   autocommitDirty,
   alignmentDecision,
@@ -16,6 +16,7 @@ import {
   disconnectAppliedMessage,
   ensureBookkeepingGitignore,
   formatPublishClientConfigTail,
+  gitEnvFor,
   isDirty,
   isPushDisconnect,
   makeRebuildCommit,
@@ -99,7 +100,7 @@ test('parseArgs accepts clone <local|remote>', () => {
 
 test('remoteConfMissingMessage names the file to create, not a stack', () => {
   const msg = remoteConfMissingMessage(MLS_BASE);
-  assert.match(msg, /servers\/remote\.conf/);
+  assert.match(msg, /servers[\\/]remote\.conf/);
   assert.match(msg, /remote\.conf\.example/);
   assert.match(msg, /SSH_HOST/);
   assert.doesNotMatch(msg, /Error:/);
@@ -318,7 +319,7 @@ test('publishGit clone remote without conf names the file to create', () => {
     cwd: MLS_BASE,
   });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /servers\/remote\.conf/);
+  assert.match(result.stderr, /servers[\\/]remote\.conf/);
   assert.match(result.stderr, /remote\.conf\.example/);
   assert.doesNotMatch(result.stderr, /^\s*at /m);
 });
@@ -661,7 +662,7 @@ test('guard local libera em desfecho conhecido e retém disconnect/sinal durante
   const tmp = mkdtempSync(join(tmpdir(), 'rt73-guard-'));
   const root = mkdtempSync(join(tmp, 'root-'));
   const child = `
-    import { createLocalPublishGuard } from ${JSON.stringify(SCRIPT)};
+    import { createLocalPublishGuard } from ${JSON.stringify(pathToFileURL(SCRIPT).href)};
     const guard = createLocalPublishGuard({ tmpRoot: process.env.TMP });
     const got = await guard.begin(process.env.ROOT);
     if (process.env.MODE === 'push' || process.env.MODE === 'disconnect' || process.env.MODE === 'marker') {
@@ -720,9 +721,15 @@ test('guard local libera em desfecho conhecido e retém disconnect/sinal durante
     held.kill('SIGTERM');
     const code = await new Promise((resolvePromise) => held.on('exit', resolvePromise));
     assert.notEqual(code, 0);
-    const meta = JSON.parse(readFileSync(join(dir, 'owner.json'), 'utf8'));
-    assert.equal(meta.retained, true);
-    assert.match(meta.diagnosis, /SIGTERM/);
+    // No Windows o kill é TerminateProcess: nenhum handler roda e o owner.json não ganha o
+    // diagnóstico. O que protege é o mesmo: o lock não é liberado.
+    if (process.platform === 'win32') {
+      assert.equal(existsSync(dir), true);
+    } else {
+      const meta = JSON.parse(readFileSync(join(dir, 'owner.json'), 'utf8'));
+      assert.equal(meta.retained, true);
+      assert.match(meta.diagnosis, /SIGTERM/);
+    }
     rmSync(dir, { recursive: true, force: true });
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -759,4 +766,25 @@ test('noteTsconfigPaths adiciona paths e diz que é setup, não agente', () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('GIT_SSH_COMMAND keeps Windows paths intact through the sh git runs it in', (t) => {
+  const conf = {
+    SSH_HOST: 'h',
+    SSH_CONFIG: "C:\\Users\\Jo O'Neil\\.ssh\\collab-vm.config",
+    CERT: '/home/u/key file.pem',
+  };
+  const command = gitEnvFor(conf).GIT_SSH_COMMAND;
+  assert.equal(
+    command,
+    `ssh -F 'C:/Users/Jo O'\\''Neil/.ssh/collab-vm.config' -i '/home/u/key file.pem'`,
+  );
+  const sh = spawnSync('sh', ['-c', command.replace(/^ssh /u, `printf '%s\\n' `)], { encoding: 'utf8' });
+  if (sh.error) {
+    t.skip('no sh on PATH');
+    return;
+  }
+  assert.deepEqual(sh.stdout.trimEnd().split('\n'), [
+    '-F', "C:/Users/Jo O'Neil/.ssh/collab-vm.config", '-i', '/home/u/key file.pem',
+  ]);
 });

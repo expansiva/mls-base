@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { dispatch } from './sessionVm.mjs';
 import {
   BenchError, PROBE_ACTIVITY_SQL, PROBE_COUNT_SQL, PROBE_DATABASE_SQL, PROBE_DEPENDENTS_SQL, PROBE_SCOPE_SQL, prepareBench, probeWithPg,
@@ -280,7 +281,7 @@ test('vm stdin refuses a missing operation before any ddl', () => {
     resetBody: 'require("fs").writeFileSync(process.env.BENCH_DDL_MARKER, "ran\\n"); process.exit(0);\n',
   });
   const marker = path.join(tree.root, 'ddl-ran');
-  const child = spawnSync(process.execPath, [new URL('./prepareBench.mjs', import.meta.url).pathname], {
+  const child = spawnSync(process.execPath, [fileURLToPath(new URL('./prepareBench.mjs', import.meta.url))], {
     input: JSON.stringify({
       db: 'reset',
       projectId: '102047',

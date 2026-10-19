@@ -17,6 +17,7 @@ import {
   refuseRemoteArgv,
   resolveLocalProfile,
   saveOwnerRef,
+  spawnArgsFor,
   statusSession,
 } from './session.mjs';
 
@@ -217,7 +218,8 @@ async function loadStages(env) {
 
 function runSsh(sshBin, args, input, timeoutMs, env) {
   return new Promise((resolvePromise) => {
-    const child = spawn(sshBin, args, { stdio: ['pipe', 'pipe', 'pipe'], env });
+    const [bin, binArgs] = spawnArgsFor(sshBin, args);
+    const child = spawn(bin, binArgs, { stdio: ['pipe', 'pipe', 'pipe'], env });
     const out = [];
     const err = [];
     let timed = false;

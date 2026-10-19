@@ -2,7 +2,7 @@
 // vmInit.mjs — `pnpm vm:init <id>`: one command for "start the VM, put the
 // project there (clone of mls-102039, renumbered), clone it here, ready to change and push".
 //
-//   1. the lima instance is up and answering ssh
+//   1. the lima (Mac) or multipass (Windows) instance is up and answering ssh
 //   2. the platform is on the VM (scripts/runtime/projectInit.mjs; the model is cloned from GitHub)
 //   3. the project is BORN ON THE VM — `projectInit.mjs --from-model` over ssh does it
 //   4. the Mac clones it (publishGit <id> clone <profile>)
@@ -77,6 +77,26 @@ export function limaInstanceOf(conf, env = process.env) {
   return basename(dirname(config));
 }
 
+// Windows (Hyper-V) uses multipass instead of lima. The .env already carries the
+// instance name; lima wins when both are identifiable, so the Mac path is unchanged.
+export function multipassInstanceOf(conf) {
+  return (conf.MULTIPASS_INSTANCE || '').trim();
+}
+
+/** State of `instance` in `multipass info --format json` output, or '' when absent/unreadable. */
+export function multipassStateOf(jsonText, instance) {
+  try {
+    return String(JSON.parse(jsonText)?.info?.[instance]?.state || '');
+  } catch {
+    return '';
+  }
+}
+
+// `sleep` is not a program on Windows and spawnSync runs without a shell.
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 function run(command, args, opts = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', ...opts });
   const out = `${result.stdout ?? ''}${result.stderr ?? ''}`;
@@ -130,6 +150,21 @@ function ensureLima(instance) {
   if (started.code !== 0) fail(`limactl start ${instance} failed (exit ${started.code}).`);
 }
 
+function ensureMultipass(instance) {
+  const info = run('multipass', ['info', instance, '--format', 'json']);
+  if (info.code !== 0) {
+    fail(`multipass info ${instance} failed — is multipass installed and the instance created?\n${info.out.trim()}`);
+  }
+  const state = multipassStateOf(info.out, instance);
+  if (state === 'Running') {
+    log(`multipass ${instance}: already running`);
+    return;
+  }
+  log(`multipass ${instance}: ${state || 'unknown'} → multipass start`);
+  const started = run('multipass', ['start', instance], { stdio: ['ignore', 'inherit', 'inherit'] });
+  if (started.code !== 0) fail(`multipass start ${instance} failed (exit ${started.code}).`);
+}
+
 function waitForSsh(conf, seconds = SSH_WAIT_SECONDS) {
   const deadline = Date.now() + seconds * 1000;
   for (;;) {
@@ -137,7 +172,7 @@ function waitForSsh(conf, seconds = SSH_WAIT_SECONDS) {
     if (Date.now() >= deadline) {
       fail(`the VM did not answer ssh in ${seconds}s (host ${conf.SSH_HOST}).`);
     }
-    run('sleep', ['2']);
+    sleepMs(2000);
   }
 }
 
@@ -196,8 +231,10 @@ async function main() {
 
   if (profile === 'local') {
     const instance = limaInstanceOf(conf);
+    const multipass = multipassInstanceOf(conf);
     if (instance) ensureLima(instance);
-    else log('local profile with no identifiable lima instance — assuming the VM is already up');
+    else if (multipass) ensureMultipass(multipass);
+    else log('local profile with no identifiable lima or multipass instance — assuming the VM is already up');
   }
   waitForSsh(conf);
   ensurePlatform(conf, base);

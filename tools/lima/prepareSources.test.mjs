@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -47,6 +47,8 @@ const argv = process.argv.slice(2);
 const remote = argv[argv.length - 1] || '';
 appendFileSync(process.env.PREPARE_SSH_LOG, (process.env.PREPARE_TOUCH || '-') + ' ' + remote + '\\n');
 const vm = process.env.PREPARE_VM;
+// Commands below go through sh, which eats the backslashes of a Windows path.
+const vmSh = vm.replaceAll('\\\\', '/');
 const mac = process.env.PREPARE_MAC;
 if (remote.startsWith('node --input-type=module')) {
   const chunks = [];
@@ -87,11 +89,11 @@ if (remote.startsWith('node --input-type=module')) {
   process.stdout.write(before + '\\n');
 } else if (process.env.PREPARE_TOUCH === 'dirty' && remote === 'git -C /data/mls-base rev-parse HEAD') {
   writeFileSync(join(mac, 'raced.txt'), 'x');
-  const cmd = remote.replaceAll('/data/mls-base', vm);
+  const cmd = remote.replaceAll('/data/mls-base', vmSh);
   const child = spawn('sh', ['-c', cmd], { stdio: 'inherit' });
   child.on('close', (code) => process.exit(code ?? 1));
 } else {
-  const cmd = remote.replaceAll('/data/mls-base', vm);
+  const cmd = remote.replaceAll('/data/mls-base', vmSh);
   const child = spawn('sh', ['-c', cmd], { stdio: 'inherit' });
   child.on('close', (code) => process.exit(code ?? 1));
 }
@@ -112,15 +114,13 @@ function bench(mode = {}) {
   const stateDir = join(root, 'state');
   const sshConfig = join(root, 'ssh_config');
   const sshLog = join(root, 'ssh.log');
-  const sshBin = join(root, 'ssh');
-  const sshScript = join(root, 'ssh.mjs');
+  // A .mjs runs under node (session.mjs spawnArgsFor): no sh wrapper, so Windows runs it too.
+  const sshBin = join(root, 'ssh.mjs');
   const pm2 = join(root, 'pm2.json');
   const pinPath = join(root, 'pin.json');
   const lockPath = join(root, 'lima.lock');
   writeFileSync(sshConfig, 'Host lima-ubuntu24\n  HostName 127.0.0.1\n');
-  writeFileSync(sshScript, sshSource());
-  writeFileSync(sshBin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(sshScript)} "$@"\n`);
-  chmodSync(sshBin, 0o755);
+  writeFileSync(sshBin, sshSource());
   writeFileSync(sshLog, '');
   writePm2(pm2);
   writeFileSync(pinPath, JSON.stringify(PIN));
@@ -147,7 +147,9 @@ function bench(mode = {}) {
     id: RELEASE_ID, client: '102047', versionRef: appSha, platformCommit: rootSha, libs: PIN.libs, monaco: PIN.monaco,
   };
   writeFileSync(join(release, 'release.json'), JSON.stringify(stamp));
-  symlinkSync(join('releases', RELEASE_ID), join(vm, 'current-102047'));
+  // Windows needs admin/Developer Mode for a symlink; a junction (absolute target) needs neither.
+  if (process.platform === 'win32') symlinkSync(release, join(vm, 'current-102047'), 'junction');
+  else symlinkSync(join('releases', RELEASE_ID), join(vm, 'current-102047'));
   const env = {
     ...gitEnv,
     LIMA_SSH_BIN: sshBin,

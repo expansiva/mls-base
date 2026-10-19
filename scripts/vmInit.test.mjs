@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { limaInstanceOf, parseArgs, projectInitCommand } from './vmInit.mjs';
+import { limaInstanceOf, multipassInstanceOf, multipassStateOf, parseArgs, projectInitCommand } from './vmInit.mjs';
 
 test('parseArgs: defaults are the local profile; the model is the only source', () => {
   assert.deepEqual(parseArgs(['102043']), {
@@ -18,6 +18,15 @@ test('limaInstanceOf: the instance is the folder of the ssh.config', () => {
     limaInstanceOf({ SSH_CONFIG: '/Users/x/.lima/ubuntu24/ssh.config' }, { PUBLISH_LOCAL_LIMA_INSTANCE: 'outra' }),
     'outra',
   );
+});
+
+test('multipass: the instance comes from the local conf; the state is read from info --format json', () => {
+  assert.equal(multipassInstanceOf({ MULTIPASS_INSTANCE: ' ubuntu-server ' }), 'ubuntu-server');
+  assert.equal(multipassInstanceOf({}), '');
+  const info = JSON.stringify({ errors: [], info: { 'ubuntu-server': { state: 'Stopped' } } });
+  assert.equal(multipassStateOf(info, 'ubuntu-server'), 'Stopped');
+  assert.equal(multipassStateOf(info, 'outra'), '');
+  assert.equal(multipassStateOf('not json', 'ubuntu-server'), '');
 });
 
 // The Mac side does not know HOW a project is born any more — it only names the VM-side

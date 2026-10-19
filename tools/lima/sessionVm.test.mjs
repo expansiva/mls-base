@@ -75,8 +75,11 @@ test('concurrent acquires have one winner and the reservation survives the CLI',
     const deniedStatus = await runCli(lockPath, { op: 'status', ownerId: 'f'.repeat(32) });
     assert.equal(deniedStatus.json.owned, false);
     assertNoOwnerId(deniedStatus.json, ownerId);
-    assert.equal(statSync(lockPath).mode & 0o777, 0o600);
-    assert.equal(statSync(dirname(lockPath)).mode & 0o777, 0o700);
+    // sessionVm runs on the Linux VM; a local Windows run has no POSIX mode bits to check.
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(lockPath).mode & 0o777, 0o600);
+      assert.equal(statSync(dirname(lockPath)).mode & 0o777, 0o700);
+    }
 
     const visible = status.json;
     const [endAttempt, operationAttempt, browserAttempt] = await Promise.all([

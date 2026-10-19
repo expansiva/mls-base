@@ -17,6 +17,8 @@ const SETUP_MS = numEnv('BROWSER_TOOL_SETUP_MS', 600_000);
 const CLEANUP_MS = numEnv('BROWSER_TOOL_CLEANUP_MS', 5_000);
 const IDLE_MS = 300_000;
 const HOST_PLATFORM = process.env.BROWSER_TOOL_PLATFORM || platform();
+// The tester's machine. Linux is the VM side, where nothing is installed.
+const SETUP_PLATFORMS = new Set(['darwin', 'win32']);
 
 const GLOBAL = new Set(['help', 'version', 'list']);
 const VALUE_FLAGS = new Set([
@@ -103,9 +105,9 @@ async function helpAndForward() {
 function localHelp() {
   const self = path.join(ROOT, 'browser.mjs');
   return [
-    'tools/browser — Playwright CLI with Chromium, on the Mac.',
+    'tools/browser — Playwright CLI with Chromium, on the Mac or Windows.',
     '',
-    'setup (once, darwin only; not run by a normal command):',
+    'setup (once, darwin or win32; not run by a normal command):',
     `  node ${self} setup`,
     '',
     'Named session, reused for the round (do not mint a new id per command):',
@@ -126,14 +128,16 @@ function localHelp() {
 }
 
 async function setup() {
-  if (HOST_PLATFORM !== 'darwin') {
-    console.error(`setup installs only on the Mac (darwin). This system is ${HOST_PLATFORM}; nothing was installed.`);
+  if (!SETUP_PLATFORMS.has(HOST_PLATFORM)) {
+    console.error(`setup installs only on the Mac (darwin) or Windows (win32). This system is ${HOST_PLATFORM}; nothing was installed.`);
     return 1;
   }
   const deadline = Date.now() + SETUP_MS;
+  // On Windows pnpm is a .cmd shim, which spawn only runs through the shell (args joined, so ROOT is quoted).
+  const viaShell = process.platform === 'win32';
   const install = await runChild('pnpm', [
-    '--dir', ROOT, 'install', '--ignore-workspace', '--ignore-scripts',
-  ], { cwd: ROOT, env: process.env, deadline });
+    '--dir', viaShell ? `"${ROOT}"` : ROOT, 'install', '--ignore-workspace', '--ignore-scripts',
+  ], { cwd: ROOT, env: process.env, deadline, shell: viaShell });
   if (install.code !== 0 || install.timed || interrupted) {
     console.error(install.timed ? 'Setup timed out during pnpm install.' : 'pnpm install of the tools/browser package failed.');
     return 1;
@@ -239,6 +243,16 @@ function isHumanProfile(p) {
     '/Applications/Google Chrome.app',
     '/Applications/Chromium.app',
   ];
+  const local = process.env.LOCALAPPDATA || '';
+  const roaming = process.env.APPDATA || '';
+  if (local) {
+    roots.push(
+      path.join(local, 'Google', 'Chrome', 'User Data'),
+      path.join(local, 'Chromium', 'User Data'),
+      path.join(local, 'Microsoft', 'Edge', 'User Data'),
+    );
+  }
+  if (roaming) roots.push(path.join(roaming, 'Mozilla', 'Firefox'));
   return roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
 }
 
@@ -416,12 +430,12 @@ function interrupt() {
   if (cleaning) process.exit(1);
 }
 
-function runChild(cmd, cmdArgs, { cwd, env, timeoutMs, deadline }) {
+function runChild(cmd, cmdArgs, { cwd, env, timeoutMs, deadline, shell = false }) {
   const budget = timeoutMs ?? Math.max(1, deadline - Date.now());
   return new Promise((resolve) => {
     let timed = false;
     let settled = false;
-    const child = spawn(cmd, cmdArgs, { cwd, env, stdio: 'inherit' });
+    const child = spawn(cmd, cmdArgs, { cwd, env, stdio: 'inherit', shell });
     children.add(child);
     const timer = setTimeout(() => {
       timed = true;
