@@ -78,12 +78,13 @@ export function declaredTestMode(root, projectId) {
   }
 }
 
-function envBlock(projectId, port, msgProxyTarget, databaseUrlTestExprText, localTestSession) {
+function envBlock(projectId, port, msgProxyTarget, databaseUrlTestExprText, localTestSession, workerCount) {
   const lines = [
     "    NODE_ENV: 'production',",
     "    TZ: 'UTC',",
     `    PORT: ${JSON.stringify(String(port))},`,
-    `    COLLAB_PROJECT_ID: ${JSON.stringify(String(projectId))}`,
+    `    COLLAB_PROJECT_ID: ${JSON.stringify(String(projectId))},`,
+    `    COLLAB_WORKER_COUNT: ${JSON.stringify(String(workerCount))}`,
   ];
   if (msgProxyTarget) {
     lines[lines.length - 1] += ",";
@@ -104,16 +105,17 @@ function envBlock(projectId, port, msgProxyTarget, databaseUrlTestExprText, loca
 /** Conteúdo de pm2.apps.d/app<porta>.config.js. */
 export function pm2AppConfig(projectId, port, remoteBase, msgProxyTarget, databaseUrlTest = false, localTestSession) {
   const appName = appNameOf(port);
+  const workerCount = databaseUrlTest && localTestSession ? 1 : 2;
   return `module.exports = {
   name: ${JSON.stringify(appName)},
   script: './dist/local/_102034_/l1/server/layer_1_external/transport/http/startServer.js',
   cwd: ${JSON.stringify(`${remoteBase}/${releaseAliasOf(projectId)}`)},
-  instances: 2,
+  instances: ${workerCount},
   exec_mode: 'cluster',
   watch: false,
   kill_timeout: 180000,
   env: {
-${envBlock(projectId, port, msgProxyTarget, databaseUrlTest ? databaseUrlTestExpr(remoteBase) : '', localTestSession)}
+${envBlock(projectId, port, msgProxyTarget, databaseUrlTest ? databaseUrlTestExpr(remoteBase) : '', localTestSession, workerCount)}
   },
   log_date_format: 'YYYY-MM-DDTHH:mm:ss',
   out_file: ${JSON.stringify(`${remoteBase}/logs/${appName}-out.log`)},
