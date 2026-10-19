@@ -420,6 +420,7 @@ export async function prepareBench(input) {
       'humans and cm ids are reused; previous MDM ids are not promised after reset',
       'after reset open new browser jars; do not reuse storage from an older campaign',
       'health does not accept UI or product scenarios',
+      'infrastructure preparation does not prove durable integration; the cycle waits for a specific receipt',
     ],
   };
 
@@ -578,27 +579,30 @@ export async function prepareBench(input) {
       receipt.observedRelease = health?.release ?? stamp;
       throw new BenchError(receipt.error, receipt);
     }
-    const workerCounts = typeof pm2.describe === 'function'
-      ? pm2.describe(BENCH_APP)
-      : onlineWorkerCounts('', BENCH_APP);
-    const singleWorker = Array.isArray(workerCounts)
-      && workerCounts.length === 1
-      && workerCounts[0] === '1';
-    if (!singleWorker) {
+    let workerCounts;
+    let describeError;
+    try {
+      workerCounts = typeof pm2.describe === 'function'
+        ? pm2.describe(BENCH_APP)
+        : onlineWorkerCounts('', BENCH_APP);
+    } catch (error) {
+      workerCounts = null;
+      const message = error instanceof Error ? error.message : String(error);
+      describeError = redact(message.split('\n')[0]);
+    }
+    const onlineWorkers = Array.isArray(workerCounts) ? workerCounts.length : null;
+    const runtimeTopology = { expectedWorkers: 2, onlineWorkers };
+    const topologyOk = onlineWorkers === 2 && workerCounts.every((count) => count === '2');
+    if (!topologyOk) {
+      const cause = describeError ? `; ${describeError}` : '';
       const receipt = failedReceipt(
         baseReceipt,
-        `workflow memory needs one online worker with COLLAB_WORKER_COUNT=1; online=${Array.isArray(workerCounts) ? workerCounts.length : 'unreadable'}`,
+        `runtime topology needs two online workers with COLLAB_WORKER_COUNT=2; online=${onlineWorkers === null ? 'unreadable' : onlineWorkers}${cause}`,
       );
       receipt.seed = baseReceipt.seed;
       receipt.observedRelease = health.release ?? stamp;
       receipt.healthOk = true;
-      receipt.workflowMemory = {
-        scope: 'process',
-        workers: Array.isArray(workerCounts) ? workerCounts.length : null,
-        counts: workerCounts,
-        restartLosesOccurrences: true,
-        cmIntegrated: false,
-      };
+      receipt.runtimeTopology = runtimeTopology;
       throw new BenchError(receipt.error, receipt);
     }
     const receipt = {
@@ -610,12 +614,7 @@ export async function prepareBench(input) {
       ddlStarted: needsDdl,
       observedRelease: health.release ?? stamp,
       healthOk: true,
-      workflowMemory: {
-        scope: 'process',
-        workers: 1,
-        restartLosesOccurrences: true,
-        cmIntegrated: false,
-      },
+      runtimeTopology,
     };
     delete receipt.error;
     delete receipt.resetSummary;

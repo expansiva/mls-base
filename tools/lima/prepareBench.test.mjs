@@ -70,7 +70,9 @@ function recordingSpawn(logFile) {
     if (cmd === process.execPath) {
       return spawnSync(cmd, args, { cwd: opts.cwd, env: opts.env, encoding: 'utf8' });
     }
-    const stdout = cmd === 'pm2' && args[0] === 'jlist' ? jlistOnline([{ count: '1' }]) : '';
+    const stdout = cmd === 'pm2' && args[0] === 'jlist'
+      ? jlistOnline([{ count: '2' }, { count: '2', pid: 4001 }])
+      : '';
     return { status: 0, stdout, stderr: '' };
   };
 }
@@ -177,12 +179,10 @@ test('migrate uses the verified release and restarts only app2047', async () => 
   assert.equal(readFileSync(path.join(tree.remote, '.env'), 'utf8'), envBefore);
   assert.equal(readFileSync(path.join(tree.remote, 'pm2.apps.d', 'app2043.config.js'), 'utf8'), otherBefore);
   assert.equal(receipt.cm.historyPreserved, true);
-  assert.deepEqual(receipt.workflowMemory, {
-    scope: 'process',
-    workers: 1,
-    restartLosesOccurrences: true,
-    cmIntegrated: false,
-  });
+  assert.deepEqual(receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers: 2 });
+  assert.equal(JSON.stringify(receipt).includes('workflowMemory'), false);
+  assert.equal(JSON.stringify(receipt).includes('cmIntegrated'), false);
+  assert.equal(receipt.limits.some((line) => line.includes('does not prove durable integration')), true);
   assert.equal(JSON.stringify(receipt).includes('bench_secret'), false);
 });
 
@@ -317,7 +317,7 @@ test('the real session lock is awaited before ddl', async () => {
     operation: { ownerId: acquired.ownerId, operationId: begun.operationId, lockPath },
     probe: () => { probed = true; return { currentDatabase: 'collab_app_test', activity: [], externalDependents: [] }; },
     spawnSync: (cmd, args, opts) => {
-      if (cmd === 'pm2' && args[0] === 'jlist') return { status: 0, stdout: jlistOnline([{ count: '1' }]), stderr: '' };
+      if (cmd === 'pm2' && args[0] === 'jlist') return { status: 0, stdout: jlistOnline([{ count: '2' }, { count: '2', pid: 4001 }]), stderr: '' };
       if (cmd === 'pm2') return { status: 0, stdout: '', stderr: '' };
       return spawnSync(cmd, args, opts);
     },
@@ -408,7 +408,7 @@ test('seed writes the manifest through the real runOnVm fs', async () => {
     waitHook: () => {},
     health: () => ({ ok: true }),
     spawnSync: (cmd, args = [], opts = {}) => {
-      if (cmd === 'pm2' && args[0] === 'jlist') return { status: 0, stdout: jlistOnline([{ count: '1' }]), stderr: '' };
+      if (cmd === 'pm2' && args[0] === 'jlist') return { status: 0, stdout: jlistOnline([{ count: '2' }, { count: '2', pid: 4001 }]), stderr: '' };
       if (cmd === 'pm2') return { status: 0, stdout: '', stderr: '' };
       const script = String(args[0] ?? '');
       if (script.endsWith('seedLocalTest.js')) return { status: 0, stdout: `${JSON.stringify(mdm)}\n`, stderr: '' };
@@ -468,41 +468,68 @@ test('pg probe reads counts and does not invent a cleared scope', async () => {
   assert.equal(client.seen.some((sql) => /insert|update|delete|drop/iu.test(sql)), false);
 });
 
-test('receipt waits for one online worker and count 1', async () => {
-  const tree = benchTree();
-  const logFile = path.join(tree.root, 'log.ndjson');
-  const two = harness(tree, logFile, {});
-  const spawnTwo = (cmd, args = [], opts = {}) => {
-    const recorded = recordingSpawn(logFile)(cmd, args, opts);
-    if (cmd === 'pm2' && args[0] === 'jlist') {
-      return { status: 0, stdout: jlistOnline([{ count: '1' }, { count: '1', pid: 4002 }]), stderr: '' };
-    }
-    return recorded;
+test('receipt accepts two workers and refuses a broken topology', async () => {
+  const refuse = async (workers, logName, onlineWorkers) => {
+    const tree = benchTree();
+    const box = harness(tree, path.join(tree.root, logName));
+    await assert.rejects(() => box.run('migrate', {
+      spawnSync: (cmd, args = [], opts = {}) => {
+        const recorded = recordingSpawn(path.join(tree.root, logName))(cmd, args, opts);
+        if (cmd === 'pm2' && args[0] === 'jlist') {
+          return { status: 0, stdout: jlistOnline(workers), stderr: '' };
+        }
+        return recorded;
+      },
+    }), (error) => {
+      assert.equal(error.receipt.ready, false);
+      assert.equal(error.receipt.retainLock, true);
+      assert.deepEqual(error.receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers });
+      assert.equal(JSON.stringify(error.receipt).includes('workflowMemory'), false);
+      assert.equal(JSON.stringify(error.receipt).includes('cmIntegrated'), false);
+      assert.equal(JSON.stringify(error.receipt).includes('durable plan'), false);
+      assert.equal(error.receipt.limits.some((line) => line.includes('does not prove durable integration')), true);
+      assert.equal(JSON.stringify(error.receipt).includes(SECRET_URL), false);
+      assert.equal(JSON.stringify(error.receipt).includes('cookie'), false);
+      assert.equal(JSON.stringify(error.receipt).includes('bench_secret'), false);
+      return true;
+    });
   };
-  await assert.rejects(() => two.run('migrate', { spawnSync: spawnTwo }), (error) => {
-    assert.equal(error.receipt.ready, false);
-    assert.equal(error.receipt.retainLock, true);
-    assert.equal(error.receipt.workflowMemory.workers, 2);
-    assert.equal(error.receipt.workflowMemory.cmIntegrated, false);
-    assert.equal(JSON.stringify(error.receipt).includes(SECRET_URL), false);
-    assert.equal(JSON.stringify(error.receipt).includes('cookie'), false);
-    return true;
-  });
 
-  const missing = harness(benchTree(), path.join(tree.root, 'missing.ndjson'));
-  await assert.rejects(() => missing.run('migrate', {
+  await refuse([{ count: '2' }], 'one.ndjson', 1);
+  await refuse([{ count: '2' }, { count: '1', pid: 4002 }], 'divergent.ndjson', 2);
+  await refuse([{ count: undefined }, { count: undefined, pid: 4002 }], 'missing.ndjson', 2);
+
+  const tree = benchTree();
+  await assert.rejects(() => harness(tree, path.join(tree.root, 'invalid.ndjson')).run('migrate', {
     spawnSync: (cmd, args = [], opts = {}) => {
-      if (cmd === 'pm2' && args[0] === 'jlist') {
-        return { status: 0, stdout: jlistOnline([{ count: undefined }]), stderr: '' };
-      }
+      if (cmd === 'pm2' && args[0] === 'jlist') return { status: 0, stdout: 'not-json', stderr: '' };
       if (cmd === 'pm2') return { status: 0, stdout: '', stderr: '' };
       return spawnSync(cmd, args, opts);
     },
   }), (error) => {
     assert.equal(error.receipt.ready, false);
     assert.equal(error.receipt.retainLock, true);
-    assert.deepEqual(error.receipt.workflowMemory.counts, [null]);
-    assert.equal(JSON.stringify(error.receipt).includes('bench_secret'), false);
+    assert.deepEqual(error.receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers: null });
+    assert.equal(JSON.stringify(error.receipt).includes('workflowMemory'), false);
+    return true;
+  });
+
+  const thrownTree = benchTree();
+  await assert.rejects(() => harness(thrownTree, path.join(thrownTree.root, 'describe-throws.ndjson')).run('migrate', {
+    pm2: {
+      stop() {},
+      restart() {},
+      describe() {
+        throw new Error('pm2 jlist failed\n    at defaultPm2 (/secret/stack.js:1:1)');
+      },
+    },
+  }), (error) => {
+    assert.equal(error.receipt.ready, false);
+    assert.equal(error.receipt.retainLock, true);
+    assert.deepEqual(error.receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers: null });
+    assert.match(error.receipt.error, /pm2 jlist failed/);
+    assert.equal(error.receipt.error.includes('at defaultPm2'), false);
+    assert.equal(JSON.stringify(error.receipt).includes('workflowMemory'), false);
     return true;
   });
 });
