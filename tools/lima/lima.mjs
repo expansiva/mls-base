@@ -188,10 +188,13 @@ function buildReceipt({ parsed, profile, sources, bench }) {
       membro: personas.membro?.cmUserId || null,
     },
     limits: bench.limits || [],
-    workflowMemory: bench.workflowMemory,
+    runtimeTopology: bench.runtimeTopology,
   };
-  if (!receipt.workflowMemory || typeof receipt.workflowMemory !== 'object') {
-    throw Object.assign(new Error('receipt is missing workflow memory topology'), { code: 'receipt' });
+  const topology = receipt.runtimeTopology;
+  const topologyOk = topology !== null && typeof topology === 'object' && !Array.isArray(topology)
+    && topology.expectedWorkers === 2 && topology.onlineWorkers === 2;
+  if (!topologyOk) {
+    throw Object.assign(new Error('receipt runtime topology is missing, invalid, or not two workers'), { code: 'receipt' });
   }
   if (!receipt.release || RELEASE_FIELDS.some((field) => receipt.release[field] == null || receipt.release[field] === '')) {
     throw Object.assign(new Error('receipt is missing release fields'), { code: 'receipt' });

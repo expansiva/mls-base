@@ -56,8 +56,10 @@ if (benchCall) {
       },
     },
     limits: ['cm history preserved'],
-    ...(process.env.LIMA_OMIT_WORKFLOW_MEMORY === '1' ? {} : {
-      workflowMemory: { scope: 'process', workers: 1, restartLosesOccurrences: true, cmIntegrated: false },
+    ...(process.env.LIMA_RUNTIME_TOPOLOGY === 'omit' ? {} : {
+      runtimeTopology: process.env.LIMA_RUNTIME_TOPOLOGY
+        ? JSON.parse(process.env.LIMA_RUNTIME_TOPOLOGY)
+        : { expectedWorkers: 2, onlineWorkers: 2 },
     }),
   }) + '\\n');
   process.exit(0);
@@ -478,33 +480,41 @@ function stageLogOf(env) {
   return env.LIMA_STAGE_LOG;
 }
 
-test('prepare receipt carries workflowMemory from the bench', async () => {
+test('prepare receipt carries runtimeTopology from the bench', async () => {
   const box = bench();
   const env = withStages(box);
   const prepared = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], env);
   assert.equal(prepared.code, 0, prepared.stderr);
   const view = JSON.parse(prepared.stdout);
   const receipt = JSON.parse(readFileSync(view.receiptFile, 'utf8'));
-  assert.deepEqual(receipt.workflowMemory, {
-    scope: 'process',
-    workers: 1,
-    restartLosesOccurrences: true,
-    cmIntegrated: false,
-  });
+  assert.deepEqual(receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers: 2 });
+  assert.equal(Object.hasOwn(receipt, 'workflowMemory'), false);
 });
 
-test('prepare is not ready when the bench omits workflowMemory', async () => {
-  const box = bench();
-  const env = withStages(box, { LIMA_OMIT_WORKFLOW_MEMORY: '1' });
-  mkdirSync(box.stateDir, { recursive: true });
-  writeFileSync(join(box.stateDir, 'lima-receipt-campanha.json'), '{"ready":true,"phase":"ready"}\n');
-  const prepared = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], env);
-  assert.notEqual(prepared.code, 0);
-  assert.doesNotMatch(prepared.stdout, /"ready":true/u);
-  assert.equal(existsSync(join(box.stateDir, 'lima-receipt-campanha.json')), false);
-  const diagnosis = readFileSync(join(box.stateDir, 'lima-receipt-campanha.diagnosis.json'), 'utf8');
-  assert.match(diagnosis, /"ready":false/u);
-  assert.match(diagnosis, /workflow memory topology/u);
+test('prepare is not ready when runtime topology is missing, invalid, or divergent', async () => {
+  const cases = [
+    'omit',
+    'null',
+    '"workers"',
+    '{"expectedWorkers":2}',
+    '{"expectedWorkers":2,"onlineWorkers":1}',
+    '{"expectedWorkers":1,"onlineWorkers":1}',
+    '{"expectedWorkers":"2","onlineWorkers":2}',
+  ];
+  for (const topology of cases) {
+    const box = bench();
+    const env = withStages(box, { LIMA_RUNTIME_TOPOLOGY: topology });
+    mkdirSync(box.stateDir, { recursive: true });
+    writeFileSync(join(box.stateDir, 'lima-receipt-campanha.json'), '{"ready":true,"phase":"ready"}\n');
+    const prepared = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], env);
+    assert.notEqual(prepared.code, 0, topology);
+    assert.doesNotMatch(prepared.stdout, /"ready":true/u, topology);
+    assert.equal(existsSync(join(box.stateDir, 'lima-receipt-campanha.json')), false, topology);
+    const diagnosis = readFileSync(join(box.stateDir, 'lima-receipt-campanha.diagnosis.json'), 'utf8');
+    assert.match(diagnosis, /"ready":false/u, topology);
+    assert.match(diagnosis, /runtime topology/u, topology);
+    assert.match(readFileSync(box.lockPath, 'utf8'), /"phase":"failed"/u, topology);
+  }
 });
 
 test('dry-run does not reserve, publish, or seed', async () => {
