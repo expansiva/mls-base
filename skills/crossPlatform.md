@@ -1,9 +1,8 @@
 # Skill: Mac and Windows — the dev-machine scripts run on both
 
 The scripts that run on the developer's machine must work on **macOS (lima VM)** and on
-**Windows (multipass/Hyper-V VM)**. Wagner, 19/10/2026: "deve funcionar no Mac e no Windows".
-Before changing any of them, read this page; after changing, run its tests on the platform you are
-on, and do not break the other one.
+**Windows (multipass/Hyper-V VM)** (decided 19/10/2026). Before changing any of them, read this
+page; after changing, run its tests on the platform you are on, and do not break the other one.
 
 Scope (dev-machine side only; code that runs on the VM is Linux-only):
 
