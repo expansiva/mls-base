@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -329,4 +329,293 @@ test('a raced edit aborts before push and a refused lease stays uncertain', asyn
     assert.equal(result.sent, true);
   });
   assert.equal(readFileSync(join(lease.mac, '.git', 'HEAD'), 'utf8').length > 0, true);
+});
+
+const OBJ_SUBJECT = 'chore: remove obj/ (build happens on the VM)';
+const REBUILD_SUBJECT = 'publish: rebuild after deps 102034';
+
+function appOf(box) {
+  return join(box.mac, 'mls-102047');
+}
+
+function rememberRelease(box, sha) {
+  const release = join(box.vm, 'releases', RELEASE_ID, 'release.json');
+  const stamp = JSON.parse(readFileSync(release, 'utf8'));
+  stamp.versionRef = sha;
+  writeFileSync(release, JSON.stringify(stamp));
+}
+
+function publishResult(box, sha) {
+  rememberRelease(box, sha);
+  return {
+    code: 0,
+    text: `##gitBackend build=ok release=${RELEASE_ID} project=mls-102047##\n`,
+    uncertain: false,
+  };
+}
+
+function trackObj(repo, gitignore) {
+  mkdirSync(join(repo, 'obj'), { recursive: true });
+  writeFileSync(join(repo, 'obj', 'compiled.zip'), 'compiled');
+  writeFileSync(join(repo, 'obj', 'source.zip'), 'source');
+  if (gitignore === undefined) writeFileSync(join(repo, '.gitignore'), '/obj/\n');
+  else if (gitignore !== null) writeFileSync(join(repo, '.gitignore'), gitignore);
+  const add = ['.gitignore', 'obj/compiled.zip', 'obj/source.zip'].filter((name) => name !== '.gitignore' || gitignore !== null);
+  git(repo, ['add', '-f', '--', ...add]);
+  git(repo, ['commit', '-m', 'ci obj']);
+  return git(repo, ['rev-parse', 'HEAD']);
+}
+
+function removeTrackedObj(repo, gitignore) {
+  if (gitignore !== undefined) writeFileSync(join(repo, '.gitignore'), gitignore);
+  const args = ['add', '--'];
+  if (gitignore !== undefined) args.push('.gitignore');
+  git(repo, args.length > 2 ? args : ['add', '--', '.gitignore']);
+  git(repo, ['rm', '-r', '--cached', '--ignore-unmatch', '--', 'obj']);
+  rmSync(join(repo, 'obj'), { recursive: true, force: true });
+  git(repo, ['commit', '-m', OBJ_SUBJECT, '--', 'obj', '.gitignore']);
+  return git(repo, ['rev-parse', 'HEAD']);
+}
+
+async function duringPublish(box, mutate) {
+  let finalSha = '';
+  await held(box, async () => {
+    const result = await prepareSources({
+      root: box.mac,
+      profile: box.profile,
+      session: 'codex-s5',
+      env: box.env,
+      sshBin: box.options.sshBin,
+      lockPath: box.options.lockPath,
+      spawnPublish: () => {
+        finalSha = mutate(box) || git(appOf(box), ['rev-parse', 'HEAD']);
+        return publishResult(box, finalSha);
+      },
+    });
+    box.result = result;
+  });
+  return { result: box.result, finalSha };
+}
+
+test('publisher obj cleanup and empty rebuild keep the captured sources', async () => {
+  const tracked = bench();
+  const initial = trackObj(appOf(tracked));
+  const beforePlan = await planLocalSources(tracked.mac, PROJECT_ID, tracked.env);
+  const trackedRun = await duringPublish(tracked, () => removeTrackedObj(appOf(tracked)));
+  assert.equal(trackedRun.result.ok, true);
+  assert.equal(trackedRun.result.ready, false);
+  assert.equal(trackedRun.result.evidence.initialAppSha, initial);
+  assert.equal(trackedRun.result.evidence.finalAppSha, trackedRun.finalSha);
+  assert.notEqual(trackedRun.result.evidence.finalAppSha, initial);
+  assert.equal(trackedRun.result.evidence.release.versionRef, trackedRun.finalSha);
+  const sameTree = await planLocalSources(tracked.mac, PROJECT_ID, tracked.env);
+  assert.equal(sameTree.appSha, trackedRun.finalSha);
+  assert.equal(sameTree.appTree, beforePlan.appTree);
+
+  const created = bench();
+  trackObj(appOf(created), null);
+  const createdRun = await duringPublish(created, () => removeTrackedObj(appOf(created), '/obj/\n'));
+  assert.equal(createdRun.result.ok, true);
+  assert.equal(readFileSync(join(appOf(created), '.gitignore'), 'utf8'), '/obj/\n');
+  assert.equal(createdRun.result.evidence.release.versionRef, createdRun.finalSha);
+
+  const glued = bench();
+  trackObj(appOf(glued), 'dist');
+  const gluedRun = await duringPublish(glued, () => removeTrackedObj(appOf(glued), 'dist\n/obj/\n'));
+  assert.equal(gluedRun.result.ok, true);
+  assert.equal(readFileSync(join(appOf(glued), '.gitignore'), 'utf8'), 'dist\n/obj/\n');
+
+  const disk = bench();
+  writeFileSync(join(appOf(disk), '.gitignore'), '*.zip\n');
+  git(appOf(disk), ['add', '--', '.gitignore']);
+  git(appOf(disk), ['commit', '-m', 'ignore zip']);
+  mkdirSync(join(appOf(disk), 'obj'), { recursive: true });
+  writeFileSync(join(appOf(disk), 'obj', 'compiled.zip'), 'local');
+  const diskInitial = git(appOf(disk), ['rev-parse', 'HEAD']);
+  const diskRun = await duringPublish(disk, () => {
+    writeFileSync(join(appOf(disk), '.gitignore'), '*.zip\n/obj/\n');
+    git(appOf(disk), ['add', '--', '.gitignore']);
+    rmSync(join(appOf(disk), 'obj'), { recursive: true, force: true });
+    git(appOf(disk), ['commit', '-m', OBJ_SUBJECT, '--', '.gitignore']);
+    return git(appOf(disk), ['rev-parse', 'HEAD']);
+  });
+  assert.equal(diskRun.result.ok, true);
+  assert.equal(diskRun.result.evidence.initialAppSha, diskInitial);
+  assert.notEqual(diskRun.result.evidence.finalAppSha, diskInitial);
+
+  const rebuilt = bench();
+  const rebuildRun = await duringPublish(rebuilt, () => {
+    git(appOf(rebuilt), ['commit', '--allow-empty', '-m', REBUILD_SUBJECT]);
+    return git(appOf(rebuilt), ['rev-parse', 'HEAD']);
+  });
+  assert.equal(rebuildRun.result.ok, true);
+  assert.equal(rebuildRun.result.evidence.initialAppSha, rebuilt.appSha);
+  assert.equal(rebuildRun.result.evidence.release.versionRef, rebuildRun.finalSha);
+
+  const both = bench();
+  const bothInitial = trackObj(appOf(both));
+  const bothRun = await duringPublish(both, () => {
+    removeTrackedObj(appOf(both));
+    git(appOf(both), ['commit', '--allow-empty', '-m', REBUILD_SUBJECT]);
+    return git(appOf(both), ['rev-parse', 'HEAD']);
+  });
+  assert.equal(bothRun.result.ok, true);
+  assert.equal(bothRun.result.evidence.initialAppSha, bothInitial);
+  assert.equal(bothRun.result.evidence.finalAppSha, bothRun.finalSha);
+
+  const quiet = bench();
+  const before = git(appOf(quiet), ['rev-parse', 'HEAD']);
+  await held(quiet, async () => {
+    const result = await prepareSources({
+      root: quiet.mac, profile: quiet.profile, session: 'codex-s5', env: quiet.env, sshBin: quiet.options.sshBin,
+      lockPath: quiet.options.lockPath,
+      spawnPublish: () => ({ code: 0, text: '[publishGit] Nothing to publish\n', uncertain: false }),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.evidence.initialAppSha, before);
+    assert.equal(result.evidence.finalAppSha, before);
+  });
+  assert.equal(git(appOf(quiet), ['rev-parse', 'HEAD']), before);
+});
+
+test('prepare refuses commits outside the publisher sequence', async () => {
+  async function refused(mutate) {
+    const box = bench();
+    trackObj(appOf(box));
+    const run = await duringPublish(box, () => {
+      mutate(box);
+      return git(appOf(box), ['rev-parse', 'HEAD']);
+    });
+    assert.equal(run.result.ok, false);
+    assert.equal(run.result.code, 'concurrent');
+    assert.equal(run.result.uncertain, true);
+    assert.equal(run.result.sent, true);
+    assert.equal(run.result.ready, false);
+  }
+
+  await refused((box) => {
+    const repo = appOf(box);
+    writeFileSync(join(repo, 'l5', 'config.json'), '{"changed":true}\n');
+    git(repo, ['add', '--', 'l5/config.json']);
+    git(repo, ['rm', '-r', '--cached', '--', 'obj']);
+    rmSync(join(repo, 'obj'), { recursive: true, force: true });
+    git(repo, ['commit', '-m', OBJ_SUBJECT]);
+  });
+
+  await refused((box) => {
+    const repo = appOf(box);
+    writeFileSync(join(repo, '.gitignore'), '*\n');
+    git(repo, ['add', '--', '.gitignore']);
+    git(repo, ['rm', '-r', '--cached', '--', 'obj']);
+    rmSync(join(repo, 'obj'), { recursive: true, force: true });
+    git(repo, ['commit', '-m', OBJ_SUBJECT, '--', 'obj', '.gitignore']);
+  });
+
+  await refused((box) => {
+    const repo = appOf(box);
+    git(repo, ['rm', '--', '.gitignore']);
+    git(repo, ['commit', '-m', OBJ_SUBJECT]);
+  });
+
+  await refused((box) => {
+    const repo = appOf(box);
+    writeFileSync(join(repo, 'obj', 'compiled.zip'), 'changed');
+    git(repo, ['add', '-f', '--', 'obj/compiled.zip']);
+    git(repo, ['commit', '-m', OBJ_SUBJECT]);
+  });
+
+  await refused((box) => {
+    const repo = appOf(box);
+    writeFileSync(join(repo, 'obj', 'extra.zip'), 'extra');
+    git(repo, ['add', '-f', '--', 'obj/extra.zip']);
+    git(repo, ['commit', '-m', OBJ_SUBJECT]);
+  });
+
+  await refused((box) => {
+    const repo = appOf(box);
+    git(repo, ['checkout', '-b', 'side']);
+    writeFileSync(join(repo, 'side.txt'), 's');
+    git(repo, ['add', '--', 'side.txt']);
+    git(repo, ['commit', '-m', 'side']);
+    git(repo, ['checkout', 'main']);
+    writeFileSync(join(repo, 'main.txt'), 'm');
+    git(repo, ['add', '--', 'main.txt']);
+    git(repo, ['commit', '-m', 'main']);
+    git(repo, ['merge', '--no-ff', '-m', OBJ_SUBJECT, 'side']);
+  });
+
+  await refused((box) => {
+    const repo = appOf(box);
+    const tree = git(repo, ['rev-parse', 'HEAD^{tree}']);
+    const parent = git(repo, ['rev-parse', 'HEAD^']);
+    const next = git(repo, ['commit-tree', tree, '-p', parent, '-m', OBJ_SUBJECT]);
+    git(repo, ['reset', '--soft', next]);
+  });
+
+  await refused((box) => {
+    const repo = appOf(box);
+    git(repo, ['commit', '--amend', '-m', OBJ_SUBJECT]);
+  });
+
+  await refused((box) => {
+    const repo = appOf(box);
+    writeFileSync(join(repo, 'l5', 'config.json'), '{"noise":true}\n');
+    git(repo, ['add', '--', 'l5/config.json']);
+    git(repo, ['commit', '-m', 'noise']);
+    git(repo, ['revert', '--no-edit', 'HEAD']);
+    git(repo, ['commit', '--amend', '-m', REBUILD_SUBJECT]);
+  });
+
+  await refused((box) => {
+    const repo = appOf(box);
+    writeFileSync(join(repo, 'l5', 'config.json'), '{"built":true}\n');
+    git(repo, ['add', '--', 'l5/config.json']);
+    git(repo, ['commit', '-m', REBUILD_SUBJECT]);
+  });
+
+  const rooted = bench();
+  await duringPublish(rooted, (box) => {
+    writeFileSync(join(box.mac, 'root-moved.txt'), 'x');
+    git(box.mac, ['add', '--', 'root-moved.txt']);
+    git(box.mac, ['commit', '-m', 'root moved']);
+  });
+  assert.equal(rooted.result.code, 'concurrent');
+  assert.equal(rooted.result.uncertain, true);
+
+  const pinned = bench();
+  await duringPublish(pinned, (box) => {
+    const pkg = JSON.parse(readFileSync(join(box.mac, 'package.json'), 'utf8'));
+    pkg.collabLibs.libs = '20260101010109';
+    writeFileSync(join(box.mac, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+    git(box.mac, ['add', '--', 'package.json']);
+    git(box.mac, ['commit', '-m', 'pin']);
+  });
+  assert.equal(pinned.result.code, 'concurrent');
+
+  const dep = bench();
+  await duringPublish(dep, (box) => {
+    writeFileSync(join(box.mac, 'mls-102034', 'README'), 'dep moved\n');
+    git(join(box.mac, 'mls-102034'), ['add', '--', 'README']);
+    git(join(box.mac, 'mls-102034'), ['commit', '-m', 'dep']);
+  });
+  assert.equal(dep.result.code, 'concurrent');
+
+  const locked = bench();
+  await duringPublish(locked, (box) => {
+    writeFileSync(join(appOf(box), '.collab-msg.lock'), 'agent');
+  });
+  assert.equal(locked.result.code, 'concurrent');
+  assert.equal(locked.result.uncertain, true);
+
+  const missing = bench();
+  const parent = git(appOf(missing), ['rev-parse', 'HEAD']);
+  await duringPublish(missing, (box) => {
+    const repo = appOf(box);
+    git(repo, ['commit', '--allow-empty', '-m', REBUILD_SUBJECT]);
+    const loose = join(repo, '.git', 'objects', parent.slice(0, 2), parent.slice(2));
+    unlinkSync(loose);
+  });
+  assert.equal(missing.result.ok, false);
+  assert.equal(missing.result.code, 'concurrent');
+  assert.equal(missing.result.uncertain, true);
 });

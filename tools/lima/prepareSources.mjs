@@ -12,7 +12,8 @@ export const VM_ROOT = '/data/mls-base';
 export const BUILD_LOCK = `${VM_ROOT}/.gitbuild.lock`;
 const MARKER_OK = /##gitBackend build=ok release=(\d{14}) project=mls-102047##/;
 const MARKER_ERR = /##gitBackend build=error\b/;
-const REBUILD_SUBJECT = /^publish: rebuild after deps /u;
+const OBJ_SUBJECT = 'chore: remove obj/ (build happens on the VM)';
+const REBUILD_SUBJECT = /^publish: rebuild after deps \S+(?: \S+)*$/u;
 
 export function readPin(root) {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -25,14 +26,18 @@ export function readPin(root) {
   return { libs, monaco };
 }
 
-function git(repo, args, env = process.env) {
+function git(repo, args, env = process.env, raw = false) {
   return new Promise((resolve) => {
     const child = spawn('git', ['-C', repo, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.on('close', (code) => resolve({ code: code ?? 1, stdout: stdout.trim(), stderr: stderr.trim() }));
+    child.on('close', (code) => resolve({
+      code: code ?? 1,
+      stdout: raw ? stdout : stdout.trim(),
+      stderr: stderr.trim(),
+    }));
   });
 }
 
@@ -97,13 +102,119 @@ function planKey(plan) {
   });
 }
 
-function allowedAfterPublish(before, after) {
+// Mirrors gitignoreCoversObj in scripts/publishGit.mjs (that module runs main on import); keep both equal.
+function gitignoreCoversObj(text) {
+  const candidates = new Set(['/obj/', 'obj', '/obj', 'obj/', '**/obj', '**/obj/']);
+  return text.split(/\r?\n/u).some((line) => {
+    const trimmed = line.trim();
+    return trimmed && !trimmed.startsWith('#') && candidates.has(trimmed);
+  });
+}
+
+function gitignoreAppended(before, after) {
+  if (gitignoreCoversObj(before)) return false;
+  const glue = before.length === 0 || before.endsWith('\n') ? '' : '\n';
+  return after === `${before}${glue}/obj/\n`;
+}
+
+function parseRawDiff(text) {
+  if (!text) return [];
+  const parts = text.split('\0');
+  if (parts.at(-1) === '') parts.pop();
+  const entries = [];
+  for (let i = 0; i < parts.length;) {
+    const meta = parts[i];
+    if (!meta?.startsWith(':')) return null;
+    const tokens = meta.slice(1).split(' ');
+    if (tokens.length < 5) return null;
+    const [oldMode, newMode, oldSha, newSha, status] = tokens;
+    const renamed = status.startsWith('R') || status.startsWith('C');
+    const path = parts[i + 1];
+    const newPath = renamed ? parts[i + 2] : path;
+    if (!path || (renamed && !newPath)) return null;
+    entries.push({ oldMode, newMode, oldSha, newSha, status, path, newPath });
+    i += renamed ? 3 : 2;
+  }
+  return entries;
+}
+
+function objDeletion(entry) {
+  return entry.status === 'D'
+    && entry.newMode === '000000'
+    && entry.path === entry.newPath
+    && (entry.path === 'obj' || entry.path.startsWith('obj/'));
+}
+
+async function blobBytes(repo, sha, env) {
+  if (/^0+$/u.test(sha)) return '';
+  const read = await git(repo, ['cat-file', '-p', '--', sha], env, true);
+  if (read.code !== 0) return null;
+  return read.stdout;
+}
+
+async function commitKind(repo, sha, subject, env) {
+  const diff = await git(repo, ['diff-tree', '-z', '-r', '--raw', '--no-commit-id', '-M', sha], env, true);
+  if (diff.code !== 0) return '';
+  const entries = parseRawDiff(diff.stdout);
+  if (!entries) return '';
+  if (REBUILD_SUBJECT.test(subject)) return entries.length === 0 ? 'rebuild' : '';
+  if (subject !== OBJ_SUBJECT || entries.length === 0) return '';
+  let gitignore = 0;
+  for (const entry of entries) {
+    if (objDeletion(entry)) continue;
+    if (entry.path !== '.gitignore' || entry.newPath !== '.gitignore') return '';
+    if (entry.status !== 'A' && entry.status !== 'M') return '';
+    if (entry.newMode !== '100644') return '';
+    if (entry.status === 'M' && entry.oldMode !== '100644') return '';
+    const before = await blobBytes(repo, entry.oldSha, env);
+    const after = await blobBytes(repo, entry.newSha, env);
+    if (before == null || after == null || !gitignoreAppended(before, after)) return '';
+    gitignore += 1;
+    if (gitignore > 1) return '';
+  }
+  return 'clean';
+}
+
+async function portraitMatches(repo, before, after, env) {
+  const diff = await git(repo, ['diff-tree', '-z', '-r', '--raw', '-M', before.appTree, after.appTree], env, true);
+  if (diff.code !== 0) return false;
+  const entries = parseRawDiff(diff.stdout);
+  if (!entries) return false;
+  return entries.every((entry) => entry.path === '.gitignore' && entry.newPath === '.gitignore'
+    && (entry.status === 'A' || entry.status === 'M')
+    && entry.newMode === '100644');
+}
+
+async function allowedAfterPublish(before, after, root, projectId, env) {
   if (before.rootSha !== after.rootSha) return false;
   if (before.pin.libs !== after.pin.libs || before.pin.monaco !== after.pin.monaco) return false;
   if (before.blocked.length || after.blocked.length) return false;
   if (JSON.stringify(before.deps) !== JSON.stringify(after.deps)) return false;
-  if (before.appSha === after.appSha && before.appTree === after.appTree) return true;
-  return before.appTree === after.appTree && REBUILD_SUBJECT.test(after.appSubject);
+  if (before.appSha === after.appSha) return before.appTree === after.appTree;
+  const repo = join(root, `mls-${projectId}`);
+  const listed = await git(repo, ['rev-list', '--reverse', `${before.appSha}..${after.appSha}`], env);
+  if (listed.code !== 0) return false;
+  const shas = listed.stdout.split('\n').filter(Boolean);
+  if (shas.length < 1 || shas.length > 2 || shas.at(-1) !== after.appSha) return false;
+  let parent = before.appSha;
+  const kinds = [];
+  for (const sha of shas) {
+    const meta = await git(repo, ['log', '-1', '--format=%P%n%s', sha], env, true);
+    if (meta.code !== 0 || !meta.stdout) return false;
+    const splitAt = meta.stdout.indexOf('\n');
+    if (splitAt < 0) return false;
+    const parents = meta.stdout.slice(0, splitAt).split(' ').filter(Boolean);
+    const subject = meta.stdout.slice(splitAt + 1).replace(/\n$/u, '');
+    if (parents.length !== 1 || parents[0] !== parent) return false;
+    const kind = await commitKind(repo, sha, subject, env);
+    if (!kind) return false;
+    kinds.push(kind);
+    parent = sha;
+  }
+  const accepted = (kinds.length === 1 && (kinds[0] === 'clean' || kinds[0] === 'rebuild'))
+    || (kinds.length === 2 && kinds[0] === 'clean' && kinds[1] === 'rebuild');
+  if (!accepted) return false;
+  return portraitMatches(repo, before, after, env);
 }
 
 function ssh(profile, command, options) {
@@ -328,7 +439,7 @@ export async function prepareSources({
   } catch (error) {
     return failed('failed', { code: 'concurrent', sent: true, uncertain: true });
   }
-  if (!allowedAfterPublish(plan, after)) {
+  if (!await allowedAfterPublish(plan, after, root, projectId, env)) {
     return failed('failed', {
       code: 'concurrent', sent: true, uncertain: true, initialAppSha: plan.appSha, finalAppSha: after.appSha,
     });
