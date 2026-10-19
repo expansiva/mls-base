@@ -14,6 +14,14 @@ A campanha é a reserva da rodada (`--session`). As jars são os browsers nomead
 
 O nome da sessão não é prova de posse. A posse fica na lima, em `/etc/collab/local-tests/lima.lock` (arquivo 0600, pasta 0700). O Mac só guarda uma referência privada 0600 no temp, para o par de browsers da mesma campanha. Encerrar o CLI não apaga a reserva. Não existe TTL nem `--force` para o tester.
 
+**A referência do Mac é cache, não reserva (rt98, 19/10/2026).** Quem decide a posse é o `status` da lima.
+- O `publish:git` pergunta à lima antes de olhar os arquivos `$TMPDIR/collab-lima/*.json`.
+- Com `held:false` comprovado, ignora todas as referências antigas, inclusive as de campanhas recuperadas ou encerradas, e reserva de novo.
+- Com `held:true`, usa só a referência da sessão que a lima aponta, depois de conferir dono, operação atual e ausência de browser.
+- `status` incerto (SSH caído, JSON inválido, sem `held`) recusa.
+- Não é preciso mover nem apagar referência antiga para publicar, e não se apaga como rotina.
+- Uma campanha recuperada acabou: a rodada seguinte usa campanha nova ou `begin` válido.
+
 `status` mostra quem está usando: sessão, projeto, fase (`reserved|preparing|ready|testing|failed`), início, operações e browsers. Não mostra `ownerId`, cookie, token, chave nem URL de banco. Outra sessão recebe exit 73, sem espera longa. Lock incompleto ou corrompido, operação de fim incerto e browser que não fechou ficam retidos. A recuperação é só do supervisor, com o `ownerId` esperado e a prova de que não há hook, operação nem browser em execução.
 
 Há um único lock de campanha. O lock do publish no Mac (rt73) e o `.gitbuild.lock` do build continuam, e a reserva da lima vem antes deles. O `.collab-msg.lock` da geração é outra coisa: o prepare recusa repo sujo ou esse arquivo antes de enviar fonte.
@@ -97,7 +105,7 @@ Depois abre as jars com `--lima-session tester-<rodada>` e dá o `end` ao termin
 **Quando chamar o supervisor do runtime** (arquivo `fromTester_*` no pool do runtime, com a saída bruta):
 - `prepare` sai com código diferente de zero ou sem `ready:true`;
 - `status` mostra `phase:"failed"` ou operação `uncertain`. Não repetir o `prepare` por conta própria: a reserva fica retida até o `recover`, que é do supervisor;
-- `publish:git` recusado com "owner file does not match the reservation" ou "lima reservation is ambiguous" (ref local órfã);
+- `publish:git` ou `prepare` recusado com "owner file does not match the reservation", "lima reservation belongs to session …" ou "lima reservation status is uncertain";
 - `healthOk` falso, menos de 2 workers online ou app fora do ar;
 - qualquer coisa que peça SSH, PM2, SQL ou `.env`.
 
