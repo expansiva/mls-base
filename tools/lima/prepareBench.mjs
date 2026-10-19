@@ -9,6 +9,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inspectSlot, runOnVm, testDatabaseUrlFromEnvText } from '../../scripts/runtime/prepareLocalTestBench.mjs';
 import { TEST_DATABASE_NAME, declaredTestMode } from '../../scripts/runtime/vmApps.mjs';
+import { probeBenchHealth } from './health.mjs';
 import { DEFAULT_LOCK_PATH, dispatch } from './sessionVm.mjs';
 
 export const BENCH_PROJECT_ID = '102047';
@@ -222,6 +223,37 @@ function defaultPm2(spawn) {
       return onlineWorkerCounts(result.stdout, name);
     },
   };
+}
+
+async function readBenchHealth(input, port, stamp) {
+  const call = typeof input.health === 'function'
+    ? input.health
+    : (ctx) => probeBenchHealth(
+      { port: ctx.port },
+      typeof input.fetchImpl === 'function' ? { fetchImpl: input.fetchImpl } : undefined,
+    );
+  try {
+    return await Promise.resolve(call({ port, release: stamp }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: redact(message).split('\n')[0] };
+  }
+}
+
+function healthDiagnostic(health) {
+  const raw = health && typeof health.message === 'string' && health.message.trim()
+    ? health.message
+    : 'health did not pass';
+  return redact(raw).split('\n')[0];
+}
+
+function observedReleaseOf(health) {
+  if (health && health.release != null) return health.release;
+  return null;
+}
+
+function assignObservedRelease(receipt, health) {
+  receipt.observedRelease = observedReleaseOf(health);
 }
 
 function failedReceipt(base, message) {
@@ -572,11 +604,12 @@ export async function prepareBench(input) {
     }
 
     resume();
-    const health = input.health ? input.health({ port: slot.port, release: stamp }) : { ok: true };
-    if (!health?.ok) {
-      const receipt = failedReceipt(baseReceipt, 'health did not pass');
+    const health = await readBenchHealth(input, slot.port, stamp);
+    if (!health || health.ok !== true) {
+      const receipt = failedReceipt(baseReceipt, healthDiagnostic(health));
       receipt.seed = baseReceipt.seed;
-      receipt.observedRelease = health?.release ?? stamp;
+      receipt.healthOk = false;
+      assignObservedRelease(receipt, health);
       throw new BenchError(receipt.error, receipt);
     }
     let workerCounts;
@@ -600,8 +633,8 @@ export async function prepareBench(input) {
         `runtime topology needs two online workers with COLLAB_WORKER_COUNT=2; online=${onlineWorkers === null ? 'unreadable' : onlineWorkers}${cause}`,
       );
       receipt.seed = baseReceipt.seed;
-      receipt.observedRelease = health.release ?? stamp;
       receipt.healthOk = true;
+      assignObservedRelease(receipt, health);
       receipt.runtimeTopology = runtimeTopology;
       throw new BenchError(receipt.error, receipt);
     }
@@ -612,8 +645,8 @@ export async function prepareBench(input) {
       ready: true,
       retainLock: true,
       ddlStarted: needsDdl,
-      observedRelease: health.release ?? stamp,
       healthOk: true,
+      observedRelease: observedReleaseOf(health),
       runtimeTopology,
     };
     delete receipt.error;
