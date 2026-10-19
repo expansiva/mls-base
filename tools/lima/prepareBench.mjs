@@ -675,37 +675,42 @@ function invokedDirectly() {
   return pathToFileURL(entry).href === import.meta.url;
 }
 
-async function main() {
+export async function main({
+  stdin = process.stdin,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  prepare = prepareBench,
+} = {}) {
   const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
+  for await (const chunk of stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   const text = Buffer.concat(chunks).toString('utf8').trim();
   if (!text) {
-    process.stderr.write('prepareBench: JSON command on stdin\n');
-    process.exit(2);
+    stderr.write('prepareBench: JSON command on stdin\n');
+    return 2;
   }
   let command;
   try {
     command = JSON.parse(text);
   } catch {
-    process.stdout.write(`${JSON.stringify({ ok: false, ready: false, code: 'bad-json' })}\n`);
-    process.exit(2);
+    stdout.write(`${JSON.stringify({ ok: false, ready: false, code: 'bad-json' })}\n`);
+    return 2;
   }
   const operation = command.operation;
   if (!operation || typeof operation !== 'object') {
-    process.stdout.write(`${JSON.stringify({ ok: false, ready: false, code: 'operation', message: 'bench operation is missing' })}\n`);
-    process.exit(1);
+    stdout.write(`${JSON.stringify({ ok: false, ready: false, code: 'operation', message: 'bench operation is missing' })}\n`);
+    return 1;
   }
   if (!operation.lockPath) operation.lockPath = DEFAULT_LOCK_PATH;
   try {
-    const receipt = await prepareBench({
+    const receipt = await prepare({
       db: command.db,
       projectId: command.projectId,
       runtimeRoot: command.runtimeRoot,
       cmRoot: command.cmRoot,
       operation,
     });
-    process.stdout.write(`${JSON.stringify(receipt)}\n`);
-    process.exit(0);
+    stdout.write(`${JSON.stringify(receipt)}\n`);
+    return 0;
   } catch (error) {
     const body = {
       ok: false,
@@ -716,11 +721,11 @@ async function main() {
     };
     delete body.error;
     body.message = redact(error.message);
-    process.stdout.write(`${JSON.stringify(body)}\n`);
-    process.exit(1);
+    stdout.write(`${JSON.stringify(body)}\n`);
+    return 1;
   }
 }
 
 if (invokedDirectly()) {
-  main();
+  main().then((code) => process.exit(code));
 }
