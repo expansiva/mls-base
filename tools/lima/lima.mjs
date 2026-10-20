@@ -190,6 +190,7 @@ function buildReceipt({ parsed, profile, sources, bench }) {
       responsavel: personas.responsavel?.cmUserId || null,
       membro: personas.membro?.cmUserId || null,
     },
+    seedSkipped: seed.skipped === true,
     limits: bench.limits || [],
     runtimeTopology: bench.runtimeTopology,
     healthOk: bench.healthOk,
@@ -206,7 +207,12 @@ function buildReceipt({ parsed, profile, sources, bench }) {
   if (!receipt.release || RELEASE_FIELDS.some((field) => receipt.release[field] == null || receipt.release[field] === '')) {
     throw Object.assign(new Error('receipt is missing release fields'), { code: 'receipt' });
   }
-  if (!receipt.company.companyMdmId || !receipt.cmIds.responsavel || !receipt.cmIds.membro) {
+  if (receipt.seedSkipped) {
+    // The bench declared why it did not seed (no onboarding block); then nothing may claim a login.
+    if (receipt.company.companyMdmId || receipt.cmIds.responsavel || receipt.cmIds.membro || Object.keys(receipt.personas).length > 0) {
+      throw Object.assign(new Error('receipt skipped the seed but carries company or test logins'), { code: 'receipt' });
+    }
+  } else if (!receipt.company.companyMdmId || !receipt.cmIds.responsavel || !receipt.cmIds.membro) {
     throw Object.assign(new Error('receipt is missing company or cm ids'), { code: 'receipt' });
   }
   assertReceiptSafe(receipt);

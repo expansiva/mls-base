@@ -48,13 +48,17 @@ if (benchCall) {
     migrate: same ? { executed: false, reused: true, ok: true, modules: ['tarefas'] } : { executed: false },
     reset: same ? null : { ok: true, rebuilt: true, modules: ['tarefas'] },
     modules: ['tarefas'],
-    seed: {
-      companyMdmId: 'co-1', organizationKey: 'org',
-      personas: {
-        responsavel: { cmUserId: 'cm-r', personMdmId: 'mdm-r' },
-        membro: { cmUserId: 'cm-m', personMdmId: 'mdm-m' },
-      },
-    },
+    seed: process.env.LIMA_SEED === 'skipped'
+      ? { ok: true, skipped: true, reason: 'release config has no onboarding block', personas: null }
+      : process.env.LIMA_SEED === 'skipped-with-login'
+        ? { ok: true, skipped: true, companyMdmId: 'co-1', personas: { responsavel: { cmUserId: 'cm-r' } } }
+        : {
+          companyMdmId: 'co-1', organizationKey: 'org',
+          personas: {
+            responsavel: { cmUserId: 'cm-r', personMdmId: 'mdm-r' },
+            membro: { cmUserId: 'cm-m', personMdmId: 'mdm-m' },
+          },
+        },
     limits: ['cm history preserved'],
     ...(process.env.LIMA_HEALTH_OK === 'omit' ? {} : {
       healthOk: process.env.LIMA_HEALTH_OK === 'false'
@@ -515,6 +519,21 @@ test('prepare receipt carries runtimeTopology from the bench', async () => {
   const receipt = JSON.parse(readFileSync(view.receiptFile, 'utf8'));
   assert.deepEqual(receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers: 2 });
   assert.equal(Object.hasOwn(receipt, 'workflowMemory'), false);
+});
+
+test('prepare is ready with a declared skipped seed and refuses a skipped seed that claims logins', async () => {
+  const box = bench();
+  const prepared = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], withStages(box, { LIMA_SEED: 'skipped' }));
+  assert.equal(prepared.code, 0, prepared.stderr);
+  const receipt = JSON.parse(readFileSync(JSON.parse(prepared.stdout).receiptFile, 'utf8'));
+  assert.equal(receipt.seedSkipped, true);
+  assert.deepEqual(receipt.cmIds, { responsavel: null, membro: null });
+  assert.equal(receipt.company.companyMdmId, null);
+
+  const other = bench();
+  const refused = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], withStages(other, { LIMA_SEED: 'skipped-with-login' }));
+  assert.notEqual(refused.code, 0);
+  assert.match(readFileSync(join(other.stateDir, 'lima-receipt-campanha.diagnosis.json'), 'utf8'), /skipped the seed but carries/u);
 });
 
 test('prepare is not ready when runtime topology is missing, invalid, or divergent', async () => {
