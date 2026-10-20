@@ -2,7 +2,7 @@
 
 Receita única para Codex e Claude Code, no terminal do Mac, a partir do cwd `mls-base`. Os dois usam o mesmo comando e o mesmo protocolo. Não há cópia em `~/.codex` ou `~/.claude`. A instalação do `tools/browser` continua fora de `install:dev`, `postinstall`, `build` e `publish`.
 
-Esta receita prepara o app **102047** na lima de teste e reserva a bancada para uma campanha. Outro id é recusado. Não há perfil remoto, `--host`, teste em VM de produção, nem aprovação extra para o localhost já autorizado.
+Esta receita prepara um app da lista da bancada (`SUPPORTED_PROJECTS` em `tools/lima/session.mjs`: **102047** e **102056**) na lima de teste e reserva a bancada para uma campanha. Outro id é recusado. A reserva é única: um projeto por vez. Não há perfil remoto, `--host`, teste em VM de produção, nem aprovação extra para o localhost já autorizado.
 
 **Quem prepara (Wagner, 19/10/2026):** *"vamos alterar isto porque dificultou para mim [...] vc só entra em caso de erros ou coisas complicadas, assim evita este ping pong"*. O tester prepara a própria campanha com `prepare`, usa a UI local e encerra com `end`. O supervisor do runtime só entra quando algo dá errado: prepare que não chega a `ready`, reserva em `failed` ou com operação incerta (`recover`), topologia do PM2, ref local órfã ou outra campanha ocupando a bancada sem dono que responda.
 
@@ -80,6 +80,19 @@ O recibo pronto fica no temp do Mac (`lima-receipt-<sessão>.json`), escrito só
 A preparação lê o PM2 depois do health. A bancada fica pronta como infraestrutura quando os dois processos do app estão online e a contagem declarada é 2 (`runtimeTopology.expectedWorkers` e `onlineWorkers`, ambos 2). Metadado ausente, contagem divergente, um único worker ainda online ou leitura inválida deixam a preparação não pronta, com diagnóstico, e a reserva retida. Não reduzir workers nem mudar a topologia do PM2 para acomodar estado local.
 
 O recibo `ready` descreve a topologia observada. Não é aceite do ciclo, não afirma integração durável de Task/steps e não libera reteste do workflow em memória de processo. A preparação de infraestrutura não comprova esse ciclo; ele espera a integração durável em Task/steps e um recibo específico. Outro processo atender em seguida, ou um restart, é situação normal desse workflow durável: a receita não manda o tester evitá-la reduzindo workers, segurando a release ou contornando guard ou lock. O histórico de falhas permanece. `end` encerra a campanha e não apaga esse histórico.
+
+## Os dois projetos da bancada (rt107, 20/10/2026)
+
+- **Desde 20/10 a bancada é o 102056** (Wagner: *"ele vai ser a bancada agora, vou parar o módulo tarefas até completar o onboarding"*).
+  Os exemplos abaixo com 102047 valem trocando o id.
+- **Seed por projeto:**
+  - o 102047 aplica o papel do tarefas (`tarefas.MembroEquipe`);
+  - os outros usam o seed sem papel de módulo.
+- **Sem bloco `onboarding` no `config.json` da release não há seed.** O `prepare` fica `ready` com `seedSkipped: true` no recibo, sem
+  Company e sem logins de teste (limite `no test logins: the project has no onboarding block yet`). É o caso do 102056 até o onboarding
+  dele ser gerado. Config ilegível é erro, nunca "sem seed".
+- **Remoto do Mac:** o `mls-102056` do Mac tem `vm` → produção. O publish para a lima usa `vm-local`, e o `publishGit` nunca reescreve um
+  remoto que aponta para outro destino. Não trocar o `vm` à mão.
 
 ## O tester prepara a própria campanha
 
