@@ -322,19 +322,54 @@ function sshUrl(conf, projectName) {
   return `ssh://${conf.SSH_HOST}${base}/${projectName}`;
 }
 
-function ensureVmRemote(repo, url) {
+function listRemoteUrls(repo) {
   const remotes = gitOut(repo, ['remote']);
-  const names = remotes ? remotes.split(/\n/u) : [];
+  const names = remotes ? remotes.split(/\n/u).filter(Boolean) : [];
+  const urls = {};
+  for (const name of names) {
+    urls[name] = gitOut(repo, ['remote', 'get-url', name]);
+  }
+  return { names, urls };
+}
+
+function trackingMain(remote) {
+  return `refs/remotes/${remote}/main`;
+}
+
+function fetchMainRefspec(remote) {
+  return `+refs/heads/main:${trackingMain(remote)}`;
+}
+
+function fetchHeadsRefspec(remote) {
+  return `+refs/heads/*:refs/remotes/${remote}/*`;
+}
+
+/**
+ * Resolve the git remote for this profile URL. Never rewrites `vm` when its
+ * URL points elsewhere — that remote stays production (or lima) as the Mac
+ * already has it; the profile uses `vm-local` / `vm-remote` instead.
+ */
+export function ensureProfileRemote(repo, url, profile) {
+  const { names, urls } = listRemoteUrls(repo);
+  const matching = names.filter((name) => urls[name] === url);
+  const chosen = matching.includes(VM_REMOTE) ? VM_REMOTE : matching[0];
+  if (chosen) {
+    process.stderr.write(`[publishGit] remote ${chosen} → ${url}\n`);
+    return chosen;
+  }
   if (!names.includes(VM_REMOTE)) {
     gitOut(repo, ['remote', 'add', VM_REMOTE, url]);
     process.stderr.write(`[publishGit] remote ${VM_REMOTE} → ${url}\n`);
-    return;
+    return VM_REMOTE;
   }
-  const current = gitOut(repo, ['remote', 'get-url', VM_REMOTE]);
-  if (current !== url) {
-    gitOut(repo, ['remote', 'set-url', VM_REMOTE, url]);
-    process.stderr.write(`[publishGit] remote ${VM_REMOTE} atualizado → ${url}\n`);
+  const alias = `vm-${profile}`;
+  if (!names.includes(alias)) {
+    gitOut(repo, ['remote', 'add', alias, url]);
+  } else if (urls[alias] !== url) {
+    gitOut(repo, ['remote', 'set-url', alias, url]);
   }
+  process.stderr.write(`[publishGit] remote ${alias} → ${url}\n`);
+  return alias;
 }
 
 export function isDirty(repo) {
@@ -748,12 +783,12 @@ function alignHint(id, profile) {
   );
 }
 
-async function fetchVmHeads(repo, env) {
-  const fetched = await runGitLive(repo, ['fetch', VM_REMOTE, '+refs/heads/*:refs/remotes/vm/*'], env);
+async function fetchVmHeads(repo, env, remote) {
+  const fetched = await runGitLive(repo, ['fetch', remote, fetchHeadsRefspec(remote)], env);
   if (fetched.code !== 0) {
     fail(`could not read the VM:\n${fetched.out.trim()}`);
   }
-  return gitSync(repo, ['rev-parse', 'refs/remotes/vm/vm-baseline']).code === 0;
+  return gitSync(repo, ['rev-parse', `refs/remotes/${remote}/vm-baseline`]).code === 0;
 }
 
 /**
@@ -772,8 +807,8 @@ export async function runClone({ dest, url, env = process.env, id, profile }) {
       if (isAuthFailure(cloned.out)) failAuth(cloned.out);
       fail(`git clone failed (exit ${cloned.code}).`);
     }
-    ensureVmRemote(dest, url);
-    const hasBaseline = await fetchVmHeads(dest, env);
+    const remote = ensureProfileRemote(dest, url, profile);
+    const hasBaseline = await fetchVmHeads(dest, env, remote);
     process.stderr.write(`[publishGit] clone ok: ${dest}\n`);
     process.stderr.write(
       `  branches: main${hasBaseline ? ' + vm-baseline' : ' (vm-baseline missing; gitReposSetup incomplete?)'}\n`,
@@ -783,10 +818,10 @@ export async function runClone({ dest, url, env = process.env, id, profile }) {
 
   if (!existsSync(join(dest, '.git'))) {
     gitOut(dest, ['init', '-b', 'main']);
-    ensureVmRemote(dest, url);
-    const hasBaseline = await fetchVmHeads(dest, env);
+    const remote = ensureProfileRemote(dest, url, profile);
+    const hasBaseline = await fetchVmHeads(dest, env, remote);
     process.stderr.write(
-      `[publishGit] ${`mls-${id}`} already existed without git: repo initialized, remote ${VM_REMOTE} → ${url}\n` +
+      `[publishGit] ${`mls-${id}`} already existed without git: repo initialized, remote ${remote} → ${url}\n` +
         '  histories unrelated to the VM (expected). To align, run:\n' +
         alignHint(id, profile),
     );
@@ -794,21 +829,21 @@ export async function runClone({ dest, url, env = process.env, id, profile }) {
   }
 
   const localShaBefore = gitSync(dest, ['rev-parse', 'HEAD']).stdout.trim();
-  ensureVmRemote(dest, url);
-  const hasBaseline = await fetchVmHeads(dest, env);
+  const remote = ensureProfileRemote(dest, url, profile);
+  const hasBaseline = await fetchVmHeads(dest, env, remote);
   const localShaAfter = gitSync(dest, ['rev-parse', 'HEAD']).stdout.trim();
   if (localShaBefore && localShaAfter && localShaBefore !== localShaAfter) {
     fail('clone refused to continue: local HEAD changed during fetch (should not happen).');
   }
 
   const hasHead = Boolean(localShaAfter);
-  const remoteRef = gitSync(dest, ['rev-parse', 'refs/remotes/vm/main']);
+  const remoteRef = gitSync(dest, ['rev-parse', trackingMain(remote)]);
   let rel = 'unrelated';
   if (hasHead && remoteRef.code === 0) {
     rel = relation(dest, localShaAfter, remoteRef.stdout.trim());
   }
 
-  process.stderr.write(`[publishGit] ${`mls-${id}`} is already a git repo. remote ${VM_REMOTE} → ${url}\n`);
+  process.stderr.write(`[publishGit] ${`mls-${id}`} is already a git repo. remote ${remote} → ${url}\n`);
   process.stderr.write(`  state: ${describeCloneRelation(rel)}\n`);
   if (rel === 'unrelated') process.stderr.write(alignHint(id, profile));
   return { action: 'connected', relation: rel, hasBaseline };
@@ -841,7 +876,7 @@ function explainDirtyVm(out) {
  * na VM: aviso, não erro — o push do cliente dispara o hook, o build clona, e
  * o próximo publish envia o retrato.
  */
-async function publishPlatformDeps({ root, clientRepo, clientId, conf, env }) {
+async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, profile }) {
   const declared = readDepIds(clientRepo, clientId);
   const onDesktop = declared.filter((depId) => existsSync(join(root, `mls-${depId}`, '.git')));
   if (!onDesktop.length) return { changed: [], missing: [] };
@@ -851,16 +886,17 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env }) {
   const missing = [];
   for (const depId of ordered) {
     const depName = `mls-${depId}`;
+    const remote = ensureProfileRemote(join(root, depName), remoteUrlFor(conf, depName), profile);
     const plan = planSnapshot({
       repo: join(root, depName),
-      remote: VM_REMOTE,
+      remote,
       // remoteUrlFor, não sshUrl: com um perfil `--git-url` não existe SSH_HOST, e o retrato do dep
       // sairia apontando para `ssh://undefined/...`. O dep alterado é o caso COMUM (gb13), então o
       // https quebraria justamente quando serve para algo.
       url: remoteUrlFor(conf, depName),
       env,
       gitSync,
-      ensureRemote: ensureVmRemote,
+      ensureRemote: (repo, remoteUrl) => ensureProfileRemote(repo, remoteUrl, profile),
     });
     if (plan.status === 'missing') {
       process.stderr.write(`${missingVmRepoMessage(depName)}\n`);
@@ -868,7 +904,7 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env }) {
       continue;
     }
     if (plan.status === 'error') fail(`[publishGit] retrato de ${depName} falhou: ${plan.reason}`);
-    plans.push({ depId, depName, plan });
+    plans.push({ depId, depName, plan, remote });
   }
 
   const changed = plans.filter((entry) => entry.plan.status === 'changed');
@@ -880,7 +916,7 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env }) {
     activeGuard?.setPhase('deps');
     const sent = sendSnapshot({
       plan: entry.plan,
-      remote: VM_REMOTE,
+      remote: entry.remote,
       env,
       pushOptions: ['skip-build'],
       gitSync,
@@ -981,11 +1017,11 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
     if (isDirty(repo)) fail('local worktree still dirty after --autocommit.');
   }
 
-  ensureVmRemote(repo, url);
+  const remote = ensureProfileRemote(repo, url, profile);
 
   activeGuard?.setPhase('fetch');
   process.stderr.write(`[publishGit] ${projectName} → ${url} (${profile})\n`);
-  const fetch = gitSync(repo, ['fetch', VM_REMOTE, '+refs/heads/main:refs/remotes/vm/main'], env);
+  const fetch = gitSync(repo, ['fetch', remote, fetchMainRefspec(remote)], env);
   if (fetch.code !== 0) {
     // O 401 aparece aqui primeiro, não no push: o fetch é a primeira conversa com a VM.
     if (isAuthFailure(fetch.out)) failAuth(fetch.out);
@@ -994,7 +1030,7 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
 
   let originSha = gitOut(repo, ['rev-parse', 'HEAD']);
   const localSha = originSha;
-  const remoteRef = gitSync(repo, ['rev-parse', 'refs/remotes/vm/main']);
+  const remoteRef = gitSync(repo, ['rev-parse', trackingMain(remote)]);
   if (remoteRef.code !== 0) {
     fail('the VM has no main branch; run gitReposSetup on the VM first.');
   }
@@ -1006,7 +1042,7 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
   const { changed: changedDeps, missing: missingDeps = [] } = noDeps
     ? { changed: [], missing: [] }
     : await publishPlatformDeps({
-      root: ROOT, clientRepo: repo, clientId: id, conf, env,
+      root: ROOT, clientRepo: repo, clientId: id, conf, env, profile,
     });
 
   if (rel === 'same') {
@@ -1036,7 +1072,7 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
   }
   if (decision.aligning && profile === 'local') process.stderr.write(`${decision.message}\n`);
   const pushArgs = clientPushArgs({
-    remote: VM_REMOTE,
+    remote,
     changedDeps,
     forceLease: decision.forceLease,
     srcSha: originSha,
@@ -1068,7 +1104,7 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
     !MARKER_OK.test(text) &&
     !MARKER_ERR.test(text);
   if (needsRefCheck) {
-    remoteShaAfter = readRemoteMainSha(repo, env);
+    remoteShaAfter = readRemoteMainSha(repo, env, { remote });
   }
   const publishedSha = selectPublishedSha(originSha);
   const verdict = classifyPushResult({
@@ -1145,12 +1181,12 @@ export function pushNotAppliedMessage({ code, kind, localSha = '', remoteShaAfte
   return `[publishGit] git push failed (exit ${code}). Publish NOT applied.`;
 }
 
-export function readRemoteMainSha(repo, env, { gitSyncFn = gitSync, attempts = 4, sleepFn } = {}) {
+export function readRemoteMainSha(repo, env, { gitSyncFn = gitSync, attempts = 4, sleepFn, remote = VM_REMOTE } = {}) {
   const sleep = sleepFn ?? ((ms) => spawnSync('sleep', [String(ms / 1000)]));
   for (let i = 0; i < attempts; i += 1) {
-    const fetch = gitSyncFn(repo, ['fetch', '--prune', VM_REMOTE, '+refs/heads/main:refs/remotes/vm/main'], env);
+    const fetch = gitSyncFn(repo, ['fetch', '--prune', remote, fetchMainRefspec(remote)], env);
     if (fetch.code === 0) {
-      const parsed = gitSyncFn(repo, ['rev-parse', 'refs/remotes/vm/main'], env);
+      const parsed = gitSyncFn(repo, ['rev-parse', trackingMain(remote)], env);
       const sha = parsed.code === 0 ? String(parsed.stdout ?? '').trim() : '';
       if (sha) return sha;
     }

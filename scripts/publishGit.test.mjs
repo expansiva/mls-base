@@ -15,6 +15,7 @@ import {
   DIRTY_LOCAL_MSG,
   disconnectAppliedMessage,
   ensureBookkeepingGitignore,
+  ensureProfileRemote,
   formatPublishClientConfigTail,
   gitEnvFor,
   isDirty,
@@ -766,6 +767,72 @@ test('noteTsconfigPaths adiciona paths e diz que é setup, não agente', () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('ensureProfileRemote cria vm quando o repo não tem remoto', () => {
+  withRepo((repo) => {
+    const url = 'ssh://lima/data/mls-base/mls-102056';
+    assert.equal(ensureProfileRemote(repo, url, 'local'), 'vm');
+    assert.equal(git(repo, ['remote', 'get-url', 'vm']), url);
+  });
+});
+
+test('ensureProfileRemote reutiliza vm quando a URL já é a do perfil', () => {
+  withRepo((repo) => {
+    const url = 'ssh://lima/data/mls-base/mls-102047';
+    git(repo, ['remote', 'add', 'vm', url]);
+    assert.equal(ensureProfileRemote(repo, url, 'local'), 'vm');
+    assert.equal(git(repo, ['remote']), 'vm');
+    assert.equal(git(repo, ['remote', 'get-url', 'vm']), url);
+  });
+});
+
+test('ensureProfileRemote não toca vm de produção; cria vm-local e reutiliza no segundo publish', () => {
+  withRepo((repo) => {
+    const production = 'https://102056.collabcodes.com/git/mls-102056.git';
+    const lima = 'ssh://lima/data/mls-base/mls-102056';
+    git(repo, ['remote', 'add', 'vm', production]);
+    const before = git(repo, ['remote', 'get-url', 'vm']);
+    assert.equal(ensureProfileRemote(repo, lima, 'local'), 'vm-local');
+    assert.equal(git(repo, ['remote', 'get-url', 'vm']), before);
+    assert.equal(git(repo, ['remote', 'get-url', 'vm']), production);
+    assert.equal(git(repo, ['remote', 'get-url', 'vm-local']), lima);
+    assert.equal(ensureProfileRemote(repo, lima, 'local'), 'vm-local');
+    const remotes = git(repo, ['remote']).split('\n').filter(Boolean).sort();
+    assert.deepEqual(remotes, ['vm', 'vm-local']);
+  });
+});
+
+test('ensureProfileRemote no sentido inverso cria vm-remote e deixa vm da lima intacto', () => {
+  withRepo((repo) => {
+    const lima = 'ssh://lima/data/mls-base/mls-102047';
+    const production = 'https://102047.collabcodes.com/git/mls-102047.git';
+    git(repo, ['remote', 'add', 'vm', lima]);
+    const before = git(repo, ['remote', 'get-url', 'vm']);
+    assert.equal(ensureProfileRemote(repo, production, 'remote'), 'vm-remote');
+    assert.equal(git(repo, ['remote', 'get-url', 'vm']), before);
+    assert.equal(git(repo, ['remote', 'get-url', 'vm-remote']), production);
+  });
+});
+
+test('fetch do caso vm-local usa refs/remotes/vm-local/main', async () => {
+  await withVmRepo(async ({ dest, url, vmHead }) => {
+    mkdirSync(dest);
+    git(dest, ['init', '-b', 'main']);
+    git(dest, ['config', 'user.email', 'test@collab.codes']);
+    git(dest, ['config', 'user.name', 'test']);
+    git(dest, ['config', 'commit.gpgsign', 'false']);
+    writeFileSync(join(dest, 'README.md'), 'mac\n');
+    git(dest, ['add', '-A']);
+    git(dest, ['commit', '-m', 'mac history']);
+    git(dest, ['remote', 'add', 'vm', 'https://102056.collabcodes.com/git/mls-102056.git']);
+    const vmUrlBefore = git(dest, ['remote', 'get-url', 'vm']);
+    const result = await runClone({ dest, url, id: '900001', profile: 'local' });
+    assert.equal(result.action, 'connected');
+    assert.equal(git(dest, ['remote', 'get-url', 'vm']), vmUrlBefore);
+    assert.equal(git(dest, ['remote', 'get-url', 'vm-local']), url);
+    assert.equal(git(dest, ['rev-parse', 'refs/remotes/vm-local/main']), vmHead);
+  });
 });
 
 test('GIT_SSH_COMMAND keeps Windows paths intact through the sh git runs it in', (t) => {
