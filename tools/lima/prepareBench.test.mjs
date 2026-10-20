@@ -37,6 +37,7 @@ function benchTree(options = {}) {
   write(path.join(remote, 'pm2.apps.d', 'app2052.config.js'), 'module.exports = {\n  cwd: "/data/other2",\n  env: {\n    COLLAB_PROJECT_ID: "102052"\n  }\n};\n');
   write(path.join(release, 'config.json'), JSON.stringify({
     defaultProjectId: '102047',
+    ...(options.noOnboarding ? {} : { onboarding: { moduleId: 'inicio', entryPath: '/inicio/inicio_pessoa' } }),
     projects: { 102047: { type: 'client' }, 102034: { type: 'master backend' } },
   }));
   write(path.join(release, 'release.json'), JSON.stringify({
@@ -185,6 +186,30 @@ test('migrate uses the verified release and restarts only app2047', async () => 
   assert.equal(JSON.stringify(receipt).includes('cmIntegrated'), false);
   assert.equal(receipt.limits.some((line) => line.includes('does not prove durable integration')), true);
   assert.equal(JSON.stringify(receipt).includes('bench_secret'), false);
+});
+
+test('a release without an onboarding block is ready without the seed', async () => {
+  const tree = benchTree({ noOnboarding: true });
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const box = harness(tree, logFile);
+  const receipt = await box.run('migrate');
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.phase, 'ready');
+  assert.equal(receipt.migrate.executed, true);
+  assert.equal(box.order.includes('seed'), false);
+  assert.deepEqual(receipt.seed, { ok: true, skipped: true, reason: 'release config has no onboarding block', personas: null });
+  assert.equal(receipt.limits.includes('no test logins: the project has no onboarding block yet'), true);
+  assert.deepEqual(receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers: 2 });
+});
+
+test('an unreadable release config is an error, not a skipped seed', async () => {
+  const tree = benchTree();
+  writeFileSync(path.join(tree.release, 'config.json'), '{ not json');
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const box = harness(tree, logFile);
+  // inspectSlot already parses the same file before any DDL; the bench never reads it as "no block".
+  await assert.rejects(() => box.run('migrate'), SyntaxError);
+  assert.equal(existsSync(logFile) && readFileSync(logFile, 'utf8').includes('migrate.js'), false);
 });
 
 test('reset is a different script and checks scope after ddl', async () => {

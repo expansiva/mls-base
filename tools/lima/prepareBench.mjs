@@ -56,6 +56,19 @@ const STAMP_FIELDS = ['id', 'client', 'versionRef', 'platformCommit', 'libs', 'm
 
 const defaultFs = { existsSync, readFileSync, realpathSync, readdirSync };
 
+/** True when the release config declares `onboarding`. An unreadable config is an error, never "no block". */
+export function releaseHasOnboarding(fs, releaseRoot) {
+  const file = path.join(releaseRoot, 'config.json');
+  if (!fs.existsSync(file)) throw new Error(`release config is missing: ${file}`);
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    throw new Error(`release config is not valid JSON: ${file}`);
+  }
+  return parsed != null && typeof parsed === 'object' && parsed.onboarding != null;
+}
+
 export class BenchError extends Error {
   constructor(message, receipt) {
     super(message);
@@ -570,41 +583,48 @@ export async function prepareBench(input) {
       baseReceipt.migrate = { executed: false, reused: true, ok: true, script: path.basename(migrateJs) };
     }
 
-    const seedArgv = ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot];
-    if (!noModuleRole) seedArgv.push('--member-role', MEMBER_ROLE);
-    const seed = input.runSeed
-      ? input.runSeed({ argv: seedArgv, cwd: slot.resolvedRoot })
-      : runOnVm({
-        argv: seedArgv,
-        spawnSync: spawn,
-        ...(input.manifestDir ? { manifestDir: input.manifestDir } : {}),
-      });
-    const manifest = seed?.manifest;
-    if (!manifest?.companyMdmId || !manifest?.personas?.responsavel || !manifest?.personas?.membro) {
-      const receipt = failedReceipt(baseReceipt, 'bench seed did not return company and both sessions');
-      receipt.ddlStarted = needsDdl;
-      throw new BenchError(receipt.error, receipt);
-    }
-    const personas = {};
-    for (const alias of ['responsavel', 'membro']) {
-      const persona = manifest.personas[alias];
-      personas[alias] = {
-        email: persona.email,
-        sub: persona.sub,
-        personMdmId: persona.personMdmId,
-        cmUserId: persona.cmUserId,
+    // The seed resolves the organization from the release config's `onboarding` block. A project whose
+    // onboarding module was not generated yet has no block: the bench is ready without test logins.
+    if (!releaseHasOnboarding(fs, slot.resolvedRoot)) {
+      baseReceipt.seed = { ok: true, skipped: true, reason: 'release config has no onboarding block', personas: null };
+      baseReceipt.limits = baseReceipt.limits.concat(['no test logins: the project has no onboarding block yet']);
+    } else {
+      const seedArgv = ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot];
+      if (!noModuleRole) seedArgv.push('--member-role', MEMBER_ROLE);
+      const seed = input.runSeed
+        ? input.runSeed({ argv: seedArgv, cwd: slot.resolvedRoot })
+        : runOnVm({
+          argv: seedArgv,
+          spawnSync: spawn,
+          ...(input.manifestDir ? { manifestDir: input.manifestDir } : {}),
+        });
+      const manifest = seed?.manifest;
+      if (!manifest?.companyMdmId || !manifest?.personas?.responsavel || !manifest?.personas?.membro) {
+        const receipt = failedReceipt(baseReceipt, 'bench seed did not return company and both sessions');
+        receipt.ddlStarted = needsDdl;
+        throw new BenchError(receipt.error, receipt);
+      }
+      const personas = {};
+      for (const alias of ['responsavel', 'membro']) {
+        const persona = manifest.personas[alias];
+        personas[alias] = {
+          email: persona.email,
+          sub: persona.sub,
+          personMdmId: persona.personMdmId,
+          cmUserId: persona.cmUserId,
+        };
+      }
+      baseReceipt.seed = {
+        ok: true,
+        memberRole: noModuleRole ? null : MEMBER_ROLE,
+        companyMdmId: manifest.companyMdmId,
+        organizationKey: manifest.organizationKey,
+        personas,
+        manifestFile: seed.manifestFile,
+        cmIdsPreserved: true,
+        privateKeyPreserved: true,
       };
     }
-    baseReceipt.seed = {
-      ok: true,
-      memberRole: noModuleRole ? null : MEMBER_ROLE,
-      companyMdmId: manifest.companyMdmId,
-      organizationKey: manifest.organizationKey,
-      personas,
-      manifestFile: seed.manifestFile,
-      cmIdsPreserved: true,
-      privateKeyPreserved: true,
-    };
     if (input.db === 'reset') {
       baseReceipt.limits = baseReceipt.limits.concat(['do not treat previous MDM ids as still valid']);
     }
