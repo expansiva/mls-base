@@ -45,7 +45,7 @@ import { addMissingTsconfigPaths } from './syncTsconfigPaths.mjs';
 import { formatClientConfigWarn, validateClientConfigFile } from './validateClientConfig.mjs';
 import { createPublishLocalLock } from './publishGitLocalLock.mjs';
 import {
-  SUPPORTED_PROJECT, beginSession, callVm, endSession, loadOwnerRef, resolveLocalProfile, saveOwnerRef,
+  SUPPORTED_PROJECTS, beginSession, callVm, endSession, loadOwnerRef, resolveLocalProfile, saveOwnerRef,
 } from '../tools/lima/session.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -981,7 +981,7 @@ async function main() {
 
   if (profile === 'local') {
     try {
-      limaControl = await enterLimaReservation();
+      limaControl = await enterLimaReservation(id);
     } catch (error) {
       process.stderr.write(`${error.message}\n`);
       process.exit(error.exitCode || 1);
@@ -1312,7 +1312,7 @@ function listedSessionNames(profile) {
 function loadCanonicalRef(profile, session) {
   if (!listedSessionNames(profile).has(session)) return null;
   const ref = loadOwnerRef(profile, session);
-  if (!ref || ref.session !== session || ref.vm !== profile.alias || ref.projectId !== SUPPORTED_PROJECT) return null;
+  if (!ref || ref.session !== session || ref.vm !== profile.alias || !SUPPORTED_PROJECTS.includes(ref.projectId)) return null;
   return ref;
 }
 
@@ -1330,8 +1330,13 @@ function refuseUnsafeCampaign(status) {
   if (status.phase === 'failed') limaRefuse('lima reservation occupied', 73);
 }
 
-async function acquirePublishReservation(profile) {
-  const begun = await beginSession(profile, STANDALONE_LIMA_SESSION, SUPPORTED_PROJECT);
+function benchProjectForPublish(projectId) {
+  const id = String(projectId || '');
+  return SUPPORTED_PROJECTS.includes(id) ? id : SUPPORTED_PROJECTS[0];
+}
+
+async function acquirePublishReservation(profile, projectId) {
+  const begun = await beginSession(profile, STANDALONE_LIMA_SESSION, benchProjectForPublish(projectId));
   const started = await callVm(profile, {
     op: 'beginOperation',
     ownerId: begun.ref.ownerId,
@@ -1352,15 +1357,16 @@ async function acquirePublishReservation(profile) {
   return { profile, session: STANDALONE_LIMA_SESSION, ref, nested: false };
 }
 
-async function enterLimaReservation() {
+async function enterLimaReservation(projectId) {
   const profile = resolveLocalProfile(ROOT);
+  const benchProject = benchProjectForPublish(projectId);
   const status = await limaStatus(profile);
-  if (status.held === false) return acquirePublishReservation(profile);
+  if (status.held === false) return acquirePublishReservation(profile, benchProject);
 
   const session = status.session;
   if (typeof session !== 'string' || !session) limaRefuse('lima reservation status is uncertain');
   const ref = loadCanonicalRef(profile, session);
-  if (!ref || ref.projectId !== status.projectId) {
+  if (!ref || ref.projectId !== status.projectId || ref.projectId !== benchProject) {
     limaRefuse(`lima reservation belongs to session ${session}`);
   }
 
@@ -1374,7 +1380,7 @@ async function enterLimaReservation() {
     if ((owned.operations || []).length > 0 || ref.operationId) {
       limaRefuse('lima reservation occupied', 73);
     }
-    return acquirePublishReservation(profile);
+    return acquirePublishReservation(profile, benchProject);
   }
 
   const current = operationOf(owned, ref.operationId);

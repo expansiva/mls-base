@@ -163,6 +163,45 @@ test('falha do cm não publica nem apaga o manifesto anterior', () => {
   rmSync(box.base, { recursive: true, force: true });
 });
 
+test('102056 usa o seed sem papel de módulo', () => {
+  const box = fixture('102056');
+  const personas = ['responsavel', 'membro'].map((alias) => ({
+    alias,
+    email: `${alias}.102056@runtime.test`,
+    name: alias === 'responsavel' ? 'Bench responsible' : 'Bench member',
+    sub: `local-test:102056:${alias}`,
+    personMdmId: `mdm-${alias}`,
+  }));
+  const spawn = (bin, args) => {
+    const script = String(args[0]);
+    if (script.endsWith('seedLocalTest.js')) {
+      assert.equal(args.includes('--member-role'), false);
+      return { status: 0, stdout: `${JSON.stringify({ organizationKey: 'org-102056', companyMdmId: 'company-102056', personas })}\n`, stderr: '' };
+    }
+    return {
+      status: 0,
+      stdout: `${JSON.stringify({
+        storagePrefix: 'desenv_',
+        personas: personas.map((persona) => ({
+          alias: persona.alias, email: persona.email, sub: persona.sub, cmUserId: `cm-${persona.alias}`,
+        })),
+      })}\n`,
+      stderr: '',
+    };
+  };
+  const result = runOnVm({
+    argv: ['--project', '102056', '--runtime-root', box.release, '--cm-root', box.cmRoot],
+    spawnSync: spawn,
+    manifestDir: path.join(box.base, 'manifests'),
+    randomBytes: () => Buffer.from('c'.repeat(32)),
+  });
+  assert.equal(result.manifest.companyMdmId, 'company-102056');
+  assert.equal(result.manifest.organizationKey, 'org-102056');
+  assert.equal(result.manifest.personas.membro.cmUserId, 'cm-membro');
+  assert.equal(result.manifestFile.endsWith('/102056.json'), true);
+  rmSync(box.base, { recursive: true, force: true });
+});
+
 test('reexecução conserva a chave e a saída não traz cookie nem senha', () => {
   const box = fixture();
   const dir = path.join(box.base, 'manifests');

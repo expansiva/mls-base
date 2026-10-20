@@ -5,7 +5,7 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { VM_BENCH_SCRIPT, VM_CM_ROOT, VM_RUNTIME_ROOT } from './prepareBench.mjs';
+import { VM_BENCH_SCRIPT, VM_CM_ROOT } from './prepareBench.mjs';
 import { planLocalSources, prepareSources } from './prepareSources.mjs';
 import {
   LONG_TIMEOUT_MS,
@@ -14,6 +14,7 @@ import {
   callVm,
   endSession,
   loadOwnerRef,
+  projectRuntimeRoot,
   publicView,
   refuseRemoteArgv,
   resolveLocalProfile,
@@ -29,9 +30,9 @@ const RELEASE_FIELDS = ['id', 'client', 'versionRef', 'platformCommit', 'libs', 
 export function usage() {
   return [
     'usage: node tools/lima/lima.mjs <command>',
-    '  begin 102047 --session <name>',
+    '  begin <102047|102056> --session <name>',
     '  status [--session <name>]',
-    '  prepare 102047 --session <name> [--db migrate] [--dry-run]',
+    '  prepare <102047|102056> --session <name> [--db migrate] [--dry-run]',
     '  end --session <name>',
     'help and status do not start prepare or a browser.',
     'prepare keeps the reservation; --dry-run only reports occupation and the plan.',
@@ -388,7 +389,7 @@ export async function runPrepare(parsed, profile, env = process.env) {
   const bench = await prepareBenchOnVm(profile, env, {
     db: parsed.db,
     projectId: parsed.projectId,
-    runtimeRoot: VM_RUNTIME_ROOT,
+    runtimeRoot: projectRuntimeRoot(parsed.projectId),
     cmRoot: VM_CM_ROOT,
     operation: { ownerId: ref.ownerId, operationId: ref.operationId, lockPath: options.lockPath },
   });

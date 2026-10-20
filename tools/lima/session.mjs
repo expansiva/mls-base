@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { BUSY_EXIT } from './sessionVm.mjs';
 
 export const SSH_ALIAS = 'lima-ubuntu24';
-export const SUPPORTED_PROJECT = '102047';
+export const SUPPORTED_PROJECTS = ['102047', '102056'];
+export const SUPPORTED_PROJECT = SUPPORTED_PROJECTS[0];
 export const CLAIM_TIMEOUT_MS = 15_000;
 export const LONG_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -19,10 +20,22 @@ export function shQuote(value) {
 }
 
 export function assertProjectId(projectId) {
-  if (projectId !== SUPPORTED_PROJECT) {
-    throw limaError(`project ${projectId || '(missing)'} is not supported; this bench is 102047 only`, 'project');
+  if (!SUPPORTED_PROJECTS.includes(projectId)) {
+    throw limaError(
+      `project ${projectId || '(missing)'} is not supported; this bench is ${SUPPORTED_PROJECTS.join(' or ')} only`,
+      'project',
+    );
   }
   return projectId;
+}
+
+export function projectApp(projectId) {
+  const id = assertProjectId(projectId);
+  return `app${2000 + Number(id.slice(-3))}`;
+}
+
+export function projectRuntimeRoot(projectId) {
+  return `/data/mls-base/current-${assertProjectId(projectId)}`;
 }
 
 function limaError(message, code, extra = {}) {
@@ -196,6 +209,11 @@ export async function beginSession(profile, session, projectId, options = {}) {
   assertProjectId(projectId);
   const existing = loadOwnerRef(profile, session);
   if (existing) {
+    if (existing.projectId !== projectId) {
+      const error = limaError(`session busy: ${session}`, 'busy');
+      error.exitCode = BUSY_EXIT;
+      throw error;
+    }
     const status = await vmOp(profile, { op: 'status', ownerId: existing.ownerId }, options);
     if (status.owned) return { resumed: true, ref: existing, view: publicView(status) };
   }

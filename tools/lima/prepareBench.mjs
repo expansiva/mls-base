@@ -10,12 +10,15 @@ import { pathToFileURL } from 'node:url';
 import { inspectSlot, runOnVm, testDatabaseUrlFromEnvText } from '../../scripts/runtime/prepareLocalTestBench.mjs';
 import { TEST_DATABASE_NAME, declaredTestMode } from '../../scripts/runtime/vmApps.mjs';
 import { probeBenchHealth } from './health.mjs';
+import { SUPPORTED_PROJECTS, projectApp, projectRuntimeRoot } from './session.mjs';
 import { DEFAULT_LOCK_PATH, dispatch } from './sessionVm.mjs';
 
-export const BENCH_PROJECT_ID = '102047';
-export const BENCH_APP = 'app2047';
+export const BENCH_PROJECT_ID = SUPPORTED_PROJECTS[0];
+export const BENCH_APP = projectApp(BENCH_PROJECT_ID);
 export const MEMBER_ROLE = 'tarefas.MembroEquipe';
-export const VM_RUNTIME_ROOT = '/data/mls-base/current-102047';
+export const VM_RUNTIME_ROOT = projectRuntimeRoot(BENCH_PROJECT_ID);
+/** Projects whose bench seed attaches a module role (tarefas). The others get only the test logins. */
+const MEMBER_ROLE_PROJECTS = new Set(['102047']);
 export const VM_CM_ROOT = '/data/msg.collab.codes/current';
 export const VM_BENCH_SCRIPT = '/data/mls-base/tools/lima/prepareBench.mjs';
 
@@ -145,7 +148,7 @@ export function slotConsumers(remoteBase, projectId, fs = defaultFs) {
   return { known: true, others };
 }
 
-export function assessResetExclusive({ consumers, activity, externalDependents }) {
+export function assessResetExclusive({ consumers, activity, externalDependents, appName = BENCH_APP }) {
   if (!consumers?.known) {
     return { ok: false, reason: consumers?.reason || 'slot inventory is unknown; migrate remains available' };
   }
@@ -160,7 +163,7 @@ export function assessResetExclusive({ consumers, activity, externalDependents }
   for (const row of activity) {
     if (row?.datname !== TEST_DATABASE_NAME) continue;
     const app = row.applicationName;
-    if (typeof app !== 'string' || app === '' || app === BENCH_APP) {
+    if (typeof app !== 'string' || app === '' || app === appName) {
       return { ok: false, reason: 'a collab_app_test session is unknown or still this app; migrate remains available' };
     }
     foreign.push(app);
@@ -389,9 +392,11 @@ export async function prepareBench(input) {
       throw error;
     }
   }
-  if (projectId !== BENCH_PROJECT_ID) {
+  if (!SUPPORTED_PROJECTS.includes(projectId)) {
     throw new Error(`project ${projectId} is outside this bench`);
   }
+  const appName = projectApp(projectId);
+  const noModuleRole = !MEMBER_ROLE_PROJECTS.has(projectId);
   if (input.db !== 'migrate' && input.db !== 'reset') {
     throw new Error('db must be migrate or reset');
   }
@@ -436,7 +441,7 @@ export async function prepareBench(input) {
     ready: false,
     retainLock: true,
     projectId,
-    app: BENCH_APP,
+    app: appName,
     port: slot.port,
     db: input.db,
     database: identity.database,
@@ -463,6 +468,7 @@ export async function prepareBench(input) {
       consumers,
       activity: before.activity,
       externalDependents: before.externalDependents,
+      appName,
     });
     if (!exclusive.ok) {
       throw new BenchError(`${exclusive.reason}; migrate remains available`, {
@@ -489,21 +495,22 @@ export async function prepareBench(input) {
   let suspended = false;
   const resume = () => {
     if (!suspended) return;
-    pm2.restart(path.join(slot.remoteBase, 'pm2.apps.d', `${BENCH_APP}.config.js`));
+    pm2.restart(path.join(slot.remoteBase, 'pm2.apps.d', `${appName}.config.js`));
     suspended = false;
   };
 
   try {
     if (needsDdl) {
-      pm2.stop(BENCH_APP);
+      pm2.stop(appName);
       suspended = true;
-      baseReceipt.stoppedOnly = BENCH_APP;
+      baseReceipt.stoppedOnly = appName;
       if (input.db === 'reset') {
         const again = await Promise.resolve(probe({ database: identity.database, phase: 'stopped' })) ?? {};
         const still = assessResetExclusive({
           consumers: { known: true, others: [] },
           activity: again.activity,
           externalDependents: again.externalDependents ?? before.externalDependents,
+          appName,
         });
         if (!still.ok) {
           resume();
@@ -531,7 +538,7 @@ export async function prepareBench(input) {
         if (error instanceof BenchError) throw error;
         const receipt = failedReceipt(baseReceipt, error.message);
         receipt.ddlStarted = true;
-        receipt.stoppedOnly = BENCH_APP;
+        receipt.stoppedOnly = appName;
         if (input.db === 'reset') receipt.reset = { started: true, ok: false };
         else receipt.migrate = { executed: true, ok: false };
         throw new BenchError(error.message, receipt);
@@ -563,18 +570,17 @@ export async function prepareBench(input) {
       baseReceipt.migrate = { executed: false, reused: true, ok: true, script: path.basename(migrateJs) };
     }
 
+    const seedArgv = ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot];
+    if (!noModuleRole) seedArgv.push('--member-role', MEMBER_ROLE);
     const seed = input.runSeed
-      ? input.runSeed({
-        argv: ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot, '--member-role', MEMBER_ROLE],
-        cwd: slot.resolvedRoot,
-      })
+      ? input.runSeed({ argv: seedArgv, cwd: slot.resolvedRoot })
       : runOnVm({
-        argv: ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot, '--member-role', MEMBER_ROLE],
+        argv: seedArgv,
         spawnSync: spawn,
         ...(input.manifestDir ? { manifestDir: input.manifestDir } : {}),
       });
     const manifest = seed?.manifest;
-    if (!manifest?.companyMdmId || !manifest.personas?.responsavel || !manifest.personas?.membro) {
+    if (!manifest?.companyMdmId || !manifest?.personas?.responsavel || !manifest?.personas?.membro) {
       const receipt = failedReceipt(baseReceipt, 'bench seed did not return company and both sessions');
       receipt.ddlStarted = needsDdl;
       throw new BenchError(receipt.error, receipt);
@@ -591,7 +597,7 @@ export async function prepareBench(input) {
     }
     baseReceipt.seed = {
       ok: true,
-      memberRole: MEMBER_ROLE,
+      memberRole: noModuleRole ? null : MEMBER_ROLE,
       companyMdmId: manifest.companyMdmId,
       organizationKey: manifest.organizationKey,
       personas,
@@ -616,8 +622,8 @@ export async function prepareBench(input) {
     let describeError;
     try {
       workerCounts = typeof pm2.describe === 'function'
-        ? pm2.describe(BENCH_APP)
-        : onlineWorkerCounts('', BENCH_APP);
+        ? pm2.describe(appName)
+        : onlineWorkerCounts('', appName);
     } catch (error) {
       workerCounts = null;
       const message = error instanceof Error ? error.message : String(error);

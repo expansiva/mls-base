@@ -5,13 +5,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readDepIds, snapshotTree } from '../../scripts/publishGitDeps.mjs';
-import { loadOwnerRef, shQuote, spawnArgsFor, statusSession } from './session.mjs';
+import { SUPPORTED_PROJECTS, loadOwnerRef, projectApp, shQuote, spawnArgsFor, statusSession } from './session.mjs';
 
 export const PROJECT_ID = '102047';
 export const VM_ROOT = '/data/mls-base';
 export const BUILD_LOCK = `${VM_ROOT}/.gitbuild.lock`;
-const MARKER_OK = /##gitBackend build=ok release=(\d{14}) project=mls-102047##/;
 const MARKER_ERR = /##gitBackend build=error\b/;
+
+function markerOk(projectId) {
+  return new RegExp(`##gitBackend build=ok release=(\\d{14}) project=mls-${projectId}##`);
+}
 const OBJ_SUBJECT = 'chore: remove obj/ (build happens on the VM)';
 const REBUILD_SUBJECT = /^publish: rebuild after deps \S+(?: \S+)*$/u;
 
@@ -56,7 +59,7 @@ export async function captureRepo(repo, env) {
 }
 
 export async function planLocalSources(root, projectId = PROJECT_ID, env = process.env) {
-  if (String(projectId) !== PROJECT_ID) {
+  if (!SUPPORTED_PROJECTS.includes(String(projectId))) {
     throw Object.assign(new Error(`project refused: ${projectId}`), { code: 'project', sent: false });
   }
   const pin = readPin(root);
@@ -301,17 +304,18 @@ function runPublish(root, projectId, options) {
   });
 }
 
-function markerOf(text) {
+function markerOf(text, projectId) {
   if (MARKER_ERR.test(text || '')) return { kind: 'error' };
-  const ok = MARKER_OK.exec(text || '');
+  const ok = markerOk(projectId).exec(text || '');
   if (ok) return { kind: 'ok', releaseId: ok[1] };
   return { kind: 'absent' };
 }
 
 async function readVm(profile, plan, options) {
+  const projectId = plan.projectId;
   const rootSha = await ssh(profile, `git -C ${VM_ROOT} rev-parse HEAD`, options);
-  const appSha = await ssh(profile, `git -C ${VM_ROOT}/mls-${PROJECT_ID} rev-parse HEAD`, options);
-  const alias = await ssh(profile, `readlink ${VM_ROOT}/current-${PROJECT_ID}`, options);
+  const appSha = await ssh(profile, `git -C ${VM_ROOT}/mls-${projectId} rev-parse HEAD`, options);
+  const alias = await ssh(profile, `readlink ${VM_ROOT}/current-${projectId}`, options);
   const workersRaw = await ssh(profile, 'pm2 jlist', options);
   if ([rootSha, appSha, alias].some((item) => item.uncertain || item.code !== 0)) {
     return { uncertain: true };
@@ -355,11 +359,11 @@ function sourcesMatch(plan, vm, appSha) {
   if (stamp.platformCommit !== plan.rootSha) return false;
   if (stamp.versionRef !== appSha) return false;
   if (stamp.libs !== plan.pin.libs || stamp.monaco !== plan.pin.monaco) return false;
-  if (String(stamp.client || '') !== PROJECT_ID) return false;
+  if (String(stamp.client || '') !== plan.projectId) return false;
   if (!String(vm.alias || '').includes(String(stamp.id || ''))) return false;
-  const app2047 = (vm.workers || []).find((item) => item.name === 'app2047');
-  if (!app2047) return false;
-  if (!app2047.cwd.includes(`current-${PROJECT_ID}`)) return false;
+  const app = (vm.workers || []).find((item) => item.name === projectApp(plan.projectId));
+  if (!app) return false;
+  if (!app.cwd.includes(`current-${plan.projectId}`)) return false;
   for (const dep of plan.deps) {
     if (vm.depTrees[dep.id] !== dep.tree) return false;
   }
@@ -383,7 +387,7 @@ export async function prepareSources({
 } = {}) {
   const options = { env, sshBin, timeoutMs, spawnPublish };
   const sessionOptions = { sshBin, env, timeoutMs, lockPath: lockPath || process.env.LIMA_LOCK_PATH };
-  if (String(projectId) !== PROJECT_ID) return failed('preparing', { code: 'project', sent: false });
+  if (!SUPPORTED_PROJECTS.includes(String(projectId))) return failed('preparing', { code: 'project', sent: false });
   const ref = loadOwnerRef(profile, session);
   if (!ref?.operationId) return failed('preparing', { code: 'operation', sent: false });
   const status = await statusSession(profile, session, sessionOptions);
@@ -444,7 +448,7 @@ export async function prepareSources({
       code: 'concurrent', sent: true, uncertain: true, initialAppSha: plan.appSha, finalAppSha: after.appSha,
     });
   }
-  const publishMarker = markerOf(publishText);
+  const publishMarker = markerOf(publishText, projectId);
   if (publishMarker.kind === 'error' || (published.code !== 0 && appPushed)) {
     return failed('failed', { code: 'build', sent: true, initialAppSha: plan.appSha, finalAppSha: after.appSha });
   }
@@ -459,19 +463,19 @@ export async function prepareSources({
       return failed('failed', { code: 'release', sent: true });
     }
     const built = await ssh(profile,
-      `flock ${BUILD_LOCK} node ${VM_ROOT}/scripts/runtime/gitPostReceive.mjs --root ${VM_ROOT} --project ${PROJECT_ID}`,
+      `flock ${BUILD_LOCK} node ${VM_ROOT}/scripts/runtime/gitPostReceive.mjs --root ${VM_ROOT} --project ${projectId}`,
       options);
     forcedBuild = true;
     sent = true;
     buildText += `\n${built.stdout}\n${built.stderr}`;
     if (built.uncertain) return failed('failed', { code: 'build-disconnect', sent: true, uncertain: true });
-    if (markerOf(`${built.stdout}\n${built.stderr}`).kind !== 'ok') {
+    if (markerOf(`${built.stdout}\n${built.stderr}`, projectId).kind !== 'ok') {
       return failed('failed', { code: 'build', sent: true });
     }
     observed = await readVm(profile, plan, options);
     if (observed.uncertain) return failed('failed', { code: 'ssh', sent: true, uncertain: true });
   }
-  if (markerOf(buildText).kind === 'error') return failed('failed', { code: 'build', sent });
+  if (markerOf(buildText, projectId).kind === 'error') return failed('failed', { code: 'build', sent });
   if (!sourcesMatch(plan, observed, after.appSha)) return failed('failed', { code: 'release', sent });
   return {
     ok: true,
@@ -488,7 +492,7 @@ export async function prepareSources({
       depTrees: observed.depTrees,
       release: observed.stamp,
       alias: observed.alias,
-      workers: (observed.workers || []).filter((item) => item.name === 'app2047'),
+      workers: (observed.workers || []).filter((item) => item.name === projectApp(projectId)),
     },
   };
 }

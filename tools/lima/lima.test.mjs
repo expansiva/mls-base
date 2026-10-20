@@ -151,7 +151,7 @@ test('deadlines stay separate and help does not open ssh', async () => {
   const box = bench();
   const help = await runCli(['help'], box.env);
   assert.equal(help.code, 0);
-  assert.match(help.stdout, /begin 102047/u);
+  assert.match(help.stdout, /begin <102047\|102056>/u);
   assert.equal(sshLines(box.sshLog).length, 0);
 });
 
@@ -187,9 +187,10 @@ test('remote host, wrong project and prepare do not succeed', async () => {
   const remote = await runCli(['begin', '102047', '--session', 'a', '--host', 'vm.example'], box.env);
   assert.notEqual(remote.code, 0);
   assert.match(remote.stderr, /remote host/u);
-  const other = await runCli(['begin', '102056', '--session', 'a'], box.env);
+  const other = await runCli(['begin', '102043', '--session', 'a'], box.env);
   assert.notEqual(other.code, 0);
   assert.match(other.stderr, /102047/u);
+  assert.match(other.stderr, /102056/u);
   const prepared = await runCli(['prepare', '102047', '--session', 'a'], box.env);
   assert.notEqual(prepared.code, 0);
   assert.doesNotMatch(prepared.stdout, /"ready":true/u);
@@ -232,6 +233,21 @@ test('a second session with the same name is refused and the owner can resume', 
   assert.equal(body.resumed, true);
   assert.equal(body.owned, true);
   assert.equal(Object.hasOwn(body, 'ownerId'), false);
+});
+
+test('a reservation for one bench project refuses another', async () => {
+  const box = bench();
+  const first = await runCli(['begin', '102047', '--session', 'campanha'], box.env);
+  assert.equal(first.code, 0, first.stderr);
+  const other = await runCli(['begin', '102056', '--session', 'outra'], box.env);
+  assert.equal(other.code, 73, other.stderr);
+  const begun = await runCli(['begin', '102056', '--session', 'sozinho'], {
+    ...box.env,
+    LIMA_STATE_DIR: join(box.root, 'solo-state'),
+    LIMA_LOCK_PATH: join(box.root, 'solo.lock'),
+  });
+  assert.equal(begun.code, 0, begun.stderr);
+  assert.equal(JSON.parse(begun.stdout).projectId, '102056');
 });
 
 test('end is refused while an operation is active, and ssh failure is closed', async () => {
