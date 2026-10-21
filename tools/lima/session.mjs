@@ -1,6 +1,6 @@
 // Must run on Mac (lima) AND Windows (multipass). Read mls-base/skills/crossPlatform.md first.
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -209,13 +209,19 @@ export async function beginSession(profile, session, projectId, options = {}) {
   assertProjectId(projectId);
   const existing = loadOwnerRef(profile, session);
   if (existing) {
-    if (existing.projectId !== projectId) {
-      const error = limaError(`session busy: ${session}`, 'busy');
-      error.exitCode = BUSY_EXIT;
-      throw error;
-    }
     const status = await vmOp(profile, { op: 'status', ownerId: existing.ownerId }, options);
-    if (status.owned) return { resumed: true, ref: existing, view: publicView(status) };
+    if (existing.projectId !== projectId) {
+      // A local reference of another project is busy only while the VM still holds it.
+      // A failed status read stays busy: an unproved release is never assumed.
+      if (status.owned || status.ok !== true) {
+        const error = limaError(`session busy: ${session}`, 'busy', { result: publicView(status) });
+        error.exitCode = BUSY_EXIT;
+        throw error;
+      }
+      unlinkSync(statePath(profile, session));
+    } else if (status.owned) {
+      return { resumed: true, ref: existing, view: publicView(status) };
+    }
   }
   const acquired = await vmOp(profile, { op: 'acquire', session, projectId }, options);
   if (!acquired.ok) {

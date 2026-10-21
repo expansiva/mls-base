@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
-  CLAIM_TIMEOUT_MS, LONG_TIMEOUT_MS, beginSession, bindLimaBrowser, callVm, loadOwnerRef, resolveLocalProfile, withLimaOperation,
+  CLAIM_TIMEOUT_MS, LONG_TIMEOUT_MS, beginSession, bindLimaBrowser, callVm, loadOwnerRef, resolveLocalProfile, saveOwnerRef, withLimaOperation,
 } from './session.mjs';
 
 const BROWSER = fileURLToPath(new URL('../browser/browser.mjs', import.meta.url));
@@ -647,4 +647,17 @@ test('prepare refuses while a browser is open and two campaigns cannot prepare t
   const done = await first;
   assert.equal(done.code, 0, done.stderr);
   assert.match(readFileSync(race.lockPath, 'utf8'), /"phase":"ready"/u);
+});
+
+test('a stale local reference of another project does not make the session busy; a live one does', async () => {
+  const box = bench();
+  saveOwnerRef(box.profile, { vm: box.profile.alias, session: 'publish', projectId: '102047', ownerId: 'gone-owner', operationId: null });
+  const begun = await beginSession(box.profile, 'publish', '102056', box.options);
+  assert.equal(begun.resumed, false);
+  assert.equal(loadOwnerRef(box.profile, 'publish').projectId, '102056');
+
+  const other = bench();
+  await beginSession(other.profile, 'publish', '102047', other.options);
+  await assert.rejects(() => beginSession(other.profile, 'publish', '102056', other.options), /session busy: publish/u);
+  assert.equal(loadOwnerRef(other.profile, 'publish').projectId, '102047');
 });
