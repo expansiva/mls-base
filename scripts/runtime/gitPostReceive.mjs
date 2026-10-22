@@ -29,6 +29,7 @@ import {
 import { VM_TSCONFIG, writeVmTsconfig } from './addNewVersion.mjs';
 import { ensureProjectApp, hostedProjectIds } from './vmApps.mjs';
 import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
+import { homedir } from 'node:os';
 
 const TSC_ERROR_LINES = 40;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -689,13 +690,53 @@ export function staleClusterWorkers(jlist, { appName, reloadStartedAt, restartTi
   });
 }
 
+function readonlyHelperPath(env) {
+  const dir = typeof env.COLLAB_LIB_DIR === 'string' ? env.COLLAB_LIB_DIR.trim() : '';
+  return join(dir || '/usr/local/lib/collab', 'pm2-readonly.mjs');
+}
+
+function resolvePm2Bin(env) {
+  const explicit = typeof env.COLLAB_PM2_BIN === 'string' ? env.COLLAB_PM2_BIN.trim() : '';
+  if (explicit) return explicit;
+  for (const dir of String(env.PATH ?? '').split(':')) {
+    if (!dir) continue;
+    const candidate = join(dir, 'pm2');
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error('gitPostReceive: pm2 list unavailable: binary not found');
+}
+
 async function loadPm2Jlist({ jlistFn, root, env }) {
   if (jlistFn) {
     const raw = await jlistFn();
     return Array.isArray(raw) ? raw : parsePm2Jlist(raw);
   }
-  const listed = spawnSync('pm2', ['jlist'], { cwd: root, env, encoding: 'utf8' });
-  return parsePm2Jlist(`${listed.stdout ?? ''}${listed.stderr ?? ''}`);
+  // Same default as pm2 itself: the hook may run without PM2_HOME in its environment.
+  const explicitHome = typeof env.PM2_HOME === 'string' ? env.PM2_HOME.trim() : '';
+  const userHome = typeof env.HOME === 'string' && env.HOME.trim() ? env.HOME.trim() : homedir();
+  const pm2Home = explicitHome || join(userHome, '.pm2');
+  const helper = readonlyHelperPath(env);
+  if (!existsSync(helper)) throw new Error('gitPostReceive: pm2 list unavailable: readonly helper is missing');
+  const listed = spawnSync(process.execPath, [helper, 'list', resolvePm2Bin(env)], {
+    cwd: root,
+    env: { ...env, PM2_HOME: pm2Home },
+    encoding: 'utf8',
+    timeout: 8000,
+  });
+  if (listed.error || listed.status !== 0) {
+    const detail = `${listed.stderr ?? ''}`.trim().split('\n').find((line) => line.trim())
+      || listed.error?.message
+      || 'unavailable';
+    throw new Error(`gitPostReceive: pm2 list unavailable: ${detail}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(listed.stdout ?? '');
+  } catch {
+    parsed = null;
+  }
+  if (!Array.isArray(parsed)) throw new Error('gitPostReceive: pm2 list unavailable: invalid payload');
+  return parsed;
 }
 
 /**
@@ -736,10 +777,19 @@ export async function reloadPm2Now(root, {
   mkdirSync(join(root, 'logs'), { recursive: true });
   write(`--- pm2 reload (${pm2Config})\n`);
 
-  const listed = appName
-    ? await loadPm2Jlist({ jlistFn, root, env })
-    : [];
-  const restartTimeBefore = appName ? restartTimesById(listed, appName) : {};
+  let listFailed = false;
+  const readList = async () => {
+    try {
+      return await loadPm2Jlist({ jlistFn, root, env });
+    } catch (err) {
+      listFailed = true;
+      write(`${err instanceof Error ? err.message : String(err)}\n`);
+      return null;
+    }
+  };
+
+  const listed = appName ? await readList() : [];
+  const restartTimeBefore = listed ? restartTimesById(listed, appName) : {};
   const reloadStartedAt = now();
 
   let last = { code: 1, out: '' };
@@ -756,15 +806,27 @@ export async function reloadPm2Now(root, {
   }
 
   if (appName) {
-    const after = await loadPm2Jlist({ jlistFn, root, env });
-    const stale = staleClusterWorkers(after, { appName, reloadStartedAt, restartTimeBefore });
-    for (const proc of stale) write(`${formatStaleWorkerLog(appName, proc.pm_id)}\n`);
-    if (stale.length > 0) {
-      write('gitPostReceive: retry pm2 reload (uneven workers)\n');
-      last = await run('pm2', ['startOrReload', pm2Config, '--update-env'], { cwd: root, env });
-      const again = await loadPm2Jlist({ jlistFn, root, env });
-      const still = staleClusterWorkers(again, { appName, reloadStartedAt, restartTimeBefore });
-      for (const proc of still) write(`${formatStaleWorkerLog(appName, proc.pm_id)}\n`);
+    if (listFailed) {
+      write('gitPostReceive: worker check failed\n');
+    } else {
+      const after = await readList();
+      if (!after) {
+        write('gitPostReceive: worker check failed\n');
+      } else {
+        const stale = staleClusterWorkers(after, { appName, reloadStartedAt, restartTimeBefore });
+        for (const proc of stale) write(`${formatStaleWorkerLog(appName, proc.pm_id)}\n`);
+        if (stale.length > 0) {
+          write('gitPostReceive: retry pm2 reload (uneven workers)\n');
+          last = await run('pm2', ['startOrReload', pm2Config, '--update-env'], { cwd: root, env });
+          const again = await readList();
+          if (!again) {
+            write('gitPostReceive: worker check failed\n');
+          } else {
+            const still = staleClusterWorkers(again, { appName, reloadStartedAt, restartTimeBefore });
+            for (const proc of still) write(`${formatStaleWorkerLog(appName, proc.pm_id)}\n`);
+          }
+        }
+      }
     }
   }
 

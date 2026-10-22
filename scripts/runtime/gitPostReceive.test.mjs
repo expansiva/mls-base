@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -545,6 +545,92 @@ test('detector: dois workers novos ⇒ silêncio; um velho ⇒ log + retry uma v
   }
 });
 
+test('leitura padrão usa o helper passivo e falha fechada', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb94-passive-'));
+  const lib = mkdtempSync(join(tmpdir(), 'gb94-lib-'));
+  const bin = mkdtempSync(join(tmpdir(), 'gb94-bin-'));
+  const trace = join(root, 'trace.txt');
+  try {
+    writeFileSync(join(root, 'pm2.config.js'), 'module.exports = [];\n');
+    writeFileSync(join(bin, 'pm2'), '#!/bin/sh\necho executed >> "$TRACE"\nexit 99\n');
+    chmodSync(join(bin, 'pm2'), 0o755);
+    writeFileSync(join(lib, 'pm2-readonly.mjs'), `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.TRACE, process.argv.slice(2).join(' ') + '\\n');
+if (process.env.FAIL === '1') {
+  process.stderr.write('unavailable\\n');
+  process.exit(3);
+}
+process.stdout.write(process.env.PAYLOAD + '\\n');
+`);
+    const env = {
+      PATH: bin,
+      TRACE: trace,
+      PM2_HOME: join(root, '.pm2'),
+      COLLAB_LIB_DIR: lib,
+      COLLAB_PM2_BIN: join(bin, 'pm2'),
+      FAIL: '1',
+      PAYLOAD: '[]',
+    };
+    const logs = [];
+    const runs = [];
+    await reloadPm2Now(root, {
+      appName: 'app2043',
+      now: () => 1000,
+      env,
+      write: (text) => logs.push(text),
+      run: async (cmd, args) => {
+        runs.push({ cmd, args });
+        return { code: 0, out: '' };
+      },
+    });
+    const traced = readFileSync(trace, 'utf8');
+    assert.match(traced, /list /);
+    assert.equal(traced.includes('executed'), false);
+    assert.ok(logs.some((line) => line.includes('pm2 list unavailable')));
+    assert.ok(logs.some((line) => line.includes('worker check failed')));
+    assert.equal(logs.some((line) => line.includes('still on the previous release')), false);
+    assert.equal(runs.filter((call) => call.args.includes('startOrReload')).length, 1);
+
+    writeFileSync(trace, '');
+    env.FAIL = '0';
+    env.PAYLOAD = JSON.stringify([
+      { name: 'app2043', pm_id: 0, pm2_env: { pm_uptime: 100, restart_time: 1, exec_mode: 'cluster_mode' } },
+      { name: 'app2043', pm_id: 1, pm2_env: { pm_uptime: 100, restart_time: 1, exec_mode: 'cluster_mode' } },
+    ]);
+    const okLogs = [];
+    let calls = 0;
+    await reloadPm2Now(root, {
+      appName: 'app2043',
+      now: () => 1000,
+      env,
+      write: (text) => okLogs.push(text),
+      run: async () => {
+        calls += 1;
+        if (calls === 1) {
+          env.PAYLOAD = JSON.stringify([
+            { name: 'app2043', pm_id: 0, pm2_env: { pm_uptime: 5000, restart_time: 2, exec_mode: 'cluster_mode' } },
+            { name: 'app2043', pm_id: 1, pm2_env: { pm_uptime: 100, restart_time: 1, exec_mode: 'cluster_mode' } },
+          ]);
+        }
+        return { code: 0, out: '' };
+      },
+    });
+    assert.ok(okLogs.some((line) => line.includes('app2043 worker 1 still on the previous release')));
+    assert.equal(readFileSync(trace, 'utf8').includes('jlist'), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(lib, { recursive: true, force: true });
+    rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test('o hook não lê workers por pm2 jlist', () => {
+  const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
+  assert.equal(src.includes("['jlist']"), false);
+  assert.match(src, /pm2-readonly\.mjs/);
+});
+
 test('o hook sempre passa --skip-pm2 e só recarrega depois do restoreWorktree', () => {
   const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
   assert.match(src, /releaseArgs\.push\('--skip-pm2'\)/);
@@ -692,4 +778,35 @@ test('hook chama reportClientConfig no build do cliente, não no skip-build', ()
   assert.ok(compile > report, 'validate before compile — warning even if build is red');
   assert.match(src, /does not block/);
   assert.doesNotMatch(src, /process\.exit\([^)]*result/);
+});
+
+test('sem PM2_HOME no ambiente, a leitura usa $HOME/.pm2 como o próprio pm2', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gb94-home-'));
+  const lib = mkdtempSync(join(tmpdir(), 'gb94-lib-'));
+  const bin = mkdtempSync(join(tmpdir(), 'gb94-bin-'));
+  const trace = join(root, 'trace.txt');
+  try {
+    writeFileSync(join(root, 'pm2.config.js'), 'module.exports = [];\n');
+    writeFileSync(join(bin, 'pm2'), '#!/bin/sh\nexit 99\n');
+    chmodSync(join(bin, 'pm2'), 0o755);
+    writeFileSync(join(lib, 'pm2-readonly.mjs'), `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.TRACE, 'home=' + process.env.PM2_HOME + '\\n');
+process.stdout.write('[]\\n');
+`);
+    const logs = [];
+    await reloadPm2Now(root, {
+      appName: 'app2043',
+      now: () => 1000,
+      env: { PATH: bin, TRACE: trace, HOME: root, COLLAB_LIB_DIR: lib, COLLAB_PM2_BIN: join(bin, 'pm2') },
+      write: (text) => logs.push(text),
+      run: async () => ({ code: 0, out: '' }),
+    });
+    assert.match(readFileSync(trace, 'utf8'), new RegExp(`home=${join(root, '.pm2').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    assert.equal(logs.some((line) => line.includes('PM2_HOME is not set')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(lib, { recursive: true, force: true });
+    rmSync(bin, { recursive: true, force: true });
+  }
 });
