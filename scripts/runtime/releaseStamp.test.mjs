@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import {
   collectReleaseStamp,
   gitHead,
+  readDepTrees,
   readModelCommit,
   writeReleaseStamp,
 } from './releaseStamp.mjs';
@@ -94,5 +95,34 @@ test('collectReleaseStamp grava o HEAD do mls-base em platformCommit', () => {
     const head = git(root, ['rev-parse', 'HEAD']).out;
     const stamp = collectReleaseStamp({ root, releaseId: '20260904153000', clientId: '' });
     assert.equal(stamp.platformCommit, head);
+  });
+});
+
+test('collectReleaseStamp grava a árvore de cada dependência declarada', () => {
+  withRoot((root) => {
+    const client = join(root, 'mls-102043');
+    mkdirSync(join(client, 'l5'), { recursive: true });
+    writeFileSync(join(client, 'l5', 'config.json'), `${JSON.stringify({ workspaceDependencies: ['102034', '102033', '102099'] })}\n`);
+    const trees = {};
+    for (const id of ['102034', '102033']) {
+      const dep = join(root, `mls-${id}`);
+      mkdirSync(dep, { recursive: true });
+      writeFileSync(join(dep, 'README'), `${id}\n`);
+      git(dep, ['init', '-q']);
+      git(dep, ['add', '-A']);
+      const committed = spawnSync(
+        'git',
+        ['-C', dep, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init'],
+        { encoding: 'utf8' },
+      );
+      assert.equal(committed.status, 0, `${committed.stdout ?? ''}${committed.stderr ?? ''}`);
+      trees[id] = git(dep, ['rev-parse', 'HEAD^{tree}']).out;
+    }
+    assert.deepEqual(readDepTrees(root, '102043'), trees);
+    const stamp = collectReleaseStamp({ root, releaseId: '20260904153000', clientId: '102043' });
+    assert.deepEqual(stamp.deps, trees);
+    const early = collectReleaseStamp({ root, releaseId: '20260904153000', clientId: '102043', deps: { 102034: 'before' } });
+    assert.deepEqual(early.deps, { 102034: 'before' });
+    assert.deepEqual(collectReleaseStamp({ root, releaseId: '20260904153000', clientId: '' }).deps, {});
   });
 });

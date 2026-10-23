@@ -89,7 +89,10 @@ if (remote.startsWith('node --input-type=module')) {
   const appSha = spawnSync('git', ['-C', join(vm, 'mls-102047'), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
   const pin = JSON.parse(readFileSync(process.env.PREPARE_PIN, 'utf8'));
   const release = join(vm, 'releases', ${JSON.stringify(RELEASE_ID)});
-  const stamp = { id: ${JSON.stringify(RELEASE_ID)}, client: '102047', versionRef: appSha, platformCommit: rootSha, libs: pin.libs, monaco: pin.monaco, secret: 'no' };
+  const declared = JSON.parse(readFileSync(join(vm, 'mls-102047', 'l5', 'config.json'), 'utf8')).workspaceDependencies || [];
+  const deps = {};
+  for (const id of declared) deps[id] = spawnSync('git', ['-C', join(vm, 'mls-' + id), 'rev-parse', 'HEAD^{tree}'], { encoding: 'utf8' }).stdout.trim();
+  const stamp = { id: ${JSON.stringify(RELEASE_ID)}, client: '102047', versionRef: appSha, platformCommit: rootSha, libs: pin.libs, monaco: pin.monaco, deps, secret: 'no' };
   writeFileSync(join(release, 'release.json'), JSON.stringify(stamp));
   process.stdout.write('##gitBackend build=ok release=${RELEASE_ID} project=mls-102047##\\n');
 } else if (remote === 'git -C /data/mls-base rev-parse HEAD' && process.env.PREPARE_TOUCH === 'lease') {
@@ -162,6 +165,7 @@ function bench(mode = {}) {
   const stamp = {
     id: RELEASE_ID, client: '102047', versionRef: appSha, platformCommit: rootSha, libs: PIN.libs, monaco: PIN.monaco,
   };
+  if (mode.stampDeps !== false) stamp.deps = { 102034: git(dep, ['rev-parse', 'HEAD^{tree}']) };
   writeFileSync(join(release, 'release.json'), JSON.stringify(stamp));
   // Windows needs admin/Developer Mode for a symlink; a junction (absolute target) needs neither.
   if (process.platform === 'win32') symlinkSync(release, join(vm, 'current-102047'), 'junction');
@@ -182,7 +186,7 @@ function bench(mode = {}) {
   };
   const profile = { sshConfig, alias: 'lima-ubuntu24', root, stateDir };
   const options = { sshBin, lockPath, env };
-  return { root, mac, vm, sshLog, pm2, env, profile, options, rootSha, appSha };
+  return { root, mac, vm, sshLog, pm2, env, profile, options, rootSha, appSha, dep };
 }
 
 function logText(sshLog) {
@@ -287,6 +291,49 @@ test('coherent tree is a no-op and a root change forces the official build', asy
   assert.equal(logText(moved.sshLog).includes('gitPostReceive.mjs --root /data/mls-base --project 102047'), true);
   assert.equal(readFileSync(moved.pm2, 'utf8'), before);
   assert.equal(logText(moved.sshLog).includes('102056'), false);
+});
+
+function quietPrepare(box) {
+  return held(box, () => prepareSources({
+    root: box.mac, profile: box.profile, session: 'codex-s5', env: box.env, sshBin: box.options.sshBin,
+    lockPath: box.options.lockPath,
+    spawnPublish: () => ({ code: 0, text: '[publishGit] Nothing to publish\n', uncertain: false }),
+  }));
+}
+
+test('release built from the planned dependency trees is a no-op', async () => {
+  const same = bench();
+  const sameResult = await quietPrepare(same);
+  assert.equal(sameResult.ok, true);
+  assert.equal(sameResult.forcedBuild, false);
+  assert.deepEqual(sameResult.evidence.release.deps, { 102034: git(same.dep, ['rev-parse', 'HEAD^{tree}']) });
+  assert.equal(logText(same.sshLog).includes('gitPostReceive'), false);
+});
+
+test('dependency repos updated on the VM by another prepare still force this release to rebuild', async () => {
+  // Another project's prepare already moved the dependency repo on the VM, but this
+  // project's release was built before: the VM repo matches, the release does not.
+  const moved = bench();
+  const oldTree = git(moved.dep, ['rev-parse', 'HEAD^{tree}']);
+  commitFile(moved.dep, 'NEW', 'dep v2\n', 'dep v2');
+  const newTree = git(moved.dep, ['rev-parse', 'HEAD^{tree}']);
+  git(join(moved.vm, 'mls-102034'), ['pull', '-q', '--ff-only']);
+  assert.equal(git(join(moved.vm, 'mls-102034'), ['rev-parse', 'HEAD^{tree}']), newTree);
+  const movedResult = await quietPrepare(moved);
+  assert.equal(movedResult.ok, true);
+  assert.equal(movedResult.forcedBuild, true);
+  assert.notEqual(oldTree, newTree);
+  assert.deepEqual(movedResult.evidence.release.deps, { 102034: newTree });
+  assert.equal(logText(moved.sshLog).includes('gitPostReceive.mjs --root /data/mls-base --project 102047'), true);
+});
+
+test('a release stamp without deps forces the rebuild', async () => {
+  // A release stamped before deps were recorded cannot prove its dependencies.
+  const legacy = bench({ stampDeps: false });
+  const legacyResult = await quietPrepare(legacy);
+  assert.equal(legacyResult.ok, true);
+  assert.equal(legacyResult.forcedBuild, true);
+  assert.deepEqual(legacyResult.evidence.release.deps, { 102034: git(legacy.dep, ['rev-parse', 'HEAD^{tree}']) });
 });
 
 test('build error is not ready and a disconnect keeps the worktree', async () => {
@@ -679,7 +726,7 @@ function armPublisher(box) {
 # simulated hook/build/release — not a live VM
 input=$(cat)
 newrev=$(printf '%s\\n' "$input" | awk '$3=="refs/heads/main" { print $2; exit }')
-"${process.execPath}" -e 'const fs=require("node:fs"); const file=process.argv[1]; const stamp=JSON.parse(fs.readFileSync(file,"utf8")); stamp.versionRef=process.argv[2]; fs.writeFileSync(file, JSON.stringify(stamp));' ${JSON.stringify(release)} "$newrev"
+"${process.execPath}" -e 'const fs=require("node:fs"); const file=process.argv[1]; const stamp=JSON.parse(fs.readFileSync(file,"utf8")); stamp.versionRef=process.argv[2]; const env={...process.env}; for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key]; stamp.deps={102034: require("node:child_process").spawnSync("git", ["-C", process.argv[3], "rev-parse", "HEAD^{tree}"], {encoding: "utf8", env}).stdout.trim()}; fs.writeFileSync(file, JSON.stringify(stamp));' ${JSON.stringify(release)} "$newrev" ${JSON.stringify(join(box.vm, 'mls-102034'))}
 printf 'simulated-hook %s\\n' "$newrev" >> ${JSON.stringify(box.sshLog)}
 echo "##gitBackend build=ok release=${RELEASE_ID} project=mls-102047##"
 `);

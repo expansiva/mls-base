@@ -322,7 +322,7 @@ async function readVm(profile, plan, options) {
   }
   const releasePath = alias.stdout.startsWith('/') ? alias.stdout : `${VM_ROOT}/${alias.stdout}`;
   const stampRaw = await ssh(profile,
-    `node -e 'const fs=require("node:fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); const keep=["id","client","versionRef","platformCommit","libs","monaco"]; const out={}; for (const key of keep) out[key]=j[key]??null; process.stdout.write(JSON.stringify(out));' ${releasePath}/release.json`,
+    `node -e 'const fs=require("node:fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); const keep=["id","client","versionRef","platformCommit","libs","monaco","deps"]; const out={}; for (const key of keep) out[key]=j[key]??null; process.stdout.write(JSON.stringify(out));' ${releasePath}/release.json`,
     options);
   let stamp = null;
   try { stamp = JSON.parse(stampRaw.stdout); } catch { stamp = null; }
@@ -364,8 +364,14 @@ function sourcesMatch(plan, vm, appSha) {
   const app = (vm.workers || []).find((item) => item.name === projectApp(plan.projectId));
   if (!app) return false;
   if (!app.cwd.includes(`current-${plan.projectId}`)) return false;
+  // The active release must have been built from these dependency trees, not only the
+  // repos on the VM: another project's prepare can move them without rebuilding this one.
+  // A stamp without deps (older release) cannot prove it, so it is not coherent.
+  const built = stamp.deps;
+  if (!built || typeof built !== 'object') return false;
   for (const dep of plan.deps) {
     if (vm.depTrees[dep.id] !== dep.tree) return false;
+    if (built[dep.id] !== dep.tree) return false;
   }
   return true;
 }

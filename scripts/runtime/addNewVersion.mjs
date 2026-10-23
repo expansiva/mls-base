@@ -23,7 +23,7 @@ import {
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pathIdsOf, versionedTsconfigPathsFile } from '../syncTsconfigPaths.mjs';
-import { collectReleaseStamp, writeReleaseStamp } from './releaseStamp.mjs';
+import { collectReleaseStamp, readDepTrees, writeReleaseStamp } from './releaseStamp.mjs';
 import { databaseUrlTestFor, declaredTestMode } from './vmApps.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -255,6 +255,8 @@ function main() {
   const clientFlag = argv.indexOf('--client');
   const clientId = clientFlag >= 0 ? argv[clientFlag + 1] : argv.find((a) => !a.startsWith('--'));
   const clientArg = clientId ? ` --client ${clientId}` : '';
+  // Dependency trees are read before the compile: they are what this release is built from.
+  const depTrees = readDepTrees(ROOT, clientId || '');
   console.log(`--- compile${clientId ? ` (client ${clientId})` : ''}`);
   // Call the compiler directly (NOT `pnpm build`, which now points to this file) to
   // avoid infinite recursion.
@@ -275,7 +277,7 @@ function main() {
   // and migrate resolve .env from their cwd, and releases are recreated on every publish.
   if (existsSync(join(ROOT, '.env'))) cpSync(join(ROOT, '.env'), join(releaseDir, '.env'));
   symlinkSync(join(ROOT, 'node_modules'), join(releaseDir, 'node_modules'), 'dir');
-  const stamp = collectReleaseStamp({ root: ROOT, releaseId, clientId: clientId || '' });
+  const stamp = collectReleaseStamp({ root: ROOT, releaseId, clientId: clientId || '', deps: depTrees });
   writeReleaseStamp(releaseDir, stamp);
   console.log(`--- release stamp libs=${stamp.libs} monaco=${stamp.monaco} platform=${stamp.platformCommit}`);
 
