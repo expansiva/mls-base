@@ -57,7 +57,8 @@ Import alias: `/_102027_/l2/x.js` → `mls-102027/l2/x.ts`, `/_102025_/...` → 
 - `add-step` — inserts a step under `parentStepId` (into the parent's `nextSteps`). Backend:
   `intentAddStep` → `tasks.ts:addTaskAISteps` → `aiOrchestrator.ts:addSteps`. An added `agent`/`tool`
   step that is NOT `waiting_dependency` is enqueued to run immediately; a `waiting_dependency` step
-  waits for its `dependsOn` to complete.
+  waits for its `dependsOn` to complete. `add-step` rejects `status: 'failed'` with a 409 (`Invalid step status in
+  'add-step' intent`); to fail a step, add it and send `update-status` with `failed`, or add a `completed` result with the reason in the text.
 - `update-status` — changes a step's status (`pending|in_progress|completed|failed|...`). Completing
   a step **unlocks** downstream `waiting_dependency` steps. Backend: `intentUpdateStatus` →
   `tasks.ts:intentUpdateStatus` + `unlockWaitingDependencySteps`.
