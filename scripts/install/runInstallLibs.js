@@ -52,6 +52,7 @@ async function runDownload({
       lastLabel = file.label;
     }
   }
+  fs.writeFileSync(path.join(root, 'types', '.libs-pin'), `${pin.libs}:${pin.monaco}\n`);
 }
 
 module.exports = { runDownload };

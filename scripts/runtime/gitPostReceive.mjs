@@ -17,6 +17,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTypeCheckMarkers } from '../typeCheckPolicy.mjs';
@@ -30,6 +31,10 @@ import { VM_TSCONFIG, writeVmTsconfig } from './addNewVersion.mjs';
 import { ensureProjectApp, hostedProjectIds } from './vmApps.mjs';
 import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 import { homedir } from 'node:os';
+
+const require = createRequire(import.meta.url);
+const { readLibsPin } = require('../install/libsPin.js');
+const { runDownload } = require('../install/runInstallLibs.js');
 
 const TSC_ERROR_LINES = 40;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -837,6 +842,97 @@ export async function reloadPm2Now(root, {
   }
 }
 
+function readInstalledLibsPin(root) {
+  try {
+    return readFileSync(join(root, 'types', '.libs-pin'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+export async function ensureLibsMatchPin(root, { download = runDownload, write = (text) => process.stderr.write(text) } = {}) {
+  const pin = readLibsPin(root);
+  const installed = readInstalledLibsPin(root);
+  const wanted = `${pin.libs}:${pin.monaco}`;
+  if (installed === wanted) return { ok: true };
+  write(`gitPostReceive: lib pin ${pin.libs} não instalada (instalada: ${installed || 'nenhuma'}), renovando\n`);
+  try {
+    await download({ root });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = `gitPostReceive: lib pin ${pin.libs} não instalada: ${detail}`;
+    write(`${message}\n`);
+    return { ok: false, message };
+  }
+  return { ok: true };
+}
+
+/**
+ * Pin check, then the dep loop, the pushed project and the fecho.
+ * A pin failure returns before any of those builds.
+ */
+export async function compileReleaseProjects(root, id, deps, { run = runLive, write, download } = {}) {
+  const projectName = `mls-${id}`;
+  const libs = await ensureLibsMatchPin(root, {
+    ...(download ? { download } : {}),
+    ...(write ? { write } : {}),
+  });
+  if (!libs.ok) {
+    // Same marker as every other build failure: it is what the release reads to say `build=error`.
+    (write ?? ((text) => process.stderr.write(text)))(`##gitBackend build=error project=${projectName}##\n`);
+    return libs;
+  }
+
+  for (const depId of deps) {
+    if (depId === id) continue;
+    const depName = `mls-${depId}`;
+    if (!existsSync(join(root, depName))) {
+      process.stderr.write(`gitPostReceive: dep ${depName} does not exist on the VM — ignored\n`);
+      continue;
+    }
+    process.stderr.write(`gitPostReceive: compiling dep ${depName}\n`);
+    const depBuild = await run(
+      'node',
+      ['scripts/runtime/buildProjectsObj.mjs', '--only', depId, '--force'],
+      { cwd: root, env: { ...process.env, BUILDCI_OFFLINE: '1' } },
+    );
+    const depVerdict = evaluateBuild(depBuild.code, depBuild.out);
+    if (!depVerdict.ok) {
+      // Nomeia o DEP, não o cliente: quem quebrou foi ele, e a release não sobe (D-C2).
+      printError(depName, depVerdict);
+      return { ok: false };
+    }
+    restoreWorktree(root, depName);
+  }
+
+  // Deps have landed. Rewrite aliases now so the project's typeCheck sees
+  // /_102034_/* and the rest — the call above ran when a new VM only had mls-<id>.
+  ensureTsconfigPaths(root);
+
+  const build = await run(
+    'node',
+    ['scripts/runtime/buildProjectsObj.mjs', '--only', id, '--force'],
+    { cwd: root, env: { ...process.env, BUILDCI_OFFLINE: '1' } },
+  );
+  const verdict = evaluateBuild(build.code, build.out);
+  if (!verdict.ok) {
+    printError(projectName, verdict);
+    return { ok: false };
+  }
+
+  const { clientId, ownClient } = clientIdForRelease(root, id);
+  // Fecho incremental (no --force): zip of every config.projects id, including
+  // platform deps that arrived via deps-update rather than this push. Missing
+  // folders are ignored; a compile/typeCheck failure names the project and
+  // the release does not go up.
+  const fecho = await compileFecho(root, clientId, { run, ...(write ? { write } : {}) });
+  if (!fecho.ok) {
+    printError(fecho.project, fecho.verdict);
+    return { ok: false };
+  }
+  return { ok: true, verdict, clientId, ownClient };
+}
+
 async function main() {
   const { root, project } = parseArgs(process.argv.slice(2));
   const id = projectIdOf(project);
@@ -858,53 +954,9 @@ async function main() {
   reportClientConfig(root, id);
   ensureTsconfigPaths(root);
 
-  for (const depId of deps) {
-    if (depId === id) continue;
-    const depName = `mls-${depId}`;
-    if (!existsSync(join(root, depName))) {
-      process.stderr.write(`gitPostReceive: dep ${depName} does not exist on the VM — ignored\n`);
-      continue;
-    }
-    process.stderr.write(`gitPostReceive: compiling dep ${depName}\n`);
-    const depBuild = await runLive(
-      'node',
-      ['scripts/runtime/buildProjectsObj.mjs', '--only', depId, '--force'],
-      { cwd: root, env: { ...process.env, BUILDCI_OFFLINE: '1' } },
-    );
-    const depVerdict = evaluateBuild(depBuild.code, depBuild.out);
-    if (!depVerdict.ok) {
-      // Nomeia o DEP, não o cliente: quem quebrou foi ele, e a release não sobe (D-C2).
-      printError(depName, depVerdict);
-      return;
-    }
-    restoreWorktree(root, depName);
-  }
-
-  // Deps have landed. Rewrite aliases now so the project's typeCheck sees
-  // /_102034_/* and the rest — the call above ran when a new VM only had mls-<id>.
-  ensureTsconfigPaths(root);
-
-  const build = await runLive(
-    'node',
-    ['scripts/runtime/buildProjectsObj.mjs', '--only', id, '--force'],
-    { cwd: root, env: { ...process.env, BUILDCI_OFFLINE: '1' } },
-  );
-  const verdict = evaluateBuild(build.code, build.out);
-  if (!verdict.ok) {
-    printError(projectName, verdict);
-    return;
-  }
-
-  const { clientId, ownClient } = clientIdForRelease(root, id);
-  // Fecho incremental (no --force): zip of every config.projects id, including
-  // platform deps that arrived via deps-update rather than this push. Missing
-  // folders are ignored; a compile/typeCheck failure names the project and
-  // the release does not go up.
-  const fecho = await compileFecho(root, clientId);
-  if (!fecho.ok) {
-    printError(fecho.project, fecho.verdict);
-    return;
-  }
+  const built = await compileReleaseProjects(root, id, deps);
+  if (!built.ok) return;
+  const { verdict, clientId, ownClient } = built;
 
   const releaseArgs = ['scripts/runtime/addNewVersion.mjs'];
   if (clientId) releaseArgs.push('--client', clientId);

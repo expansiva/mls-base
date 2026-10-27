@@ -2,12 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   clientIdForRelease,
   compileFecho,
+  compileReleaseProjects,
+  ensureLibsMatchPin,
   evaluateBuild,
   fechoCompileVerdict,
   fechoMissingMessage,
@@ -30,6 +33,15 @@ import {
 import { ensureProjectApp } from './vmApps.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+const { runDownload } = require('../install/runInstallLibs.js');
+const LIB_PIN = { libs: '20261021212310', monaco: '20240313204233' };
+
+function libRoot() {
+  const root = mkdtempSync(join(tmpdir(), 'rt135-pin-'));
+  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: 'x', collabLibs: LIB_PIN })}\n`);
+  return root;
+}
 
 const CODE_ERR = 'code.ts(1,1): error TS2307: Cannot find module \'foo\'.';
 const CODE_ERR_2 = 'code.ts(2,1): error TS2307: Cannot find module \'bar\'.';
@@ -197,13 +209,18 @@ test('typeCheck blocking names every blocked project, never status=permissive', 
 
 test('T6: ensureTsconfigPaths roda de novo depois do laço de deps, não só antes', () => {
   const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
-  const first = src.indexOf('ensureTsconfigPaths(root);');
-  const loop = src.indexOf('for (const depId of deps)');
-  const second = src.indexOf('ensureTsconfigPaths(root);', first + 1);
-  assert.ok(first >= 0, 'first ensureTsconfigPaths(root); missing');
-  assert.ok(loop > first, 'deps loop must follow the first ensureTsconfigPaths');
-  assert.ok(second > loop, 'second ensureTsconfigPaths must run after the deps loop');
-  const build = src.indexOf('const build = await runLive', second);
+  const report = src.indexOf('reportClientConfig(root, id)');
+  const first = src.indexOf('ensureTsconfigPaths(root);', report);
+  const call = src.indexOf('await compileReleaseProjects(root, id, deps)');
+  assert.ok(first > report && call > first, 'first ensureTsconfigPaths stays in main before the compile');
+  const fn = src.slice(
+    src.indexOf('export async function compileReleaseProjects'),
+    src.indexOf('async function main'),
+  );
+  const loop = fn.indexOf('for (const depId of deps)');
+  const second = fn.indexOf('ensureTsconfigPaths(root);');
+  const build = fn.indexOf('const build = await run(');
+  assert.ok(loop >= 0 && second > loop, 'second ensureTsconfigPaths must run after the deps loop');
   assert.ok(build > second, 'project typeCheck/build must run after the second rewrite');
 });
 
@@ -644,11 +661,16 @@ test('o hook sempre passa --skip-pm2 e só recarrega depois do restoreWorktree',
 
 test('o hook compila o fecho incremental depois do gate e antes da release', () => {
   const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
-  const gate = src.indexOf("['scripts/runtime/buildProjectsObj.mjs', '--only', id, '--force']");
-  const fecho = src.indexOf('compileFecho(root, clientId)');
+  const fn = src.slice(
+    src.indexOf('export async function compileReleaseProjects'),
+    src.indexOf('async function main'),
+  );
+  const gate = fn.indexOf("['scripts/runtime/buildProjectsObj.mjs', '--only', id, '--force']");
+  const fecho = fn.indexOf('compileFecho(root, clientId,');
+  const call = src.indexOf('await compileReleaseProjects(root, id, deps)');
   const release = src.indexOf("releaseArgs = ['scripts/runtime/addNewVersion.mjs']");
   assert.ok(gate > 0 && fecho > gate, 'fecho after pushed-project --force gate');
-  assert.ok(release > fecho, 'release after fecho compile');
+  assert.ok(release > call, 'release after fecho compile');
   assert.match(src, /CBE_BUILD_OBJS: 'false'/);
 });
 
@@ -773,7 +795,7 @@ test('hook chama reportClientConfig no build do cliente, não no skip-build', ()
   const src = readFileSync(join(HERE, 'gitPostReceive.mjs'), 'utf8');
   const skip = src.indexOf('if (skipBuild)');
   const report = src.indexOf('reportClientConfig(root, id)');
-  const compile = src.indexOf("['scripts/runtime/buildProjectsObj.mjs', '--only', id, '--force']");
+  const compile = src.indexOf('await compileReleaseProjects(root, id, deps)');
   assert.ok(skip > 0 && report > skip, 'validate after skip-build return');
   assert.ok(compile > report, 'validate before compile — warning even if build is red');
   assert.match(src, /does not block/);
@@ -808,5 +830,83 @@ process.stdout.write('[]\\n');
     rmSync(root, { recursive: true, force: true });
     rmSync(lib, { recursive: true, force: true });
     rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test('carimbo igual ao pin não baixa a lib', async () => {
+  const root = libRoot();
+  try {
+    mkdirSync(join(root, 'types'), { recursive: true });
+    writeFileSync(join(root, 'types', '.libs-pin'), `${LIB_PIN.libs}:${LIB_PIN.monaco}\n`);
+    let calls = 0;
+    const result = await ensureLibsMatchPin(root, {
+      download: async () => { calls += 1; },
+      write: () => {},
+    });
+    assert.equal(result.ok, true);
+    assert.equal(calls, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('carimbo ausente ou diferente baixa uma vez com o root', async () => {
+  const missing = libRoot();
+  const different = libRoot();
+  try {
+    const seen = [];
+    const download = async ({ root }) => { seen.push(root); };
+    await ensureLibsMatchPin(missing, { download, write: () => {} });
+    mkdirSync(join(different, 'types'), { recursive: true });
+    writeFileSync(join(different, 'types', '.libs-pin'), '20260904142119:20240313204233\n');
+    const notes = [];
+    await ensureLibsMatchPin(different, { download, write: (text) => notes.push(text) });
+    assert.deepEqual(seen, [missing, different]);
+    assert.match(notes.join(''), /instalada: 20260904142119:20240313204233/);
+    assert.match(notes.join(''), new RegExp(LIB_PIN.libs));
+  } finally {
+    rmSync(missing, { recursive: true, force: true });
+    rmSync(different, { recursive: true, force: true });
+  }
+});
+
+test('download que lança não chega ao build e cita o pin', async () => {
+  const root = libRoot();
+  try {
+    const calls = [];
+    const notes = [];
+    const result = await compileReleaseProjects(root, '900001', ['900002'], {
+      download: async () => { throw new Error('cdn down'); },
+      write: (text) => notes.push(text),
+      run: async (...args) => { calls.push(args); return { code: 0, out: '' }; },
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message, new RegExp(`lib pin ${LIB_PIN.libs} não instalada: cdn down`));
+    assert.match(notes.join(''), new RegExp(LIB_PIN.libs));
+    assert.match(notes.join(''), /##gitBackend build=error project=mls-900001##/);
+    assert.equal(calls.length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runDownload grava types/.libs-pin com o pin', async () => {
+  const root = libRoot();
+  try {
+    await runDownload({
+      root,
+      log: () => {},
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => Buffer.from('pinned'),
+      }),
+    });
+    assert.equal(
+      readFileSync(join(root, 'types', '.libs-pin'), 'utf8').trim(),
+      `${LIB_PIN.libs}:${LIB_PIN.monaco}`,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
