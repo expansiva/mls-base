@@ -16,7 +16,7 @@
 // named list in the log + ##clientConfig## marker; never blocks the release.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +39,10 @@ const { runDownload } = require('../install/runInstallLibs.js');
 const TSC_ERROR_LINES = 40;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = resolve(SCRIPT_DIR, '..', '..');
+const DEFAULT_REMOTE_ORIGIN = 'https://on.collab.codes';
+const SW_NAME = 'mlsServiceWorker.js';
+const SW_MIN_BYTES = 5000;
+const SW_MARKER = 'MLSSERVICEWORKERVERSION';
 
 function failUsage(message) {
   process.stderr.write(`${message}\n`);
@@ -867,11 +871,55 @@ export async function ensureLibsMatchPin(root, { download = runDownload, write =
   return { ok: true };
 }
 
+export async function refreshServiceWorker(root, { fetchImpl = fetch, write } = {}) {
+  const log = write ?? ((text) => process.stderr.write(text));
+  const staticDir = process.env.CBE_STATIC_DIR ?? join(root, 'static');
+  const origin = (process.env.CBE_STATIC_ORIGIN ?? DEFAULT_REMOTE_ORIGIN).replace(/\/+$/u, '');
+  const dest = join(staticDir, SW_NAME);
+  let current = Buffer.alloc(0);
+  try {
+    current = readFileSync(dest);
+  } catch {
+    /* missing copy is fine — we only write after a valid body */
+  }
+  try {
+    const res = await fetchImpl(`${origin}/${SW_NAME}`);
+    if (!res || res.status !== 200) {
+      const status = res && 'status' in res ? res.status : 'sem resposta';
+      log(`gitPostReceive: service worker não renovado: status ${status}\n`);
+      return;
+    }
+    let body;
+    if (typeof res.arrayBuffer === 'function') {
+      body = Buffer.from(await res.arrayBuffer());
+    } else if (typeof res.text === 'function') {
+      body = Buffer.from(await res.text());
+    } else {
+      log('gitPostReceive: service worker não renovado: resposta inválida\n');
+      return;
+    }
+    const text = body.toString('utf8');
+    if (body.length <= SW_MIN_BYTES || !text.includes(SW_MARKER)) {
+      log('gitPostReceive: service worker não renovado: resposta inválida\n');
+      return;
+    }
+    if (current.length === body.length && current.equals(body)) return;
+    mkdirSync(staticDir, { recursive: true });
+    const tmp = join(staticDir, `${SW_NAME}.tmp`);
+    writeFileSync(tmp, body);
+    renameSync(tmp, dest);
+    log(`gitPostReceive: service worker renovado (${current.length} → ${body.length})\n`);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    log(`gitPostReceive: service worker não renovado: ${detail}\n`);
+  }
+}
+
 /**
  * Pin check, then the dep loop, the pushed project and the fecho.
  * A pin failure returns before any of those builds.
  */
-export async function compileReleaseProjects(root, id, deps, { run = runLive, write, download } = {}) {
+export async function compileReleaseProjects(root, id, deps, { run = runLive, write, download, fetchImpl } = {}) {
   const projectName = `mls-${id}`;
   const libs = await ensureLibsMatchPin(root, {
     ...(download ? { download } : {}),
@@ -882,6 +930,10 @@ export async function compileReleaseProjects(root, id, deps, { run = runLive, wr
     (write ?? ((text) => process.stderr.write(text)))(`##gitBackend build=error project=${projectName}##\n`);
     return libs;
   }
+  await refreshServiceWorker(root, {
+    ...(write ? { write } : {}),
+    ...(fetchImpl ? { fetchImpl } : {}),
+  });
 
   for (const depId of deps) {
     if (depId === id) continue;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -11,6 +11,7 @@ import {
   compileFecho,
   compileReleaseProjects,
   ensureLibsMatchPin,
+  refreshServiceWorker,
   evaluateBuild,
   fechoCompileVerdict,
   fechoMissingMessage,
@@ -878,6 +879,7 @@ test('download que lança não chega ao build e cita o pin', async () => {
     const result = await compileReleaseProjects(root, '900001', ['900002'], {
       download: async () => { throw new Error('cdn down'); },
       write: (text) => notes.push(text),
+      fetchImpl: async () => ({ status: 404 }),
       run: async (...args) => { calls.push(args); return { code: 0, out: '' }; },
     });
     assert.equal(result.ok, false);
@@ -907,6 +909,146 @@ test('runDownload grava types/.libs-pin com o pin', async () => {
       `${LIB_PIN.libs}:${LIB_PIN.monaco}`,
     );
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function validSw(n = 6000) {
+  return `MLSSERVICEWORKERVERSION\n${'x'.repeat(n)}`;
+}
+
+function swRoot() {
+  const root = mkdtempSync(join(tmpdir(), 'rt143-sw-'));
+  const staticDir = join(root, 'static');
+  mkdirSync(staticDir, { recursive: true });
+  return { root, staticDir };
+}
+
+test('refreshServiceWorker troca conteúdo diferente e registra bytes', async () => {
+  const { root, staticDir } = swRoot();
+  const dest = join(staticDir, 'mlsServiceWorker.js');
+  const oldBody = validSw(5100);
+  const newBody = validSw(6200);
+  writeFileSync(dest, oldBody);
+  const notes = [];
+  const prevDir = process.env.CBE_STATIC_DIR;
+  const prevOrigin = process.env.CBE_STATIC_ORIGIN;
+  process.env.CBE_STATIC_DIR = staticDir;
+  delete process.env.CBE_STATIC_ORIGIN;
+  try {
+    await refreshServiceWorker(root, {
+      fetchImpl: async (url) => {
+        assert.equal(url, 'https://on.collab.codes/mlsServiceWorker.js');
+        return { status: 200, text: async () => newBody };
+      },
+      write: (text) => notes.push(text),
+    });
+    assert.equal(readFileSync(dest, 'utf8'), newBody);
+    assert.equal(existsSync(join(staticDir, 'mlsServiceWorker.js.tmp')), false);
+    assert.match(notes.join(''), new RegExp(`service worker renovado \\(${Buffer.byteLength(oldBody)} → ${Buffer.byteLength(newBody)}\\)`));
+  } finally {
+    if (prevDir === undefined) delete process.env.CBE_STATIC_DIR;
+    else process.env.CBE_STATIC_DIR = prevDir;
+    if (prevOrigin === undefined) delete process.env.CBE_STATIC_ORIGIN;
+    else process.env.CBE_STATIC_ORIGIN = prevOrigin;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refreshServiceWorker conteúdo igual não grava nem avisa', async () => {
+  const { root, staticDir } = swRoot();
+  const dest = join(staticDir, 'mlsServiceWorker.js');
+  const body = validSw();
+  writeFileSync(dest, body);
+  const notes = [];
+  const prevDir = process.env.CBE_STATIC_DIR;
+  process.env.CBE_STATIC_DIR = staticDir;
+  try {
+    await refreshServiceWorker(root, {
+      fetchImpl: async () => ({ status: 200, text: async () => body }),
+      write: (text) => notes.push(text),
+    });
+    assert.equal(readFileSync(dest, 'utf8'), body);
+    assert.equal(notes.join(''), '');
+  } finally {
+    if (prevDir === undefined) delete process.env.CBE_STATIC_DIR;
+    else process.env.CBE_STATIC_DIR = prevDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refreshServiceWorker 404 e erro de rede mantêm a cópia', async () => {
+  const { root, staticDir } = swRoot();
+  const dest = join(staticDir, 'mlsServiceWorker.js');
+  const body = validSw();
+  writeFileSync(dest, body);
+  const prevDir = process.env.CBE_STATIC_DIR;
+  process.env.CBE_STATIC_DIR = staticDir;
+  try {
+    const notes404 = [];
+    await refreshServiceWorker(root, {
+      fetchImpl: async () => ({ status: 404 }),
+      write: (text) => notes404.push(text),
+    });
+    assert.equal(readFileSync(dest, 'utf8'), body);
+    assert.match(notes404.join(''), /service worker não renovado: status 404/);
+
+    const notesNet = [];
+    await refreshServiceWorker(root, {
+      fetchImpl: async () => { throw new Error('ECONNRESET'); },
+      write: (text) => notesNet.push(text),
+    });
+    assert.equal(readFileSync(dest, 'utf8'), body);
+    assert.match(notesNet.join(''), /service worker não renovado: ECONNRESET/);
+  } finally {
+    if (prevDir === undefined) delete process.env.CBE_STATIC_DIR;
+    else process.env.CBE_STATIC_DIR = prevDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refreshServiceWorker 200 com HTML não troca', async () => {
+  const { root, staticDir } = swRoot();
+  const dest = join(staticDir, 'mlsServiceWorker.js');
+  const body = validSw();
+  writeFileSync(dest, body);
+  const html = `<!doctype html>${'error page '.repeat(600)}`;
+  assert.ok(html.length > 5000);
+  const notes = [];
+  const prevDir = process.env.CBE_STATIC_DIR;
+  process.env.CBE_STATIC_DIR = staticDir;
+  try {
+    await refreshServiceWorker(root, {
+      fetchImpl: async () => ({ status: 200, text: async () => html }),
+      write: (text) => notes.push(text),
+    });
+    assert.equal(readFileSync(dest, 'utf8'), body);
+    assert.match(notes.join(''), /service worker não renovado: resposta inválida/);
+  } finally {
+    if (prevDir === undefined) delete process.env.CBE_STATIC_DIR;
+    else process.env.CBE_STATIC_DIR = prevDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refreshServiceWorker troca o arquivo por rename (o inode muda), nunca grava por cima', async () => {
+  const { root, staticDir } = swRoot();
+  const dest = join(staticDir, 'mlsServiceWorker.js');
+  writeFileSync(dest, validSw(5100));
+  const before = statSync(dest).ino;
+  const prevDir = process.env.CBE_STATIC_DIR;
+  process.env.CBE_STATIC_DIR = staticDir;
+  try {
+    await refreshServiceWorker(root, {
+      fetchImpl: async () => ({ status: 200, text: async () => validSw(6200) }),
+      write: () => {},
+    });
+    assert.equal(readFileSync(dest, 'utf8'), validSw(6200));
+    assert.notEqual(statSync(dest).ino, before, 'a direct write would keep the inode: a reader could see a half-written service worker');
+    assert.equal(existsSync(join(staticDir, 'mlsServiceWorker.js.tmp')), false);
+  } finally {
+    if (prevDir === undefined) delete process.env.CBE_STATIC_DIR;
+    else process.env.CBE_STATIC_DIR = prevDir;
     rmSync(root, { recursive: true, force: true });
   }
 });
