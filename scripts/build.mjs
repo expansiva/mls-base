@@ -32,6 +32,15 @@ import {
   litPackageDir,
   readLitRuntimeConfig,
 } from './litRuntime.mjs';
+import {
+  cacheDisabled,
+  hashFile,
+  loadCache,
+  planLibCache,
+  snapshotTypeCheck,
+  typescriptVersion,
+  writeCacheEntry,
+} from './buildCache.mjs';
 import { readTypeCheckPolicy } from './typeCheckPolicy.mjs';
 import { formatTypeCheckTsconfigLog, typeCheckProject } from './typeCheckRun.mjs';
 
@@ -97,33 +106,88 @@ function runTscCommand(args, label) {
   return { ok: false, label, status, fatal, output };
 }
 
-async function runTsc(_tsconfigPath, ids, compilerOptions) {
+function logTypeCheck(report) {
+  if (report.overrideLog) log(report.overrideLog);
+  log(`typeCheck ${report.reportLine}`);
+  if (report.toleratedLog) log(report.toleratedLog);
+  for (const line of report.excerpt) log(`typeCheck ${line}`);
+  log(report.marker);
+}
+
+function throwIfTypeCheckBlocked(blocked) {
+  if (blocked.length === 0) return;
+  const first = blocked[0];
+  const status = first.policy?.status ?? first.policyStatus;
+  throw new Error([
+    `TypeScript typeCheck blocked mls-${first.projectId} (status=${status}).`,
+    'permissive tolerates type, syntax and broken-import errors; emit/config failures and a tsc crash block in both modes (rt34).',
+    (first.excerpt ?? []).join('\n') || first.reportLine,
+  ].filter(Boolean).join('\n'));
+}
+
+async function runTsc(_tsconfigPath, ids, compilerOptions, clientId) {
   if (process.env.COLLAB_RUN_TSC_TYPECHECK === '0') {
     log('COLLAB_RUN_TSC_TYPECHECK=0 is ignored: typecheck always runs; the verdict is l5/project.json typeCheck.status');
   }
+  const cacheOff = cacheDisabled();
+  if (cacheOff) log('COLLAB_BUILD_CACHE=0: build cache off');
+  const cacheRoot = resolve(ROOT, '.buildCache');
+  const baseRel = baseTsconfigRel();
+  const baseAbs = resolve(ROOT, baseRel);
+  const plans = cacheOff ? [] : planLibCache({
+    ids,
+    clientId,
+    dirs: Object.fromEntries(ids.map((id) => [id, projectDir(id)])),
+    compilerOptions,
+    tsVersion: typescriptVersion(ROOT),
+    baseHash: existsSync(baseAbs) ? hashFile(baseAbs) : 'missing-base',
+  });
+  const planById = new Map(plans.map((plan) => [plan.id, plan]));
   const blocked = [];
+  const hits = new Map();
+  const fresh = new Map();
   console.log(formatTypeCheckTsconfigLog(ROOT));
   for (const id of ids) {
+    const plan = planById.get(String(id));
+    if (plan?.eligible) {
+      const loaded = await loadCache(cacheRoot, id, plan.key);
+      if (loaded.ok) {
+        hits.set(String(id), loaded);
+        logTypeCheck(loaded.report);
+        log(`typeCheck mls-${id} cached ${plan.key.slice(0, 12)}`);
+        if (loaded.report.block) {
+          blocked.push(loaded.report);
+        }
+        continue;
+      }
+      if (loaded.reason !== 'miss') log(`build cache mls-${id} ignored: ${loaded.reason}`);
+    }
     const report = typeCheckProject({ root: ROOT, projectId: id });
-    if (report.overrideLog) log(report.overrideLog);
-    log(`typeCheck ${report.reportLine}`);
-    if (report.toleratedLog) log(report.toleratedLog);
-    for (const line of report.excerpt) log(`typeCheck ${line}`);
-    log(report.marker);
+    logTypeCheck(report);
+    const snap = snapshotTypeCheck(report);
+    if (!snap.block && plan?.eligible) fresh.set(String(id), { key: plan.key, report: snap });
     if (report.verdict.block) blocked.push(report);
   }
-  if (blocked.length > 0) {
-    const first = blocked[0];
-    throw new Error([
-      `TypeScript typeCheck blocked mls-${first.projectId} (status=${first.policy.status}).`,
-      'permissive tolerates type, syntax and broken-import errors; emit/config failures and a tsc crash block in both modes (rt34).',
-      first.excerpt.join('\n') || first.reportLine,
-    ].filter(Boolean).join('\n'));
-  }
+  throwIfTypeCheckBlocked(blocked);
 
   // Emit one project per tsc process. The monolithic emit can be killed by Lima's
   // small VM memory limit; split emit keeps the release path reliable without swap.
   for (const id of ids) {
+    const hit = hits.get(String(id));
+    if (hit && !hit.report.block) {
+      const target = join(LOCAL_DIST, `_${id}_`);
+      try {
+        await mkdir(LOCAL_DIST, { recursive: true });
+        await rm(target, { recursive: true, force: true });
+        await cp(hit.treePath, target, { recursive: true });
+        log(`emit mls-${id} cached ${planById.get(String(id)).key.slice(0, 12)}`);
+        continue;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(`build cache mls-${id} ignored: unreadable: ${message}`);
+        fresh.set(String(id), { key: planById.get(String(id)).key, report: hit.report });
+      }
+    }
     const files = await collectProjectTsFiles(id);
     const emit = await runTscEmitConfig(`mls-${id}`, `.tsconfig.build.${id}.json`, files, compilerOptions);
     if (emit.ok) continue;
@@ -140,6 +204,7 @@ async function runTsc(_tsconfigPath, ids, compilerOptions) {
       summarizeTypeScriptOutput(emit.output) || tailOutput(emit.output),
     ].filter(Boolean).join('\n'));
   }
+  return { cacheRoot, fresh };
 }
 
 async function runTscEmitConfig(label, configName, files, compilerOptions) {
@@ -521,7 +586,7 @@ export async function rewriteLocalDistAbsoluteImports(localDist = LOCAL_DIST) {
 }
 
 // ── server build (dist/local) ────────────────────────────────────────────────
-async function buildServer(ids) {
+async function buildServer(ids, clientId) {
   log(`server build -> dist/local (${ids.map((i) => 'mls-' + i).join(' ')})`);
   await rm(LOCAL_DIST, { recursive: true, force: true });
 
@@ -563,7 +628,7 @@ async function buildServer(ids) {
   const tmp = resolve(ROOT, 'tsconfig.build.json');
   await writeFile(tmp, `${JSON.stringify(tsconfig, null, 2)}\n`, 'utf8');
   log('tsconfig written: tsconfig.build.json');
-  await runTsc('tsconfig.build.json', ids, compilerOptions);
+  const { cacheRoot, fresh } = await runTsc('tsconfig.build.json', ids, compilerOptions, clientId);
 
   // rename dist/local/mls-<id> -> dist/local/_<id>_
   if (existsSync(LOCAL_DIST)) {
@@ -574,6 +639,25 @@ async function buildServer(ids) {
         await rm(target, { recursive: true, force: true });
         await rename(join(LOCAL_DIST, entry.name), target);
       }
+    }
+  }
+  for (const [id, saved] of fresh) {
+    const src = join(LOCAL_DIST, `_${id}_`);
+    if (!existsSync(src)) {
+      log(`build cache mls-${id} not written: emitted tree missing`);
+      continue;
+    }
+    try {
+      await writeCacheEntry({
+        cacheRoot,
+        id,
+        key: saved.key,
+        report: saved.report,
+        treeSource: src,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log(`build cache mls-${id} not written: ${message}`);
     }
   }
   await pruneLocalDistProjects(ids);
@@ -757,7 +841,7 @@ async function main() {
       log(`client=${clientId} projects=${projectIds.join(' ')}`);
 
       if (args.only !== 'web') {
-        await buildServer(projectIds);
+        await buildServer(projectIds, clientId);
         // post-compile: compile each project's .less and inject into the per-file JS
         // (same mls-ci routine the GitHub Action uses; requires the /// <mls header,
         // so it applies to dist/local only)
