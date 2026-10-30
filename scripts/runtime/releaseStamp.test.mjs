@@ -12,12 +12,15 @@ import {
   writeReleaseStamp,
 } from './releaseStamp.mjs';
 
-const PIN = { libs: '20260904142119', monaco: '20240313204233' };
+const PIN = { libs: '20261030005710', monaco: '20240313204233' };
 
 function withRoot(fn) {
   const root = mkdtempSync(join(tmpdir(), 'relstamp-'));
   try {
-    writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: 'x', collabLibs: PIN }, null, 2)}\n`);
+    // The release records the INSTALLED version (the stamp the install writes, ignored by git), never a repo file.
+    writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: 'x' }, null, 2)}\n`);
+    mkdirSync(join(root, 'types'), { recursive: true });
+    writeFileSync(join(root, 'types', '.libs-pin'), `${PIN.libs}:${PIN.monaco}\n`);
     return fn(root);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -124,5 +127,24 @@ test('collectReleaseStamp grava a árvore de cada dependência declarada', () =>
     const early = collectReleaseStamp({ root, releaseId: '20260904153000', clientId: '102043', deps: { 102034: 'before' } });
     assert.deepEqual(early.deps, { 102034: 'before' });
     assert.deepEqual(collectReleaseStamp({ root, releaseId: '20260904153000', clientId: '' }).deps, {});
+  });
+});
+
+test('sem o carimbo da instalação a release grava libs=unknown e avisa; a source entra quando vem', () => {
+  withRoot((root) => {
+    rmSync(join(root, 'types', '.libs-pin'));
+    const written = [];
+    const original = process.stderr.write;
+    process.stderr.write = (text) => { written.push(String(text)); return true; };
+    let stamp;
+    try {
+      stamp = collectReleaseStamp({ root, releaseId: '20261030010000', clientId: '', source: 'latest' });
+    } finally {
+      process.stderr.write = original;
+    }
+    assert.equal(stamp.libs, 'unknown');
+    assert.equal(stamp.monaco, 'unknown');
+    assert.equal(stamp.source, 'latest');
+    assert.match(written.join(''), /installed libs stamp is missing/);
   });
 });

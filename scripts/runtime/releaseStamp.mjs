@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { readDepIds } from '../publishGitDeps.mjs';
 
 const require = createRequire(import.meta.url);
-const { readLibsPin, buildReleaseStamp } = require('../install/libsPin.js');
+const { readInstalledLibs, buildReleaseStamp } = require('../install/libsPin.js');
 
 export function gitHead(repo) {
   if (!repo || !existsSync(join(repo, '.git'))) return '';
@@ -40,8 +40,12 @@ export function readDepTrees(root, clientId) {
   return trees;
 }
 
-export function collectReleaseStamp({ root, releaseId, clientId, deps }) {
-  const pin = readLibsPin(root);
+export function collectReleaseStamp({ root, releaseId, clientId, deps, source }) {
+  const installed = readInstalledLibs(root);
+  const pin = installed ?? { libs: 'unknown', monaco: 'unknown' };
+  if (!installed) {
+    process.stderr.write('releaseStamp: installed libs stamp is missing; recording libs=unknown\n');
+  }
   const clientDir = clientId ? join(root, `mls-${clientId}`) : '';
   const stamp = buildReleaseStamp({
     releaseId,
@@ -51,7 +55,11 @@ export function collectReleaseStamp({ root, releaseId, clientId, deps }) {
     modelCommit: clientDir ? readModelCommit(clientDir) : '',
     platformCommit: gitHead(root) || 'unknown',
   });
-  return { ...stamp, deps: deps ?? readDepTrees(root, clientId) };
+  return {
+    ...stamp,
+    ...(source ? { source } : {}),
+    deps: deps ?? readDepTrees(root, clientId),
+  };
 }
 
 export function writeReleaseStamp(releaseDir, stamp) {

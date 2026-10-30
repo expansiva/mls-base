@@ -95,7 +95,7 @@ test('release worktree: nenhum arquivo rastreado do mls-base fica sujo (gb73 E2)
     writeFileSync(join(root, '.gitignore'), readFileSync(join(MLS_BASE, '.gitignore'), 'utf8'));
     writeFileSync(
       join(root, 'package.json'),
-      `${JSON.stringify({ name: 'mls-base-fixture', collabLibs: { libs: '20260904142119', monaco: '20240313204233' } }, null, 2)}\n`,
+      `${JSON.stringify({ name: 'mls-base-fixture' }, null, 2)}\n`,
     );
     git(root, ['add', '.gitignore', 'package.json']);
     const committed = spawnSync(

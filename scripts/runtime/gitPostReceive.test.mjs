@@ -31,17 +31,23 @@ import {
   reportClientConfig,
   ensureTsconfigPaths,
 } from './gitPostReceive.mjs';
+import { collectReleaseStamp } from './releaseStamp.mjs';
 import { ensureProjectApp } from './vmApps.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { runDownload } = require('../install/runInstallLibs.js');
 const LIB_PIN = { libs: '20261021212310', monaco: '20240313204233' };
+const LIB_PIN_TEXT = `${LIB_PIN.libs}:${LIB_PIN.monaco}`;
 
 function libRoot() {
   const root = mkdtempSync(join(tmpdir(), 'rt135-pin-'));
-  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: 'x', collabLibs: LIB_PIN })}\n`);
+  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: 'x' })}\n`);
   return root;
+}
+
+function pinEnv(root, pin = LIB_PIN_TEXT) {
+  return { COLLAB_LIBS_PIN: pin, COLLAB_LIBS_PIN_FILE: join(root, 'no-libs-pin') };
 }
 
 const CODE_ERR = 'code.ts(1,1): error TS2307: Cannot find module \'foo\'.';
@@ -843,6 +849,7 @@ test('carimbo igual ao pin não baixa a lib', async () => {
     const result = await ensureLibsMatchPin(root, {
       download: async () => { calls += 1; },
       write: () => {},
+      env: pinEnv(root),
     });
     assert.equal(result.ok, true);
     assert.equal(calls, 0);
@@ -857,13 +864,13 @@ test('carimbo ausente ou diferente baixa uma vez com o root', async () => {
   try {
     const seen = [];
     const download = async ({ root }) => { seen.push(root); };
-    await ensureLibsMatchPin(missing, { download, write: () => {} });
+    await ensureLibsMatchPin(missing, { download, write: () => {}, env: pinEnv(missing) });
     mkdirSync(join(different, 'types'), { recursive: true });
-    writeFileSync(join(different, 'types', '.libs-pin'), '20260904142119:20240313204233\n');
+    writeFileSync(join(different, 'types', '.libs-pin'), '20260910003715:20240313204233\n');
     const notes = [];
-    await ensureLibsMatchPin(different, { download, write: (text) => notes.push(text) });
+    await ensureLibsMatchPin(different, { download, write: (text) => notes.push(text), env: pinEnv(different) });
     assert.deepEqual(seen, [missing, different]);
-    assert.match(notes.join(''), /instalada: 20260904142119:20240313204233/);
+    assert.match(notes.join(''), /instalada: 20260910003715:20240313204233/);
     assert.match(notes.join(''), new RegExp(LIB_PIN.libs));
   } finally {
     rmSync(missing, { recursive: true, force: true });
@@ -880,6 +887,7 @@ test('download que lança não chega ao build e cita o pin', async () => {
       download: async () => { throw new Error('cdn down'); },
       write: (text) => notes.push(text),
       fetchImpl: async () => ({ status: 404 }),
+      env: pinEnv(root),
       run: async (...args) => { calls.push(args); return { code: 0, out: '' }; },
     });
     assert.equal(result.ok, false);
@@ -898,6 +906,7 @@ test('runDownload grava types/.libs-pin com o pin', async () => {
     await runDownload({
       root,
       log: () => {},
+      env: pinEnv(root),
       fetchImpl: async () => ({
         ok: true,
         status: 200,
@@ -908,6 +917,55 @@ test('runDownload grava types/.libs-pin com o pin', async () => {
       readFileSync(join(root, 'types', '.libs-pin'), 'utf8').trim(),
       `${LIB_PIN.libs}:${LIB_PIN.monaco}`,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('freio ativo resolve pelo COLLAB_LIBS_PIN e não chama o latest', async () => {
+  const root = libRoot();
+  const brake = '20261030005710:20240313204233';
+  try {
+    const seen = [];
+    const result = await ensureLibsMatchPin(root, {
+      env: pinEnv(root, brake),
+      download: async ({ env }) => { seen.push(env.COLLAB_LIBS_PIN); },
+      write: () => {},
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.source, 'pin-env');
+    assert.deepEqual(seen, [brake]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('selo da release grava a versão instalada e a source', () => {
+  const root = libRoot();
+  try {
+    const notes = [];
+    const previous = process.stderr.write;
+    process.stderr.write = (text) => { notes.push(String(text)); return true; };
+    try {
+      const missing = collectReleaseStamp({ root, releaseId: '20261030010000', clientId: '' });
+      assert.equal(missing.libs, 'unknown');
+      assert.equal(missing.monaco, 'unknown');
+      assert.equal(missing.source, undefined);
+    } finally {
+      process.stderr.write = previous;
+    }
+    assert.match(notes.join(''), /libs=unknown/);
+    mkdirSync(join(root, 'types'), { recursive: true });
+    writeFileSync(join(root, 'types', '.libs-pin'), `${LIB_PIN_TEXT}\n`);
+    const stamp = collectReleaseStamp({
+      root,
+      releaseId: '20261030010000',
+      clientId: '',
+      source: 'latest',
+    });
+    assert.equal(stamp.libs, LIB_PIN.libs);
+    assert.equal(stamp.monaco, LIB_PIN.monaco);
+    assert.equal(stamp.source, 'latest');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -8,7 +8,9 @@ import test from 'node:test';
 import { beginSession, withLimaOperation } from './session.mjs';
 import { planLocalSources, prepareSources, PROJECT_ID } from './prepareSources.mjs';
 
-const PIN = { libs: '20260101010101', monaco: '20260101010102' };
+// The expected lib version is resolved from the environment (the brake), never from a file in the repo.
+// The libs id must be newer than the first lib without Firebase (the resolver refuses older ones).
+const PIN = { libs: '20261030005710', monaco: '20240313204233' };
 const RELEASE_ID = '20261018120000';
 const gitEnv = {
   ...process.env,
@@ -145,7 +147,8 @@ function bench(mode = {}) {
   writeFileSync(pinPath, JSON.stringify(PIN));
   initRepo(mac);
   writeFileSync(join(mac, '.gitignore'), 'mls-*\n.env\nscripts/\ntools/\n');
-  writeFileSync(join(mac, 'package.json'), `${JSON.stringify({ name: 'mls-base', collabLibs: PIN }, null, 2)}\n`);
+  // `legacyPin`: only the test that imports a HISTORICAL prepareSources (it still reads package.json collabLibs).
+  writeFileSync(join(mac, 'package.json'), `${JSON.stringify({ name: 'mls-base', ...(mode.legacyPin ? { collabLibs: PIN } : {}) }, null, 2)}\n`);
   writeFileSync(join(mac, 'README'), 'platform\n');
   git(mac, ['add', '.gitignore', 'package.json', 'README']);
   git(mac, ['commit', '-m', 'platform']);
@@ -181,6 +184,7 @@ function bench(mode = {}) {
     PREPARE_SSH_LOG: sshLog,
     PREPARE_PM2: pm2,
     PREPARE_PIN: pinPath,
+    COLLAB_LIBS_PIN: `${PIN.libs}:${PIN.monaco}`,
     PREPARE_BUILD: mode.build || '',
     PREPARE_TOUCH: mode.touch || '',
   };
@@ -200,13 +204,31 @@ async function held(box, fn) {
   }, fn, box.options);
 }
 
+test('the plan resolves the lib version once and later plans reuse it without resolving again', async () => {
+  const box = bench();
+  // No brake and no reachable latest.json: resolving here would fail, so a plan that gets the pin must not resolve.
+  const offline = {
+    ...box.env,
+    COLLAB_LIBS_PIN: '',
+    COLLAB_LIBS_PIN_FILE: '/nonexistent/libs-pin',
+    CBE_LATEST_URL: 'https://latest.invalid/latest.json',
+  };
+  const given = { ...PIN, source: 'latest' };
+  const reused = await planLocalSources(box.mac, PROJECT_ID, offline, { pin: given });
+  assert.deepEqual(reused.pin, given);
+  await assert.rejects(
+    () => planLocalSources(box.mac, PROJECT_ID, offline),
+    (error) => error.code === 'pin' && error.sent === false && /libs version not resolved/.test(error.message),
+  );
+});
+
 test('plan is stable and records the pin', async () => {
   const box = bench();
   const first = await planLocalSources(box.mac, PROJECT_ID, box.env);
   const second = await planLocalSources(box.mac, PROJECT_ID, box.env);
   assert.deepEqual(first, second);
   assert.equal(first.blocked.length, 0);
-  assert.deepEqual(first.pin, PIN);
+  assert.deepEqual(first.pin, { ...PIN, source: 'pin-env' });
   assert.equal(first.deps.length, 1);
   assert.equal(first.deps[0].id, '102034');
 });
@@ -263,7 +285,7 @@ test('coherent tree is a no-op and a root change forces the official build', asy
     assert.equal(result.phase, 'sources');
     assert.equal(result.forcedBuild, false);
     assert.equal(result.sent, false);
-    assert.deepEqual(result.evidence.pin, PIN);
+    assert.deepEqual(result.evidence.pin, { ...PIN, source: 'pin-env' });
     assert.equal(result.evidence.release.versionRef, quiet.appSha);
     assert.equal(result.evidence.workers[0].cwd.includes('current-102047'), true);
     assert.equal(JSON.stringify(result.evidence).includes('hidden'), false);
@@ -645,15 +667,14 @@ test('prepare refuses commits outside the publisher sequence', async () => {
   assert.equal(rooted.result.code, 'concurrent');
   assert.equal(rooted.result.uncertain, true);
 
-  const pinned = bench();
-  await duringPublish(pinned, (box) => {
-    const pkg = JSON.parse(readFileSync(join(box.mac, 'package.json'), 'utf8'));
-    pkg.collabLibs.libs = '20260101010109';
-    writeFileSync(join(box.mac, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
-    git(box.mac, ['add', '--', 'package.json']);
-    git(box.mac, ['commit', '-m', 'pin']);
+  // A lib published in the middle of the prepare does NOT fail it: the version is resolved once, in the plan,
+  // and the release stamp is compared with the plan's version. The new lib enters the next prepare.
+  const libPublished = bench();
+  await duringPublish(libPublished, (box) => {
+    box.env.COLLAB_LIBS_PIN = `20261030999999:${PIN.monaco}`;
   });
-  assert.equal(pinned.result.code, 'concurrent');
+  assert.notEqual(libPublished.result.code, 'concurrent');
+  assert.deepEqual(libPublished.result.evidence?.pin ?? { ...PIN, source: 'pin-env' }, { ...PIN, source: 'pin-env' });
 
   const dep = bench();
   await duringPublish(dep, (box) => {
@@ -856,7 +877,7 @@ test('the pre-s1 prepare rejects the same official obj cleanup as concurrent', {
   const priorPath = join(priorDir, 'tools', 'lima', 'prepareSources.mjs');
   writeFileSync(priorPath, shown.stdout);
   const prior = await import(pathToFileURL(priorPath).href);
-  const box = bench();
+  const box = bench({ legacyPin: true });
   armPublisher(box);
   trackObj(appOf(box));
   await held(box, async () => {

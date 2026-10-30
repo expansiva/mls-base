@@ -33,7 +33,7 @@ import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 import { homedir } from 'node:os';
 
 const require = createRequire(import.meta.url);
-const { readLibsPin } = require('../install/libsPin.js');
+const { resolveLibsVersion } = require('../install/libsPin.js');
 const { runDownload } = require('../install/runInstallLibs.js');
 
 const TSC_ERROR_LINES = 40;
@@ -854,21 +854,34 @@ function readInstalledLibsPin(root) {
   }
 }
 
-export async function ensureLibsMatchPin(root, { download = runDownload, write = (text) => process.stderr.write(text) } = {}) {
-  const pin = readLibsPin(root);
+export async function ensureLibsMatchPin(root, {
+  download = runDownload,
+  write = (text) => process.stderr.write(text),
+  resolve = resolveLibsVersion,
+  env = process.env,
+} = {}) {
+  let pin;
+  try {
+    pin = await resolve({ env });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = `gitPostReceive: lib pin não resolvida: ${detail}`;
+    write(`${message}\n`);
+    return { ok: false, message };
+  }
   const installed = readInstalledLibsPin(root);
   const wanted = `${pin.libs}:${pin.monaco}`;
-  if (installed === wanted) return { ok: true };
+  if (installed === wanted) return { ok: true, source: pin.source };
   write(`gitPostReceive: lib pin ${pin.libs} não instalada (instalada: ${installed || 'nenhuma'}), renovando\n`);
   try {
-    await download({ root });
+    await download({ root, env });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     const message = `gitPostReceive: lib pin ${pin.libs} não instalada: ${detail}`;
     write(`${message}\n`);
     return { ok: false, message };
   }
-  return { ok: true };
+  return { ok: true, source: pin.source };
 }
 
 export async function refreshServiceWorker(root, { fetchImpl = fetch, write } = {}) {
@@ -919,11 +932,13 @@ export async function refreshServiceWorker(root, { fetchImpl = fetch, write } = 
  * Pin check, then the dep loop, the pushed project and the fecho.
  * A pin failure returns before any of those builds.
  */
-export async function compileReleaseProjects(root, id, deps, { run = runLive, write, download, fetchImpl } = {}) {
+export async function compileReleaseProjects(root, id, deps, { run = runLive, write, download, fetchImpl, resolve, env } = {}) {
   const projectName = `mls-${id}`;
   const libs = await ensureLibsMatchPin(root, {
     ...(download ? { download } : {}),
     ...(write ? { write } : {}),
+    ...(resolve ? { resolve } : {}),
+    ...(env ? { env } : {}),
   });
   if (!libs.ok) {
     // Same marker as every other build failure: it is what the release reads to say `build=error`.

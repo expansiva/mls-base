@@ -69,8 +69,8 @@ async function main() {
   log('deps', `closure: ${[...projects.keys()].map((p) => `mls-${p}`).join(' ')}`);
   // Step 3 — types/ (mls.d.ts, monaco.d.ts). Offline mode (BUILDCI_OFFLINE=1,
   // used by the VM's buildProjectsObj) trusts the types/ already on disk
-  // (the collabLibs pin, downloaded by runInstallLibs) — the VM build must
-  // not depend on network. Online mode downloads the same pin, never latest.json.
+  // (the resolved lib version, downloaded by runInstallLibs) — the VM build must
+  // not depend on network. Online mode downloads the resolved version (brake, then latest.json).
   const typesReady = existsSync(join(ROOT, 'types', 'mls.d.ts')) && existsSync(join(ROOT, 'types', 'monaco.d.ts'));
   if (process.env.BUILDCI_OFFLINE === '1' && typesReady) {
     log('types', 'offline mode — using existing types/ (mls.d.ts, monaco.d.ts)');

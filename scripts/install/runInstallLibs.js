@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const {
-  readLibsPin,
+  resolveLibsVersion,
   installFiles,
   correctionMessage,
 } = require('./libsPin.js');
@@ -27,15 +27,16 @@ async function runDownload({
   root = process.cwd(),
   fetchImpl = globalThis.fetch,
   log = console.log,
+  env = process.env,
 } = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new Error('fetch is not available');
   }
-  const pin = readLibsPin(root);
+  const pin = await resolveLibsVersion({ env, fetchImpl });
   fs.mkdirSync(path.join(root, 'types'), { recursive: true });
   fs.mkdirSync(path.join(root, 'static', 'libs'), { recursive: true });
 
-  log(`Get version files (pin libs=${pin.libs} monaco=${pin.monaco})`);
+  log(`Get version files (libs=${pin.libs} monaco=${pin.monaco} source=${pin.source})`);
 
   let lastLabel = '';
   for (const file of installFiles(pin)) {

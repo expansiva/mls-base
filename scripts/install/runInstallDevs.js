@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const fetch = require('node-fetch');
-const { readLibsPin, libFileUrls } = require('./libsPin.js');
+const { resolveLibsVersion, libFileUrls } = require('./libsPin.js');
 
 const mainProjects = {
     "100554": {
@@ -96,9 +96,9 @@ async function runDownload() {
 
         fs.mkdirSync('./types', { recursive: true });
 
-        const pin = readLibsPin('.');
+        const pin = await resolveLibsVersion();
         const urls = libFileUrls(pin);
-        console.log(`Get version files (pin libs=${pin.libs} monaco=${pin.monaco})`);
+        console.log(`Get version files (libs=${pin.libs} monaco=${pin.monaco} source=${pin.source})`);
 
         const urlMonaco = urls.monacoDts;
         const urlMls = urls.mlsDts;

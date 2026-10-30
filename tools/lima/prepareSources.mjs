@@ -4,8 +4,12 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { readDepIds, snapshotTree } from '../../scripts/publishGitDeps.mjs';
 import { SUPPORTED_PROJECTS, loadOwnerRef, projectApp, shQuote, spawnArgsFor, statusSession } from './session.mjs';
+
+const require = createRequire(import.meta.url);
+const { resolveLibsVersion } = require('../../scripts/install/libsPin.js');
 
 export const PROJECT_ID = '102047';
 export const VM_ROOT = '/data/mls-base';
@@ -17,17 +21,6 @@ function markerOk(projectId) {
 }
 const OBJ_SUBJECT = 'chore: remove obj/ (build happens on the VM)';
 const REBUILD_SUBJECT = /^publish: rebuild after deps \S+(?: \S+)*$/u;
-
-export function readPin(root) {
-  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  const pin = pkg.collabLibs || {};
-  const libs = typeof pin.libs === 'string' ? pin.libs.trim() : '';
-  const monaco = typeof pin.monaco === 'string' ? pin.monaco.trim() : '';
-  if (!/^\d{14}$/u.test(libs) || !/^\d{14}$/u.test(monaco)) {
-    throw Object.assign(new Error('collabLibs pin missing'), { code: 'pin', sent: false });
-  }
-  return { libs, monaco };
-}
 
 function git(repo, args, env = process.env, raw = false) {
   return new Promise((resolve) => {
@@ -58,11 +51,23 @@ export async function captureRepo(repo, env) {
   };
 }
 
-export async function planLocalSources(root, projectId = PROJECT_ID, env = process.env) {
+/**
+ * `pin` is the lib version the prepare expects the VM release to carry. It is resolved ONCE per prepare,
+ * with the same rule the VM release uses (brake, then latest.json), and every later plan of the same
+ * prepare receives it, so a lib published in the middle never fails the prepare: it enters the next one.
+ */
+export async function planLocalSources(root, projectId = PROJECT_ID, env = process.env, { pin: resolvedPin } = {}) {
   if (!SUPPORTED_PROJECTS.includes(String(projectId))) {
     throw Object.assign(new Error(`project refused: ${projectId}`), { code: 'project', sent: false });
   }
-  const pin = readPin(root);
+  let pin = resolvedPin;
+  if (!pin) {
+    try {
+      pin = await resolveLibsVersion({ env });
+    } catch (error) {
+      throw Object.assign(new Error(`libs version not resolved: ${error.message}`), { code: 'pin', sent: false });
+    }
+  }
   const platform = await captureRepo(root, env);
   const appRepo = join(root, `mls-${projectId}`);
   const app = await captureRepo(appRepo, env);
@@ -190,7 +195,6 @@ async function portraitMatches(repo, before, after, env) {
 
 async function allowedAfterPublish(before, after, root, projectId, env) {
   if (before.rootSha !== after.rootSha) return false;
-  if (before.pin.libs !== after.pin.libs || before.pin.monaco !== after.pin.monaco) return false;
   if (before.blocked.length || after.blocked.length) return false;
   if (JSON.stringify(before.deps) !== JSON.stringify(after.deps)) return false;
   if (before.appSha === after.appSha) return before.appTree === after.appTree;
@@ -408,7 +412,7 @@ export async function prepareSources({
   if (plan.blocked.length) return failed('preparing', { code: 'dirty', sent: false, blocked: plan.blocked });
   let again;
   try {
-    again = await planLocalSources(root, projectId, env);
+    again = await planLocalSources(root, projectId, env, { pin: plan.pin });
   } catch (error) {
     return failed('preparing', { code: error.code || 'plan', sent: false });
   }
@@ -429,7 +433,7 @@ export async function prepareSources({
 
   let mid;
   try {
-    mid = await planLocalSources(root, projectId, env);
+    mid = await planLocalSources(root, projectId, env, { pin: plan.pin });
   } catch (error) {
     return failed(sent ? 'failed' : 'preparing', { code: 'concurrent', sent, uncertain: sent });
   }
@@ -445,7 +449,7 @@ export async function prepareSources({
 
   let after;
   try {
-    after = await planLocalSources(root, projectId, env);
+    after = await planLocalSources(root, projectId, env, { pin: plan.pin });
   } catch (error) {
     return failed('failed', { code: 'concurrent', sent: true, uncertain: true });
   }

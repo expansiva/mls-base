@@ -59,14 +59,23 @@ and applies seed rows — the server does NOT create schema at startup), then at
 via the `current` symlink (or `current-<projectId>` alias on multi-app servers), prune to the 10
 newest releases and reload pm2 with no downtime. Rollback = repoint the symlink + reload.
 
-The mls lib (`types/mls.d.ts`, `monaco.d.ts`, `static/libs/mls.js`) is **pinned** in
-`package.json` `collabLibs` (`libs` + `monaco`, 14-digit CDN timestamps). `runInstallLibs.js`
-(postinstall) downloads that pin and never reads `latest.json`; if `types/mls.d.ts` on disk does
-not match, it overwrites and logs `corrected … to pin libs=…`. Bumping the lib is a commit that
-changes `collabLibs`. Each release writes `releases/<id>/release.json` with the pin, the client
+The mls lib (`types/mls.d.ts`, `monaco.d.ts`, `static/libs/mls.js`) has **no version in any source file**
+(rt149). Its version (`libs` + `monaco`, 14-digit CDN timestamps) is resolved at install and release time by
+`resolveLibsVersion` (`scripts/install/libsPin.js`), in this order: the brake `COLLAB_LIBS_PIN`
+(`<libs>:<monaco>`), the brake file `COLLAB_LIBS_PIN_FILE` or `/data/etc/libs-pin` (same format, outside the
+repo), then the public `latest.json` (`CBE_LATEST_URL` or the S3 URL). A failed fetch stops with the URL in the
+error; it never falls back to an older version. A version older than the first lib without Firebase is refused.
+`runInstallLibs.js` downloads the resolved version, overwrites a divergent `types/mls.d.ts` (logging
+`corrected … to pin libs=…`) and writes the installed stamp `types/.libs-pin` (ignored by git). The release
+(`ensureLibsMatchPin`) compares that stamp with the resolved version and renews the lib when they differ.
+Publishing a lib is enough: the next release picks it up; to hold a defective lib, set the brake. Nothing in this
+flow writes a version into a versioned file. Each release writes `releases/<id>/release.json` with the
+**installed** version (`unknown` + a warning when the stamp is missing), the client
 git HEAD (`versionRef`), the model commit from `.collab-git` (gb70) and `platformCommit` — HEAD
 of the `mls-base` checkout on the VM, or `unknown` when `/data/mls-base` is not a
-checkout (`scripts/runtime/releaseStamp.mjs`).
+checkout (`scripts/runtime/releaseStamp.mjs`). The Mac `prepare` of the lima resolves the same version ONCE in
+its plan and compares the VM release stamp with it (`tools/lima/prepareSources.mjs`); a lib published in the
+middle enters the next prepare.
 
 ## pm2 topology and ports
 
