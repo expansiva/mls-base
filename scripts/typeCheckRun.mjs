@@ -47,9 +47,36 @@ function emptySummary() {
   return summarizeTscOutput('');
 }
 
+/** Project ids other than `projectId` whose files `tsc --listFiles` printed. */
+export function loadedProjectIdsFromOutput(output, projectId) {
+  const own = String(projectId);
+  /** @type {Set<string>} */
+  const ids = new Set();
+  for (const line of String(output).split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('/')) continue;
+    if (trimmed.includes('/node_modules/')) continue;
+    if (/\berror TS\d+/u.test(trimmed)) continue;
+    const match = /\/mls-(\d+)\//u.exec(trimmed);
+    if (!match || match[1] === own) continue;
+    ids.add(match[1]);
+  }
+  return [...ids].sort();
+}
+
+/** Drop `--listFiles` paths so they cannot become a diagnostic line. */
+function outputWithoutListFiles(output) {
+  return String(output).split(/\r?\n/u).filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('/')) return true;
+    if (/\berror TS\d+/u.test(trimmed)) return true;
+    return false;
+  }).join('\n');
+}
+
 export function defaultSpawnTsc(root, tsconfigPath) {
   const tscBin = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
-  const result = spawnSync(process.execPath, [tscBin, '-p', tsconfigPath, '--noEmit', '--pretty', 'false'], {
+  const result = spawnSync(process.execPath, [tscBin, '-p', tsconfigPath, '--noEmit', '--pretty', 'false', '--listFiles'], {
     cwd: root,
     encoding: 'utf8',
   });
@@ -125,6 +152,8 @@ export function typeCheckProject({ root, projectId, env = process.env, spawnTsc 
   const policy = readTypeCheckPolicy(projectDir, env);
   let summary = emptySummary();
   let fatal = false;
+  /** @type {Set<string>} */
+  const loaded = new Set();
 
   for (const layer of /** @type {const} */ (['l1', 'l2'])) {
     if (!layerHasSources(root, projectId, layer)) continue;
@@ -132,7 +161,13 @@ export function typeCheckProject({ root, projectId, env = process.env, spawnTsc 
     try {
       const result = spawnTsc(root, configPath);
       if (result.fatal) fatal = true;
-      summary = mergeSummaries(summary, summarizeTscOutput(result.output));
+      const listed = Array.isArray(result.loadedProjectIds)
+        ? result.loadedProjectIds.map(String)
+        : loadedProjectIdsFromOutput(result.output, projectId);
+      for (const id of listed) {
+        if (id !== String(projectId)) loaded.add(id);
+      }
+      summary = mergeSummaries(summary, summarizeTscOutput(outputWithoutListFiles(result.output)));
     } finally {
       try { unlinkSync(configPath); } catch { /* already gone */ }
     }
@@ -149,6 +184,7 @@ export function typeCheckProject({ root, projectId, env = process.env, spawnTsc 
     toleratedLog: formatToleratedLog(projectId, policy, summary),
     overrideLog: formatOverrideLog(policy),
     excerpt: excerptLines(summary),
+    loadedProjectIds: [...loaded].sort(),
   };
 }
 

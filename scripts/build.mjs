@@ -34,12 +34,17 @@ import {
 } from './litRuntime.mjs';
 import {
   cacheDisabled,
+  gitHead,
+  gitPorcelain,
   hashFile,
-  loadCache,
+  legacyCacheReason,
+  loadCheck,
+  loadEmit,
   planLibCache,
   snapshotTypeCheck,
   typescriptVersion,
-  writeCacheEntry,
+  writeCheckEntry,
+  writeEmitEntry,
 } from './buildCache.mjs';
 import { readTypeCheckPolicy } from './typeCheckPolicy.mjs';
 import { formatTypeCheckTsconfigLog, typeCheckProject } from './typeCheckRun.mjs';
@@ -143,21 +148,28 @@ async function runTsc(_tsconfigPath, ids, compilerOptions, clientId) {
     baseHash: existsSync(baseAbs) ? hashFile(baseAbs) : 'missing-base',
   });
   const planById = new Map(plans.map((plan) => [plan.id, plan]));
+  if (!cacheOff) {
+    const legacy = legacyCacheReason(cacheRoot);
+    if (legacy) log(`build cache ignored: ${legacy}`);
+  }
   const blocked = [];
-  const hits = new Map();
-  const fresh = new Map();
+  const checkHits = new Map();
+  const freshCheck = new Map();
+  const freshEmit = new Map();
+  const depNow = (depId) => {
+    const dir = projectDir(depId);
+    return { head: gitHead(dir), porcelain: gitPorcelain(dir) };
+  };
   console.log(formatTypeCheckTsconfigLog(ROOT));
   for (const id of ids) {
     const plan = planById.get(String(id));
     if (plan?.eligible) {
-      const loaded = await loadCache(cacheRoot, id, plan.key);
-      if (loaded.ok) {
-        hits.set(String(id), loaded);
+      const loaded = await loadCheck(cacheRoot, id, plan.checkBase, depNow);
+      if (loaded.hit) {
+        checkHits.set(String(id), loaded);
         logTypeCheck(loaded.report);
-        log(`typeCheck mls-${id} cached ${plan.key.slice(0, 12)}`);
-        if (loaded.report.block) {
-          blocked.push(loaded.report);
-        }
+        log(`typeCheck mls-${id} cached ${plan.checkBase.slice(0, 12)}`);
+        if (loaded.report.block) blocked.push(loaded.report);
         continue;
       }
       if (loaded.reason !== 'miss') log(`build cache mls-${id} ignored: ${loaded.reason}`);
@@ -165,7 +177,22 @@ async function runTsc(_tsconfigPath, ids, compilerOptions, clientId) {
     const report = typeCheckProject({ root: ROOT, projectId: id });
     logTypeCheck(report);
     const snap = snapshotTypeCheck(report);
-    if (!snap.block && plan?.eligible) fresh.set(String(id), { key: plan.key, report: snap });
+    if (!snap.block && plan?.eligible) {
+      const deps = (report.loadedProjectIds ?? []).map((depId) => {
+        const now = depNow(depId);
+        return { id: String(depId), head: now.head, porcelain: now.porcelain };
+      });
+      const saveCheck = deps.every((dep) => dep.head && dep.porcelain === '');
+      if (!saveCheck) {
+        log(`build cache mls-${id} check not written: dependency not a clean HEAD`);
+      }
+      freshCheck.set(String(id), {
+        checkBase: plan.checkBase,
+        report: snap,
+        deps: deps.map((dep) => ({ id: dep.id, head: dep.head ?? '' })),
+        saveCheck,
+      });
+    }
     if (report.verdict.block) blocked.push(report);
   }
   throwIfTypeCheckBlocked(blocked);
@@ -173,21 +200,26 @@ async function runTsc(_tsconfigPath, ids, compilerOptions, clientId) {
   // Emit one project per tsc process. The monolithic emit can be killed by Lima's
   // small VM memory limit; split emit keeps the release path reliable without swap.
   for (const id of ids) {
-    const hit = hits.get(String(id));
-    if (hit && !hit.report.block) {
-      const target = join(LOCAL_DIST, `_${id}_`);
-      try {
-        await mkdir(LOCAL_DIST, { recursive: true });
-        await rm(target, { recursive: true, force: true });
-        await cp(hit.treePath, target, { recursive: true });
-        log(`emit mls-${id} cached ${planById.get(String(id)).key.slice(0, 12)}`);
-        continue;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log(`build cache mls-${id} ignored: unreadable: ${message}`);
-        fresh.set(String(id), { key: planById.get(String(id)).key, report: hit.report });
+    const plan = planById.get(String(id));
+    if (plan?.eligible && !checkHits.get(String(id))?.report?.block) {
+      const loaded = await loadEmit(cacheRoot, id, plan.emitKey);
+      if (loaded.hit) {
+        const target = join(LOCAL_DIST, `_${id}_`);
+        try {
+          await mkdir(LOCAL_DIST, { recursive: true });
+          await rm(target, { recursive: true, force: true });
+          await cp(loaded.tree, target, { recursive: true });
+          log(`emit mls-${id} cached ${plan.emitKey.slice(0, 12)}`);
+          continue;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          log(`build cache mls-${id} ignored: unreadable: ${message}`);
+        }
+      } else if (loaded.reason !== 'miss') {
+        log(`build cache mls-${id} ignored: ${loaded.reason}`);
       }
     }
+    if (plan?.eligible) freshEmit.set(String(id), { emitKey: plan.emitKey });
     const files = await collectProjectTsFiles(id);
     const emit = await runTscEmitConfig(`mls-${id}`, `.tsconfig.build.${id}.json`, files, compilerOptions);
     if (emit.ok) continue;
@@ -204,7 +236,7 @@ async function runTsc(_tsconfigPath, ids, compilerOptions, clientId) {
       summarizeTypeScriptOutput(emit.output) || tailOutput(emit.output),
     ].filter(Boolean).join('\n'));
   }
-  return { cacheRoot, fresh };
+  return { cacheRoot, freshCheck, freshEmit };
 }
 
 async function runTscEmitConfig(label, configName, files, compilerOptions) {
@@ -628,7 +660,7 @@ async function buildServer(ids, clientId) {
   const tmp = resolve(ROOT, 'tsconfig.build.json');
   await writeFile(tmp, `${JSON.stringify(tsconfig, null, 2)}\n`, 'utf8');
   log('tsconfig written: tsconfig.build.json');
-  const { cacheRoot, fresh } = await runTsc('tsconfig.build.json', ids, compilerOptions, clientId);
+  const { cacheRoot, freshCheck, freshEmit } = await runTsc('tsconfig.build.json', ids, compilerOptions, clientId);
 
   // rename dist/local/mls-<id> -> dist/local/_<id>_
   if (existsSync(LOCAL_DIST)) {
@@ -641,20 +673,36 @@ async function buildServer(ids, clientId) {
       }
     }
   }
-  for (const [id, saved] of fresh) {
+  for (const [id, saved] of freshCheck) {
+    if (!saved.saveCheck) continue;
+    try {
+      const written = await writeCheckEntry({
+        cacheRoot,
+        id,
+        baseKey: saved.checkBase,
+        report: saved.report,
+        deps: saved.deps,
+      });
+      if (written.cleanupError) log(`build cache mls-${id} cleanup: ${written.cleanupError}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log(`build cache mls-${id} check not written: ${message}`);
+    }
+  }
+  for (const [id, saved] of freshEmit) {
     const src = join(LOCAL_DIST, `_${id}_`);
     if (!existsSync(src)) {
       log(`build cache mls-${id} not written: emitted tree missing`);
       continue;
     }
     try {
-      await writeCacheEntry({
+      const written = await writeEmitEntry({
         cacheRoot,
         id,
-        key: saved.key,
-        report: saved.report,
+        key: saved.emitKey,
         treeSource: src,
       });
+      if (written.cleanupError) log(`build cache mls-${id} cleanup: ${written.cleanupError}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log(`build cache mls-${id} not written: ${message}`);
