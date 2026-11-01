@@ -82,7 +82,10 @@ const DIRTY_VM_RE =
   /working directory has unstaged changes|uncommitted changes|denyCurrentBranch|refusing to update/i;
 const OBJ_IGNORE = '/obj/';
 const OBJ_COMMIT_MSG = 'chore: remove obj/ (build happens on the VM)';
-const BOOKKEEPING_IGNORES = ['.collab-fs.json', '.collab-fs-trash/'];
+// `l4/*/tobe/candidate/` is the same string as TOBE_CANDIDATE_GITIGNORE in
+// mls-102034/l1/server/layer_1_external/cbe/cbeGitCommit.ts.
+const BOOKKEEPING_IGNORES = ['.collab-fs.json', '.collab-fs-trash/', 'l4/*/tobe/candidate/'];
+const BOOKKEEPING_PATHSPECS = ['.collab-fs.json', '.collab-fs-trash', ':(glob)l4/*/tobe/candidate/**'];
 const PUBLISH_SKILL = 'mls-base/skills/publishGitBackend.md';
 export const DIRTY_LOCAL_MSG =
   'dirty local worktree: commit before publishing (the script does not commit on its own). ' +
@@ -413,9 +416,9 @@ export function ensureBookkeepingGitignore(repo) {
 }
 
 function untrackBookkeeping(repo) {
-  const tracked = gitSync(repo, ['ls-files', '-z', '--', '.collab-fs.json', '.collab-fs-trash']).stdout;
+  const tracked = gitSync(repo, ['ls-files', '-z', '--', ...BOOKKEEPING_PATHSPECS]).stdout;
   if (!tracked) return false;
-  gitOut(repo, ['rm', '-r', '--cached', '--ignore-unmatch', '--', '.collab-fs.json', '.collab-fs-trash']);
+  gitOut(repo, ['rm', '-r', '--cached', '--ignore-unmatch', '--', ...BOOKKEEPING_PATHSPECS]);
   return true;
 }
 

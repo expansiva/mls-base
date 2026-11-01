@@ -146,13 +146,14 @@ test('ensureBookkeepingGitignore appends missing patterns and is idempotent', ()
     const gitignore = readFileSync(join(dir, '.gitignore'), 'utf8');
     assert.match(gitignore, /^\.collab-fs\.json$/m);
     assert.match(gitignore, /^\.collab-fs-trash\/$/m);
+    assert.match(gitignore, /^l4\/\*\/tobe\/candidate\/$/m);
     assert.equal(ensureBookkeepingGitignore(dir), false);
   });
 });
 
 test('autocommitDirty commits generated layers, ignores Studio bookkeeping, no empty commit', () => {
   withRepo((dir) => {
-    writeFileSync(join(dir, '.gitignore'), '/obj/\n.collab-fs.json\n.collab-fs-trash/\n');
+    writeFileSync(join(dir, '.gitignore'), '/obj/\n.collab-fs.json\n.collab-fs-trash/\nl4/*/tobe/candidate/\n');
     git(dir, ['add', '-A']);
     git(dir, ['commit', '-m', 'gitignore']);
 
@@ -179,6 +180,29 @@ test('autocommitDirty commits generated layers, ignores Studio bookkeeping, no e
 
     assert.equal(autocommitDirty(dir), false);
     assert.equal(git(dir, ['log', '-1', '--pretty=%s']), subject);
+  });
+});
+
+test('autocommitDirty does not publish l4/*/tobe/candidate and untracks it', () => {
+  withRepo((dir) => {
+    const candidate = join(dir, 'l4', 'mod', 'tobe', 'candidate');
+    mkdirSync(candidate, { recursive: true });
+    writeFileSync(join(candidate, 'pointer.json'), '{"old":true}\n');
+    writeFileSync(join(dir, 'l4', 'mod', 'tobe', 'plan.json'), '{}\n');
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-m', 'tracked candidate']);
+
+    writeFileSync(join(candidate, 'pointer.json'), '{"new":true}\n');
+    writeFileSync(join(dir, 'l4', 'mod', 'tobe', 'plan.json'), '{"n":1}\n');
+
+    assert.equal(autocommitDirty(dir), true);
+    const tracked = git(dir, ['ls-files']);
+    assert.match(tracked, /l4\/mod\/tobe\/plan\.json/);
+    assert.doesNotMatch(tracked, /tobe\/candidate/);
+    assert.equal(readFileSync(join(candidate, 'pointer.json'), 'utf8'), '{"new":true}\n');
+    const names = git(dir, ['log', '-1', '--name-only', '--pretty=format:']);
+    assert.match(names, /plan\.json/);
+    assert.match(names, /candidate\/pointer\.json/);
   });
 });
 
