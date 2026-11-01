@@ -11,18 +11,13 @@
 //
 // A dep cloned from GitHub keeps `origin` (the VM of a customer pulls the lib
 // from there) and gets `vm-baseline` so this script will arm it. `--reset-from-origin`
-// is the replace-not-merge update of those libs (`git fetch` + `reset --hard`).
-// It is NOT run by the build — a snapshot the developer just pushed would be
-// wiped. Who fires it (button / schedule, N VMs) is collab-sites / gb62.
+// only fast-forwards those libs (`git fetch` + `merge --ff-only`). A lib that is
+// ahead, diverged or dirty is refused, with the local commits or `git status --short`;
+// nothing is discarded. It is NOT run by the build. Who fires it (button / schedule,
+// N VMs) is collab-sites / gb62. The flag name stays.
 //
 // A CLIENT PROJECT has no `origin`: its copy here is the one the developer pushes
-// with `publish:remote`, so cloning it from GitHub would overwrite exactly that.
-// `vmGitOrigin` in the project's own `l5/config.json` inverts this FOR THAT PROJECT:
-// the remote is added on demand and the project is reset from GitHub like a lib.
-// The trade is deliberate and belongs to whoever sets it — the last writer wins, so
-// a release run after a GitHub push replaces what was published from a workstation,
-// and a `publish:remote` after that replaces it back. Opened in 25/09/2026 for a
-// project whose team pushes to GitHub but cannot publish.
+// with `publish:remote`. Without `origin` the project is skipped (`skipped-no-origin`).
 //
 // Usage (on the VM):
 //   node scripts/runtime/gitReposSetup.mjs
@@ -44,6 +39,8 @@ const INITIAL_COMMIT_MSG = 'vm-baseline: initial snapshot';
 const COMPLETION_COMMIT_MSG = 'gitReposSetup: complete ignore list';
 const SOURCE_INCLUDE_COMMIT_MSG =
   'gitReposSetup: include source .mjs/.js excluded by inherited ignore';
+
+const BOOKKEEPING_COMMIT_MSGS = new Set([COMPLETION_COMMIT_MSG, SOURCE_INCLUDE_COMMIT_MSG]);
 
 const IGNORE_BLOCK_HEADER = '# --- collab-vm (gitReposSetup) ---';
 const REQUIRED_IGNORES = [
@@ -425,60 +422,58 @@ function originDefaultBranch(dir) {
 }
 
 /**
- * Substitui a cópia da VM pela ponta do GitHub: `fetch` + `reset --hard`.
- * Nunca pull/merge — a cópia é materializada, não uma história a preservar.
- * Recusa repo sem `origin` e repo com remote mas sem `vm-baseline` (checkout
- * de desenvolvedor: o mesmo critério do guard, sem afrouxá-lo).
+ * Avança a cópia da VM até a ponta do GitHub, só com `fetch` + `merge --ff-only`.
+ * Igual: não muda. Atrás: fast-forward. À frente, divergente ou árvore suja: recusa
+ * e não apaga nada — a mensagem traz `git log --oneline origin/<branch>..HEAD` ou
+ * `git status --short`. Sem `origin`, ou com remote e sem `vm-baseline`, pula
+ * (checkout de desenvolvedor: o mesmo critério do guard).
  *
- * Não é chamado pelo build. Gatilho: collab-sites / gb62.
+ * O nome da opção `--reset-from-origin` fica: quem chama é o collab-sites.
+ * Não é chamado pelo build.
  */
-/**
- * O `vmGitOrigin` que o PROPRIO projeto declara em `l5/config.json`, ou ''.
- *
- * Projeto cliente nasce sem `origin` de proposito: a copia da VM e' mantida pelo push do
- * `publish:remote`, e clonar do GitHub passaria por cima dela. Declarar o campo e' a inversao
- * EXPLICITA disso, por projeto: "para este, quem manda e' o GitHub".
- *
- * O campo carrega a URL em vez de ser um booleano porque a organizacao nao esta' em lugar nenhum
- * que este script possa ler sem adivinhar, e derivar de um repo irmao amarraria um projeto ao
- * dono de outro.
- *
- * A validacao existe para nao transformar string solta em remote, nao para restringir transporte:
- * `https://` e' o valor real em producao e `file://` mantem o comportamento exercitavel em teste
- * sem rede. Qualquer outra coisa e' tratada como ausente — recusa igual a de antes, sem remote.
- */
-const GIT_ORIGIN_URL = /^(?:https?|file):\/\/\S+$/u;
-
-function declaredGitOrigin(dir) {
-  try {
-    const raw = readFileSync(join(dir, 'l5', 'config.json'), 'utf8');
-    const value = JSON.parse(raw)?.vmGitOrigin;
-    return typeof value === 'string' && GIT_ORIGIN_URL.test(value.trim()) ? value.trim() : '';
-  } catch {
-    return '';
-  }
-}
-
 export function resetFromOrigin(dir) {
   if (!isRepo(dir)) return { status: 'skipped-not-a-repo' };
-  if (!remotes(dir).includes('origin')) {
-    // Opt-in do projeto: sem `vmGitOrigin` o comportamento e' o de sempre (pular).
-    const declared = declaredGitOrigin(dir);
-    if (!declared) return { status: 'skipped-no-origin' };
-    gitOrThrow(dir, ['remote', 'add', 'origin', declared]);
-  }
+  if (!remotes(dir).includes('origin')) return { status: 'skipped-no-origin' };
   if (!branchExists(dir, 'vm-baseline')) return { status: 'skipped-no-vm-baseline' };
 
   gitOrThrow(dir, ['fetch', 'origin']);
   const branch = originDefaultBranch(dir);
+  const porcelain = gitOrThrow(dir, ['status', '--short']);
+  if (porcelain) {
+    throw new Error(`resetFromOrigin: dirty worktree in ${dir}\n${porcelain}`);
+  }
   const current = currentBranch(dir);
   if (current && current !== branch) {
     gitOrThrow(dir, ['checkout', '-q', branch]);
   }
-  gitOrThrow(dir, ['reset', '--hard', `origin/${branch}`]);
+  const localOnly = gitOrThrow(dir, ['log', '--oneline', `origin/${branch}..HEAD`]);
+  if (localOnly) {
+    // The commits this script itself makes when it arms a lib (ignore list) are bookkeeping, regenerated by
+    // `setupRepo`; they are the only thing a lib may carry that GitHub lacks without it being someone's work.
+    const subjects = gitOrThrow(dir, ['log', '--format=%s', `origin/${branch}..HEAD`]).split('\n');
+    if (!subjects.every((subject) => BOOKKEEPING_COMMIT_MSGS.has(subject))) {
+      throw new Error(
+        `resetFromOrigin: ${dir} has commits not in origin/${branch}; refusing\n${localOnly}`,
+      );
+    }
+    gitOrThrow(dir, ['reset', '--hard', `origin/${branch}`]);
+    return {
+      status: 'dropped-bookkeeping',
+      branch,
+      head: gitOrThrow(dir, ['rev-parse', 'HEAD']),
+      originHead: gitOrThrow(dir, ['rev-parse', `origin/${branch}`]),
+    };
+  }
   const head = gitOrThrow(dir, ['rev-parse', 'HEAD']);
   const originHead = gitOrThrow(dir, ['rev-parse', `origin/${branch}`]);
-  return { status: 'reset', branch, head, originHead };
+  if (head === originHead) return { status: 'unchanged', branch, head, originHead };
+  gitOrThrow(dir, ['merge', '--ff-only', `origin/${branch}`]);
+  return {
+    status: 'fast-forward',
+    branch,
+    head: gitOrThrow(dir, ['rev-parse', 'HEAD']),
+    originHead,
+  };
 }
 
 function parseResetIds(args) {
@@ -494,7 +489,7 @@ function parseResetIds(args) {
 }
 
 /**
- * `fetch+reset` em cada `mls-*` armado que ainda tem `origin`. `ids` (sem o
+ * `fetch` + `merge --ff-only` em cada `mls-*` armado que ainda tem `origin`. `ids` (sem o
  * prefixo `mls-`) restringe o conjunto; vazio = todos. Não clona o que falta.
  */
 export function resetArmedDepsFromOrigin(root, { ids, log } = {}) {

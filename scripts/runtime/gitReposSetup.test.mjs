@@ -17,6 +17,12 @@ function git(cwd, ...args) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV }).trim();
 }
 
+function pushHeadToOrigin(dest) {
+  const origin = git(dest, 'remote', 'get-url', 'origin');
+  git(origin, 'config', 'receive.denyCurrentBranch', 'updateInstead');
+  git(dest, 'push', '-q', 'origin', 'HEAD:main');
+}
+
 function makeCloneWithOrigin(root) {
   const upstream = join(root, 'upstream');
   mkdirSync(upstream, { recursive: true });
@@ -128,30 +134,95 @@ test('resetFromOrigin recusa checkout de desenvolvedor (origin sem vm-baseline)'
   }
 });
 
-test('fetch+reset traz o GitHub por cima de um retrato local, sem merge', () => {
-  const root = mkdtempSync(join(tmpdir(), 'setup-reset-'));
+test('lib igual não muda', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-equal-'));
+  try {
+    const dest = makeCloneWithOrigin(root);
+    armClonedDep(dest);
+    pushHeadToOrigin(dest);
+    const before = git(dest, 'rev-parse', 'HEAD');
+    const result = resetFromOrigin(dest);
+    assert.equal(result.status, 'unchanged');
+    assert.equal(result.head, before);
+    assert.equal(readFileSync(join(dest, 'readme.md'), 'utf8'), 'dep\n');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('lib atrás avança com ff-only', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-ff-'));
   try {
     const dest = makeCloneWithOrigin(root);
     const upstream = join(root, 'upstream');
     armClonedDep(dest);
-
-    writeFileSync(join(dest, 'readme.md'), 'retrato local\n');
-    git(dest, 'add', '-A');
-    git(dest, 'commit', '-q', '-m', 'retrato');
-    assert.equal(readFileSync(join(dest, 'readme.md'), 'utf8'), 'retrato local\n');
-
+    pushHeadToOrigin(dest);
     writeFileSync(join(upstream, 'readme.md'), 'github v2\n');
     git(upstream, 'add', '-A');
     git(upstream, 'commit', '-q', '-m', 'v2');
-
     const result = resetFromOrigin(dest);
-    assert.equal(result.status, 'reset', result.status);
-    assert.equal(result.branch, 'main');
+    assert.equal(result.status, 'fast-forward', result.status);
     assert.equal(result.head, result.originHead);
     assert.equal(readFileSync(join(dest, 'readme.md'), 'utf8'), 'github v2\n');
-    const merges = git(dest, 'log', '--merges', '--oneline');
-    assert.equal(merges, '', 'substitui, não mescla');
-    assert.ok(git(dest, 'remote').split('\n').includes('origin'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('lib com commit próprio recusa, lista o commit e não muda', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-ahead-'));
+  try {
+    const dest = makeCloneWithOrigin(root);
+    armClonedDep(dest);
+    writeFileSync(join(dest, 'readme.md'), 'retrato local\n');
+    git(dest, 'add', '-A');
+    git(dest, 'commit', '-q', '-m', 'retrato');
+    const before = git(dest, 'rev-parse', 'HEAD');
+    assert.throws(() => resetFromOrigin(dest), /retrato/);
+    assert.equal(git(dest, 'rev-parse', 'HEAD'), before);
+    assert.equal(readFileSync(join(dest, 'readme.md'), 'utf8'), 'retrato local\n');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('commit de arrumação do próprio script (ignore list) não trava a lib: é descartado, o resto continua recusando', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-bookkeeping-'));
+  try {
+    const dest = makeCloneWithOrigin(root);
+    armClonedDep(dest);
+    pushHeadToOrigin(dest);
+    writeFileSync(join(dest, '.gitignore'), '/obj/\n');
+    git(dest, 'add', '-A');
+    git(dest, 'commit', '-q', '-m', 'gitReposSetup: complete ignore list');
+    const result = resetFromOrigin(dest);
+    assert.equal(result.status, 'dropped-bookkeeping');
+    assert.equal(result.head, result.originHead);
+    // a bookkeeping commit plus a real one: refuses and keeps both
+    writeFileSync(join(dest, '.gitignore'), '/obj/\n');
+    git(dest, 'add', '-A');
+    git(dest, 'commit', '-q', '-m', 'gitReposSetup: complete ignore list');
+    writeFileSync(join(dest, 'readme.md'), 'trabalho de alguem\n');
+    git(dest, 'add', '-A');
+    git(dest, 'commit', '-q', '-m', 'trabalho');
+    const before = git(dest, 'rev-parse', 'HEAD');
+    assert.throws(() => resetFromOrigin(dest), /trabalho/);
+    assert.equal(git(dest, 'rev-parse', 'HEAD'), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('lib suja recusa e não muda', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-dirty-'));
+  try {
+    const dest = makeCloneWithOrigin(root);
+    armClonedDep(dest);
+    const before = git(dest, 'rev-parse', 'HEAD');
+    writeFileSync(join(dest, 'readme.md'), 'sujo\n');
+    assert.throws(() => resetFromOrigin(dest), /readme\.md/);
+    assert.equal(git(dest, 'rev-parse', 'HEAD'), before);
+    assert.equal(readFileSync(join(dest, 'readme.md'), 'utf8'), 'sujo\n');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -163,12 +234,13 @@ test('depois do fetch+reset o retrato continua sobrescrevendo (updateInstead)', 
     const dest = makeCloneWithOrigin(root);
     const upstream = join(root, 'upstream');
     armClonedDep(dest);
+    pushHeadToOrigin(dest);
     rmSync(join(dest, '.git', 'hooks', 'post-receive'), { force: true });
 
     writeFileSync(join(upstream, 'readme.md'), 'github v2\n');
     git(upstream, 'add', '-A');
     git(upstream, 'commit', '-q', '-m', 'v2');
-    assert.equal(resetFromOrigin(dest).status, 'reset');
+    assert.equal(resetFromOrigin(dest).status, 'fast-forward');
     assert.equal(readFileSync(join(dest, 'readme.md'), 'utf8'), 'github v2\n');
 
     const mac = join(root, 'mac');
@@ -201,6 +273,7 @@ test('resetArmedDepsFromOrigin só mexe em quem tem origin e vm-baseline', () =>
   try {
     const armed = makeCloneWithOrigin(root);
     armClonedDep(armed);
+    pushHeadToOrigin(armed);
     const developer = join(root, 'mls-100554');
     git(root, 'clone', '-q', '--depth', '1', join(root, 'upstream'), developer);
     const noOrigin = join(root, 'mls-102033');
@@ -212,7 +285,7 @@ test('resetArmedDepsFromOrigin só mexe em quem tem origin e vm-baseline', () =>
 
     const rows = resetArmedDepsFromOrigin(root);
     const byName = Object.fromEntries(rows.map((row) => [row.name, row.status]));
-    assert.equal(byName['mls-100555'], 'reset');
+    assert.equal(byName['mls-100555'], 'unchanged');
     assert.equal(byName['mls-100554'], 'skipped-no-vm-baseline');
     assert.equal(byName['mls-102033'], 'skipped-no-origin');
   } finally {
@@ -221,9 +294,8 @@ test('resetArmedDepsFromOrigin só mexe em quem tem origin e vm-baseline', () =>
 });
 
 /**
- * Projeto cliente nasce sem `origin` e por isso e' pulado — a copia da VM e' a que o
- * `publish:remote` empurra. `vmGitOrigin` no `l5/config.json` DELE inverte isso, so' para ele.
- * Aberto em 25/09/2026: o time empurra para o GitHub mas nao consegue publicar.
+ * Projeto cliente nasce sem `origin` e por isso e' pulado. `vmGitOrigin` no config
+ * nao adiciona mais o remoto.
  */
 function upstreamPath(root) {
   return join(root, 'upstream');
@@ -262,17 +334,16 @@ test('sem vmGitOrigin o projeto cliente continua intocado (comportamento de hoje
   }
 });
 
-test('com vmGitOrigin o projeto cliente ganha o remote e e resetado do GitHub', () => {
+test('vmGitOrigin no config nao adiciona remoto', () => {
   const root = mkdtempSync(join(tmpdir(), 'setup-client-optin-'));
   try {
-    const { dest, upstream } = makeClientRepoNoOrigin(root, { vmGitOrigin: `file://${upstreamPath(root)}` });
+    const { dest } = makeClientRepoNoOrigin(root, { vmGitOrigin: `file://${upstreamPath(root)}` });
+    const before = git(dest, 'rev-parse', 'HEAD');
     const result = resetFromOrigin(dest);
-    assert.equal(result.status, 'reset', result.status);
-    assert.equal(result.head, result.originHead);
-    // O conteudo do GitHub substitui o que estava na VM: e' o "quem executar por ultimo ganha".
-    assert.equal(readFileSync(join(dest, 'readme.md'), 'utf8'), 'github\n');
-    assert.equal(git(dest, 'remote', 'get-url', 'origin'), `file://${upstream}`);
-    assert.equal(git(dest, 'log', '--merges', '--oneline'), '', 'substitui, não mescla');
+    assert.equal(result.status, 'skipped-no-origin');
+    assert.equal(git(dest, 'rev-parse', 'HEAD'), before);
+    assert.equal(readFileSync(join(dest, 'readme.md'), 'utf8'), 'empurrado da estacao\n');
+    assert.equal(git(dest, 'remote'), '');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
