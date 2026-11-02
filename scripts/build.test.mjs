@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -36,19 +37,20 @@ test('buildWeb: dist/web é Lit + shells + css, sem JS do app', { timeout: 120_0
   const root = mkdtempSync(join(tmpdir(), 'gb91-'));
   const proj = join(root, `mls-${ID}`);
   mkdirSync(join(proj, 'l2', 'spa'), { recursive: true });
+  mkdirSync(join(proj, 'l2', 'shared'), { recursive: true });
   writeFileSync(join(proj, 'l2', 'x.ts'), 'export const x = 1;\n');
   writeFileSync(join(proj, 'l2', 'y.css'), 'body { color: red; }\n');
-  writeFileSync(
-    join(proj, 'l2', 'spa', 'index.html'),
-    [
-      '<!doctype html>',
-      '<html><head>',
-      '    <!-- collab:lit-importmap -->',
-      '    <!-- /collab:lit-importmap -->',
-      '</head><body></body></html>',
-      '',
-    ].join('\n'),
-  );
+  writeFileSync(join(proj, 'l2', 'shared', 'tailwind.css'), '@import "tailwindcss";\n');
+  const sourceShell = [
+    '<!doctype html>',
+    '<html><head>',
+    '    <!-- collab:lit-importmap -->',
+    '    <!-- /collab:lit-importmap -->',
+    `    <link rel="stylesheet" href="/_${ID}_/l2/shared/tailwind.css" />`,
+    '</head><body></body></html>',
+    '',
+  ].join('\n');
+  writeFileSync(join(proj, 'l2', 'spa', 'index.html'), sourceShell);
   setProjectRoot(ID, proj);
   const outdir = join(MLS_BASE, 'dist', WEB);
   const backup = join(MLS_BASE, 'dist', 'web.gb93-test-bak');
@@ -79,7 +81,14 @@ test('buildWeb: dist/web é Lit + shells + css, sem JS do app', { timeout: 120_0
     assert.equal(existsSync(join(outdir, `_${ID}_`, 'l2', 'y.css')), true);
     const shell = readFileSync(join(outdir, `_${ID}_`, 'l2', 'spa', 'index.html'), 'utf8');
     assert.match(shell, /<script type="importmap">/);
-    assert.match(shell, /"lit": "\/_libs\/lit\/index\.js"/);
+    assert.match(shell, /"lit": "\/_libs\/lit\/index\.js\?v=[0-9a-f]{12}"/);
+    const litBody = readFileSync(join(outdir, '_libs', 'lit', 'index.js'));
+    const litHash = createHash('sha256').update(litBody).digest('hex').slice(0, 12);
+    assert.match(shell, new RegExp(`"lit": "/_libs/lit/index\\.js\\?v=${litHash}"`));
+    const cssBody = readFileSync(join(outdir, `_${ID}_`, 'l2', 'shared', 'tailwind.css'));
+    const cssHash = createHash('sha256').update(cssBody).digest('hex').slice(0, 12);
+    assert.match(shell, new RegExp(`href="/_${ID}_/l2/shared/tailwind\\.css\\?v=${cssHash}"`));
+    assert.equal(readFileSync(join(proj, 'l2', 'spa', 'index.html'), 'utf8'), sourceShell);
     assert.equal(
       listFiles(outdir).some((f) => f.endsWith('component-styles.css')),
       false,

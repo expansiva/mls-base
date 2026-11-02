@@ -26,11 +26,14 @@ import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   buildLitImportMap,
+  contentVersionHash,
   emitLitRuntime,
   injectImportMap,
+  litEntryContentVersions,
   litExportEntries,
   litPackageDir,
   readLitRuntimeConfig,
+  stampTailwindHref,
 } from './litRuntime.mjs';
 import {
   cacheDisabled,
@@ -813,14 +816,20 @@ export async function buildWeb(clientConfig, ids) {
 
   // copy shell templates referenced by config.json (kept in their _<id>_ path),
   // injetando o importmap do Lit gerado acima.
-  const litImportMap = buildLitImportMap(litConfig.package, litConfig.baseUrl, litEntries);
+  const litVersions = litEntryContentVersions(outdir, litConfig.outDir, litEntries);
+  const litImportMap = buildLitImportMap(litConfig.package, litConfig.baseUrl, litEntries, litVersions);
   let shells = 0;
   for (const shellPath of Object.values(clientConfig.shellTemplates ?? {})) {
     const { abs, rel } = resolveVirtual(shellPath);
     if (!existsSync(abs)) continue;
     const dest = resolve(outdir, rel);
     await mkdir(dirname(dest), { recursive: true });
-    await writeFile(dest, injectImportMap(await readFile(abs, 'utf8'), litImportMap), 'utf8');
+    const html = stampTailwindHref(injectImportMap(await readFile(abs, 'utf8'), litImportMap), (href) => {
+      const file = resolve(outdir, href.replace(/^\//u, ''));
+      if (!existsSync(file)) throw new Error(`tailwind.css missing for ${href}`);
+      return contentVersionHash(readFileSync(file));
+    });
+    await writeFile(dest, html, 'utf8');
     shells += 1;
   }
   log(`lit importmap injetado em ${shells} shell(s), ${Object.keys(litImportMap.imports).length} specifiers`);

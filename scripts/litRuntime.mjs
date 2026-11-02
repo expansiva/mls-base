@@ -15,6 +15,7 @@
 // `lit/static-html.js` ou `lit/decorators/property.js` que hoje funciona por
 // estar inlinado.
 
+import { createHash } from 'node:crypto';
 import { build as esbuild } from 'esbuild';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -66,12 +67,43 @@ export function litExportEntries(pkgJson) {
   return entries.sort((left, right) => left.exportKey.localeCompare(right.exportKey));
 }
 
-export function buildLitImportMap(pkg, baseUrl, entries) {
+const CONTENT_VERSION = /^[0-9a-f]{12}$/u;
+
+// 12 hex de sha256 do conteúdo. O servidor usa o mesmo corte (função do lado dele).
+export function contentVersionHash(content) {
+  const data = Buffer.isBuffer(content) ? content : Buffer.from(content);
+  return createHash('sha256').update(data).digest('hex').slice(0, 12);
+}
+
+export function buildLitImportMap(pkg, baseUrl, entries, versions) {
   const imports = {};
   for (const { exportKey } of entries) {
-    imports[specifierOf(pkg, exportKey)] = `${baseUrl}${outputNameOf(exportKey)}.js`;
+    const hash = versions?.[exportKey];
+    if (typeof hash !== 'string' || !CONTENT_VERSION.test(hash)) {
+      throw new Error(`lit import map missing content hash for ${exportKey}`);
+    }
+    imports[specifierOf(pkg, exportKey)] = `${baseUrl}${outputNameOf(exportKey)}.js?v=${hash}`;
   }
   return { imports };
+}
+
+export function litEntryContentVersions(outdir, outDir, entries) {
+  const versions = {};
+  for (const { exportKey } of entries) {
+    const rel = `${outputNameOf(exportKey)}.js`;
+    versions[exportKey] = contentVersionHash(readFileSync(join(outdir, outDir, rel)));
+  }
+  return versions;
+}
+
+export function stampTailwindHref(html, hashForHref) {
+  return html.replace(/href="(\/_\d+_\/l2\/shared\/tailwind\.css)"/gu, (_full, href) => {
+    const hash = hashForHref(href);
+    if (typeof hash !== 'string' || !CONTENT_VERSION.test(hash)) {
+      throw new Error(`tailwind.css content hash missing for ${href}`);
+    }
+    return `href="${href}?v=${hash}"`;
+  });
 }
 
 // O esbuild precisa saber que `lit` e tudo abaixo dele NÃO entram no bundle.

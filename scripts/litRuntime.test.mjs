@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildLitImportMap,
+  contentVersionHash,
   injectImportMap,
   litExportEntries,
   litExternals,
@@ -12,6 +13,7 @@ import {
   outputNameOf,
   readLitRuntimeConfig,
   specifierOf,
+  stampTailwindHref,
 } from './litRuntime.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
@@ -59,16 +61,23 @@ test('a lista de externals cobre TODO o exports do lit instalado, não uma amost
   }
 });
 
-test('o importmap manda todo specifier para o baseUrl da configuração', () => {
+test('contentVersionHash é 12 hex de sha256 e muda com um byte', () => {
+  assert.equal(contentVersionHash('abc'), 'ba7816bf8f01');
+  assert.equal(contentVersionHash(Buffer.from('abc')), 'ba7816bf8f01');
+  assert.notEqual(contentVersionHash('abc'), contentVersionHash('abd'));
+});
+
+test('o importmap manda todo specifier para o baseUrl da configuração, com ?v=', () => {
+  const versions = { '.': 'ba7816bf8f01', './decorators.js': 'aa7816bf8f01', './directives/repeat.js': 'ca7816bf8f01' };
   const map = buildLitImportMap('lit', '/_libs/lit/', [
     { exportKey: '.' },
     { exportKey: './decorators.js' },
     { exportKey: './directives/repeat.js' },
-  ]);
+  ], versions);
   assert.deepEqual(map.imports, {
-    lit: '/_libs/lit/index.js',
-    'lit/decorators.js': '/_libs/lit/decorators.js',
-    'lit/directives/repeat.js': '/_libs/lit/directives/repeat.js',
+    lit: '/_libs/lit/index.js?v=ba7816bf8f01',
+    'lit/decorators.js': '/_libs/lit/decorators.js?v=aa7816bf8f01',
+    'lit/directives/repeat.js': '/_libs/lit/directives/repeat.js?v=ca7816bf8f01',
   });
   // nada de CDN em lugar nenhum do mapa
   assert.equal(JSON.stringify(map).includes('jsdelivr'), false);
@@ -93,6 +102,14 @@ test('injectImportMap troca só o bloco marcado', () => {
   assert.equal(injectImportMap(out, { imports: { lit: '/_libs/lit/index.js' } }), out);
 });
 
+test('o link do tailwind ganha ?v= só na cópia emitida', () => {
+  const source = '<link rel="stylesheet" href="/_102033_/l2/shared/tailwind.css" />';
+  const out = stampTailwindHref(source, () => contentVersionHash('body{}'));
+  assert.equal(out, `<link rel="stylesheet" href="/_102033_/l2/shared/tailwind.css?v=${contentVersionHash('body{}')}" />`);
+  assert.equal(source.includes('?v='), false);
+  assert.equal(stampTailwindHref(out, () => 'ba7816bf8f01'), out);
+});
+
 test('shell sem os marcadores FALHA o build — nunca cai calado para o CDN', () => {
   assert.throws(
     () => injectImportMap('<head><script type="importmap">{}</script></head>', { imports: {} }),
@@ -110,6 +127,7 @@ test('os dois shells do runtime carregam os marcadores e nenhum CDN', () => {
       html.includes('href="/_102033_/l2/shared/tailwind.css"'),
       `${shell} perdeu o CSS básico`,
     );
+    assert.equal(html.includes('?v='), false, `${shell} fonte não leva versão`);
     assert.equal(html.includes('component-styles.css'), false, `${shell} ainda referencia o agregado`);
   }
 });
