@@ -147,13 +147,14 @@ test('ensureBookkeepingGitignore appends missing patterns and is idempotent', ()
     assert.match(gitignore, /^\.collab-fs\.json$/m);
     assert.match(gitignore, /^\.collab-fs-trash\/$/m);
     assert.match(gitignore, /^l4\/\*\/tobe\/candidate\/$/m);
+    assert.match(gitignore, /^l4\/\*\/tobe\/operations\/$/m);
     assert.equal(ensureBookkeepingGitignore(dir), false);
   });
 });
 
 test('autocommitDirty commits generated layers, ignores Studio bookkeeping, no empty commit', () => {
   withRepo((dir) => {
-    writeFileSync(join(dir, '.gitignore'), '/obj/\n.collab-fs.json\n.collab-fs-trash/\nl4/*/tobe/candidate/\n');
+    writeFileSync(join(dir, '.gitignore'), '/obj/\n.collab-fs.json\n.collab-fs-trash/\nl4/*/tobe/candidate/\nl4/*/tobe/operations/\n');
     git(dir, ['add', '-A']);
     git(dir, ['commit', '-m', 'gitignore']);
 
@@ -180,6 +181,29 @@ test('autocommitDirty commits generated layers, ignores Studio bookkeeping, no e
 
     assert.equal(autocommitDirty(dir), false);
     assert.equal(git(dir, ['log', '-1', '--pretty=%s']), subject);
+  });
+});
+
+test('autocommitDirty does not publish l4/*/tobe/operations and untracks it', () => {
+  withRepo((dir) => {
+    const operations = join(dir, 'l4', 'mod', 'tobe', 'operations');
+    mkdirSync(operations, { recursive: true });
+    writeFileSync(join(operations, 'stamp.json'), '{"old":true}\n');
+    writeFileSync(join(dir, 'l4', 'mod', 'tobe', 'plan.json'), '{}\n');
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-m', 'tracked operations']);
+
+    writeFileSync(join(operations, 'stamp.json'), '{"new":true}\n');
+    writeFileSync(join(dir, 'l4', 'mod', 'tobe', 'plan.json'), '{"n":1}\n');
+
+    assert.equal(autocommitDirty(dir), true);
+    const tracked = git(dir, ['ls-files']);
+    assert.match(tracked, /l4\/mod\/tobe\/plan\.json/);
+    assert.doesNotMatch(tracked, /tobe\/operations/);
+    assert.equal(readFileSync(join(operations, 'stamp.json'), 'utf8'), '{"new":true}\n');
+    const names = git(dir, ['log', '-1', '--name-only', '--pretty=format:']);
+    assert.match(names, /plan\.json/);
+    assert.match(names, /operations\/stamp\.json/);
   });
 });
 

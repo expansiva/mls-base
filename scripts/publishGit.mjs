@@ -82,10 +82,15 @@ const DIRTY_VM_RE =
   /working directory has unstaged changes|uncommitted changes|denyCurrentBranch|refusing to update/i;
 const OBJ_IGNORE = '/obj/';
 const OBJ_COMMIT_MSG = 'chore: remove obj/ (build happens on the VM)';
-// `l4/*/tobe/candidate/` is the same string as TOBE_CANDIDATE_GITIGNORE in
+// The `l4/*/tobe/` entries are the same strings as TOBE_LOCAL_GITIGNORES in
 // mls-102034/l1/server/layer_1_external/cbe/cbeGitCommit.ts.
-const BOOKKEEPING_IGNORES = ['.collab-fs.json', '.collab-fs-trash/', 'l4/*/tobe/candidate/'];
-const BOOKKEEPING_PATHSPECS = ['.collab-fs.json', '.collab-fs-trash', ':(glob)l4/*/tobe/candidate/**'];
+const TOBE_LOCAL_GITIGNORES = ['l4/*/tobe/candidate/', 'l4/*/tobe/operations/'];
+const BOOKKEEPING_IGNORES = ['.collab-fs.json', '.collab-fs-trash/', ...TOBE_LOCAL_GITIGNORES];
+const BOOKKEEPING_PATHSPECS = [
+  '.collab-fs.json',
+  '.collab-fs-trash',
+  ...TOBE_LOCAL_GITIGNORES.map((pattern) => `:(glob)${pattern}**`),
+];
 const PUBLISH_SKILL = 'mls-base/skills/publishGitBackend.md';
 export const DIRTY_LOCAL_MSG =
   'dirty local worktree: commit before publishing (the script does not commit on its own). ' +
