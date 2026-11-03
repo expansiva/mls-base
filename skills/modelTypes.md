@@ -40,6 +40,11 @@ type ModelType =
 | `translate` | Translating content between languages while preserving meaning, terminology, and tone |
 | `audio` | Transcribing, generating, analyzing, or processing speech and audio |
 
+## Accepted aliases
+
+`agent` is an accepted alias, like `code`. The `agentAssistant` prompts have used `agent` since 27/10/2026.
+Wagner, 03/11/2026: "o alias 'code' e 'agent' são dois alias aceito, sem problemas".
+
 ## Optional prompt markers
 
 Besides `modelType`, a system prompt may carry these OPTIONAL `<!-- key: value -->` markers
