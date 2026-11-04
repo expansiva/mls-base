@@ -20,11 +20,10 @@
 import { spawnSync } from 'node:child_process';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveProfileConf } from './publishGit.mjs';
+import { remoteBaseOf, resolveProfileConf } from './publishGit.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_DIR, '..');
-const DEFAULT_REMOTE_BASE = '/data/mls-base';
 const SSH_WAIT_SECONDS = 120;
 
 function fail(message, code = 1) {
@@ -228,7 +227,7 @@ function cloneOnMac(id, profile) {
 async function main() {
   const { id, profile, force } = parseArgs(process.argv.slice(2));
   const conf = resolveProfileConf(profile, join(ROOT, `mls-${id}`));
-  const base = (conf.REMOTE_BASE || DEFAULT_REMOTE_BASE).replace(/\/+$/u, '');
+  const base = remoteBaseOf(conf);
   log(`mls-${id} → ${conf.SSH_HOST}:${base} (${profile}), --from-model`);
 
   if (profile === 'local') {

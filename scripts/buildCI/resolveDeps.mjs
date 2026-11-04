@@ -25,7 +25,7 @@
 // default branch), skipping existing folders, and walks the clones'
 // manifests until the graph is closed (a visited-set guards against cycles).
 //
-// On the VM (`root === /data/mls-base`, or `armCloned: true`), a freshly
+// On the VM (`COLLAB_ON_VM=1` or `/data/etc/projects/<id>.json`, or `armCloned: true`), a freshly
 // cloned dep keeps `origin` (the customer VM pulls the lib from GitHub) and
 // is armed (`vm-baseline` then setupRepo) so the next publishGit snapshot
 // can land. A clone on the Mac is not armed — it is a GitHub checkout.
@@ -35,6 +35,16 @@ import { existsSync } from 'node:fs';
 import { readFile, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { armClonedDep, VM_ROOT } from '../runtime/gitReposSetup.mjs';
+import { isProjectTree } from '../runtime/projectPorts.mjs';
+
+const PROJECTS_ETC_DIR = '/data/etc/projects';
+
+/** Instalação da VM: COLLAB_ON_VM=1 ou o arquivo do projeto em /data/etc/projects. Não usa o caminho do mls-base. */
+export function isVmInstall({ projectId, env = process.env } = {}) {
+  if (String(env.COLLAB_ON_VM || '').trim() === '1') return true;
+  const id = String(projectId || '').trim();
+  return id !== '' && existsSync(join(PROJECTS_ETC_DIR, `${id}.json`));
+}
 
 // Default URL when the manifest doesn't carry a `repo` (or the dep came from
 // an enhancement header): built from the target's l5/project.json orgName.
@@ -351,7 +361,7 @@ export async function resolveDeps({ root, targetId, orgName, levels, log, armClo
       // Só na VM: cria vm-baseline e arma, conservando origin. Sem o
       // baseline o guard recusaria (`skipped-external-remote`) — o guard
       // não é afrouxado. No Mac o clone continua checkout do GitHub.
-      const shouldArm = armCloned === true || (armCloned !== false && root === VM_ROOT);
+      const shouldArm = armCloned === true || (armCloned !== false && (root === VM_ROOT || isProjectTree(root) || isVmInstall({ projectId: targetId })));
       if (shouldArm) {
         try {
           const armed = armClonedDep(dir);

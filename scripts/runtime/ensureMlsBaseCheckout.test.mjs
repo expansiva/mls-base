@@ -91,6 +91,8 @@ test('parseArgs lê --root/--repo e as variáveis do passo 10', () => {
   assert.equal(fromFlags.repo, 'https://example/repo.git');
   const fromDefaults = parseArgs([], { root: '/tmp/b', repo: 'https://example/b' });
   assert.equal(fromDefaults.root, '/tmp/b');
+  const fromEnv = parseArgs([], { root: '', repo: '' });
+  assert.equal(fromEnv.root, process.env.MLS_BASE_DIR || process.env.COLLAB_MLS_BASE || new URL('../..', import.meta.url).pathname.replace(/\/$/u, ''));
 });
 
 test('passo 10 e este script usam o mesmo default de MLS_BASE_REPO', () => {

@@ -32,6 +32,7 @@ import {
   selectPublishedSha,
   remoteConfMissingMessage,
   remoteUrlFor,
+  remoteBaseOf,
   resolveProfileConf,
   runClone,
   warnClientConfig,
@@ -396,6 +397,12 @@ test('clientPushArgs sem deps e sem align é o push simples', () => {
   ]);
 });
 
+
+test('remoteBaseOf: perfil, senão env, senão /data/mls-base', () => {
+  assert.equal(remoteBaseOf({}, {}), '/data/mls-base');
+  assert.equal(remoteBaseOf({}, { MLS_BASE_DIR: '/data/app102047/mls-base' }), '/data/app102047/mls-base');
+  assert.equal(remoteBaseOf({ REMOTE_BASE: '/data/mls-base/' }, { MLS_BASE_DIR: '/other' }), '/data/mls-base');
+});
 
 test('remoteUrlFor: GIT_URL manda (gb50, https+JWT); sem ele nada muda e continua ssh', () => {
   assert.equal(

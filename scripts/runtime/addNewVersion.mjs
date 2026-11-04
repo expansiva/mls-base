@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { pathIdsOf, versionedTsconfigPathsFile } from '../syncTsconfigPaths.mjs';
 import { collectReleaseStamp, readDepTrees, writeReleaseStamp } from './releaseStamp.mjs';
 import { databaseUrlTestFor, declaredTestMode } from './vmApps.mjs';
+import { isProjectTree } from './projectPorts.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const run = (cmd, cwd = ROOT, env) => {
@@ -316,7 +317,7 @@ function main() {
   activateCurrent(ROOT, releaseDir, fechoProjectIds(releaseConfig));
   console.log(`--- current -> releases/${releaseId}`);
 
-  const aliases = parseReleaseAliases(process.env.COLLAB_RELEASE_ALIAS || '');
+  const aliases = isProjectTree(ROOT) ? [] : parseReleaseAliases(process.env.COLLAB_RELEASE_ALIAS || '');
   for (const releaseAlias of aliases) {
     run(`ln -sfn '${releaseDir}' '${join(ROOT, releaseAlias)}'`);
     console.log(`--- ${releaseAlias} -> releases/${releaseId}`);

@@ -12,7 +12,7 @@ set -eu
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
 
-MLS_BASE="${COLLAB_MLS_BASE:-/data/mls-base}"
+MLS_BASE="${COLLAB_MLS_BASE:-${MLS_BASE_DIR:-/data/mls-base}}"
 LOCK="${MLS_BASE}/.gitbuild.lock"
 NODE_SCRIPT="${MLS_BASE}/scripts/runtime/gitPostReceive.mjs"
 

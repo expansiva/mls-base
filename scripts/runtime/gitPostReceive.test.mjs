@@ -415,6 +415,27 @@ test('T4: biblioteca compartilhada vira o alias de TODOS os clientes em pm2.apps
   });
 });
 
+test('árvore por projeto: prepareReleaseEnv não cria current-<id>', () => {
+  withVm((root, writeConfig) => {
+    writeConfig(['config.json'], '102047');
+    writeConfig(['mls-102047', 'l5', 'config.json'], '102047');
+    const projectRoot = join(root, 'app102047', 'mls-base');
+    mkdirSync(projectRoot, { recursive: true });
+    writeConfig(['app102047', 'mls-base', 'config.json'], '102047');
+    const { clientId, ownClient } = clientIdForRelease(projectRoot, '102047');
+    const { releaseEnv, aliases } = prepareReleaseEnv({
+      root: projectRoot, clientId, ownClient, env: {},
+    });
+    assert.deepEqual(aliases, []);
+    assert.equal(releaseEnv.COLLAB_RELEASE_ALIAS, undefined);
+  });
+});
+
+test('gitPostReceive.sh lê COLLAB_MLS_BASE e MLS_BASE_DIR, padrão /data/mls-base', () => {
+  const sh = readFileSync(join(HERE, 'gitPostReceive.sh'), 'utf8');
+  assert.match(sh, /MLS_BASE="\$\{COLLAB_MLS_BASE:-\$\{MLS_BASE_DIR:-\/data\/mls-base\}\}"/);
+});
+
 function gitRepo(dir, args) {
   return spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
 }

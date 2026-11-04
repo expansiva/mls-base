@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { appNameOf, ProjectPortError, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 import { databaseUrlTestExpr, declaredTestMode, ensureProjectApp, hostedProjectIds, isAggregator, msgProxyTargetFromPm2Config, pm2AggregatorConfig, pm2AppConfig } from './vmApps.mjs';
 
@@ -23,6 +24,11 @@ test('projectIdToPort repete a regra do sites, caso a caso', () => {
   assert.equal(projectIdToPort(5030), 2030);
 });
 
+test('pm2.config.js legado usa MLS_BASE_DIR / COLLAB_MLS_BASE com padrão /data/mls-base', () => {
+  const text = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'servers', 'pm2.config.js'), 'utf8');
+  assert.match(text, /process\.env\.MLS_BASE_DIR \|\| process\.env\.COLLAB_MLS_BASE \|\| '\/data\/mls-base'/);
+});
+
 test('projectIdToPort recusa o que não é só dígito — mls-102048 não é id', () => {
   assert.throws(() => projectIdToPort('10a2'), ProjectPortError);
   assert.throws(() => projectIdToPort('mls-102048'), ProjectPortError);
@@ -32,6 +38,8 @@ test('projectIdToPort recusa o que não é só dígito — mls-102048 não é id
 test('nome do app e alias do release saem da porta e do id', () => {
   assert.equal(appNameOf(2043), 'app2043');
   assert.equal(releaseAliasOf('102043'), 'current-102043');
+  assert.equal(releaseAliasOf('102043', '/data/mls-base'), 'current-102043');
+  assert.equal(releaseAliasOf('102043', '/data/app102043/mls-base'), 'current');
 });
 
 // ── conteúdo: o git e o sites têm de escrever o MESMO arquivo ───────────────
@@ -45,6 +53,9 @@ test('pm2AppConfig aponta para o alias do projeto, nunca para o `current` global
   // o `current` global serve o último push de qualquer projeto — um app
   // multiprojeto pendurado nele serviria o app do vizinho
   assert.equal(/cwd: "\/data\/mls-base\/current"/u.test(text), false);
+  const projectTree = pm2AppConfig('102043', 2043, '/data/app102043/mls-base');
+  assert.match(projectTree, /cwd: "\/data\/app102043\/mls-base\/current"/u);
+  assert.equal(projectTree.includes('current-102043'), false);
 });
 
 test('pm2AppConfig coloca MSG_PROXY_TARGET só quando o slot pede', () => {

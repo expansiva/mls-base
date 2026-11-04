@@ -38,10 +38,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
-import { resolveProfileConf } from '../publishGit.mjs';
+import { remoteBaseOf, resolveProfileConf } from '../publishGit.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const DEFAULT_REMOTE_BASE = '/data/mls-base';
 const PROFILES = new Set(['local', 'remote']);
 const FLAG_CONF = {
   '--ssh-host': 'SSH_HOST',
@@ -104,13 +103,13 @@ export function sshArgs(conf) {
   return args;
 }
 
-export function remoteDir(conf, id) {
-  const base = (conf.REMOTE_BASE || DEFAULT_REMOTE_BASE).replace(/\/+$/u, '');
+export function remoteDir(conf, id, env = process.env) {
+  const base = remoteBaseOf(conf, env);
   return `${base}/mls-${id}`;
 }
 
-export function sshUrl(conf, id) {
-  const base = (conf.REMOTE_BASE || DEFAULT_REMOTE_BASE).replace(/\/+$/u, '');
+export function sshUrl(conf, id, env = process.env) {
+  const base = remoteBaseOf(conf, env);
   return `ssh://${conf.SSH_HOST}${base}/mls-${id}`;
 }
 

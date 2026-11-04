@@ -72,6 +72,20 @@ test('fora do VM_ROOT, clone com origin e sem vm-baseline continua skipped-exter
   }
 });
 
+test('em árvore app<id>/mls-base, clone com origin é armado', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-apptree-arm-'));
+  try {
+    const dest = makeCloneWithOrigin(root);
+    const originUrl = git(dest, 'remote', 'get-url', 'origin');
+    const result = setupRepo(dest, { root: join(root, 'app102047', 'mls-base') });
+    assert.notEqual(result.status, 'skipped-external-remote', result.status);
+    assert.equal(git(dest, 'remote', 'get-url', 'origin'), originUrl);
+    git(dest, 'show-ref', '--verify', '--quiet', 'refs/heads/vm-baseline');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('em VM_ROOT, clone com origin e sem vm-baseline é armado e mantém origin', () => {
   const root = mkdtempSync(join(tmpdir(), 'setup-vmroot-arm-'));
   try {

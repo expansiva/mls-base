@@ -149,6 +149,11 @@ test('release worktree: nenhum arquivo rastreado do mls-base fica sujo (gb73 E2)
   });
 });
 
+test('árvore por projeto não cria current-<id> (COLLAB_RELEASE_ALIAS só na antiga)', () => {
+  const src = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
+  assert.match(src, /isProjectTree\(ROOT\) \? \[\] : parseReleaseAliases/);
+});
+
 test('T3: COLLAB_RELEASE_ALIAS inválido continua recusado; vários current-<id> passam', () => {
   assert.throws(() => parseReleaseAliases('current'), /Invalid COLLAB_RELEASE_ALIAS: current/);
   assert.throws(() => parseReleaseAliases('foo'), /Invalid COLLAB_RELEASE_ALIAS: foo/);

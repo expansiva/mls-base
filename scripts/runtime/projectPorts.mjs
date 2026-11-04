@@ -8,7 +8,20 @@
 //
 // Regra: 2000 + os três últimos dígitos do id. 102043 -> 2043.
 
+export const DEFAULT_MLS_BASE = '/data/mls-base';
+
 export class ProjectPortError extends Error {}
+
+/** `--root`, senão MLS_BASE_DIR, senão COLLAB_MLS_BASE, senão /data/mls-base. */
+export function resolveMlsBaseRoot({ rootFlag, env = process.env } = {}) {
+  const raw = String(rootFlag || env.MLS_BASE_DIR || env.COLLAB_MLS_BASE || DEFAULT_MLS_BASE).trim();
+  return raw.replace(/\/+$/u, '') || DEFAULT_MLS_BASE;
+}
+
+/** Árvore nova: …/app<id>/mls-base (o current é do projeto). */
+export function isProjectTree(root) {
+  return /(?:^|\/)app\d+\/mls-base\/?$/u.test(String(root).replaceAll('\\', '/'));
+}
 
 export function projectIdToPort(projectId) {
   const id = String(projectId).trim();
@@ -23,7 +36,8 @@ export function appNameOf(port) {
   return `app${port}`;
 }
 
-/** O release que o app de um projeto serve — o alias por projeto, não o `current` global. */
-export function releaseAliasOf(projectId) {
+/** O release que o app de um projeto serve. Árvore nova: `current`; antiga: `current-<id>`. */
+export function releaseAliasOf(projectId, root) {
+  if (root && isProjectTree(root)) return 'current';
   return `current-${String(projectId).trim()}`;
 }

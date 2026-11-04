@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { readManifestDeps, resolveDeps, scanDynamicProjectRefs, scanImportRefs, stripTemplateLiterals } from './resolveDeps.mjs';
+import { isVmInstall, readManifestDeps, resolveDeps, scanDynamicProjectRefs, scanImportRefs, stripTemplateLiterals } from './resolveDeps.mjs';
 
 const GIT_ENV = {
   ...process.env,
@@ -318,4 +318,10 @@ test('clone fora da VM conserva origin (não arma)', async () => {
     try { git(dest, 'show-ref', '--verify', '--quiet', 'refs/heads/vm-baseline'); } catch { hasBaseline = false; }
     assert.equal(hasBaseline, false);
   });
+});
+
+test('isVmInstall usa COLLAB_ON_VM, não o caminho do mls-base', () => {
+  assert.equal(isVmInstall({ projectId: '102047', env: {} }), false);
+  assert.equal(isVmInstall({ projectId: '102047', env: { COLLAB_ON_VM: '1' } }), true);
+  assert.equal(isVmInstall({ env: { COLLAB_ON_VM: '1' } }), true);
 });

@@ -109,7 +109,7 @@ export function pm2AppConfig(projectId, port, remoteBase, msgProxyTarget, databa
   return `module.exports = {
   name: ${JSON.stringify(appName)},
   script: './dist/local/_102034_/l1/server/layer_1_external/transport/http/startServer.js',
-  cwd: ${JSON.stringify(`${remoteBase}/${releaseAliasOf(projectId)}`)},
+  cwd: ${JSON.stringify(`${remoteBase}/${releaseAliasOf(projectId, remoteBase)}`)},
   instances: ${workerCount},
   exec_mode: 'cluster',
   watch: false,

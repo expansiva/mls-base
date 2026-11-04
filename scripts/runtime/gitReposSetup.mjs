@@ -31,8 +31,19 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_ROOT = resolve(SCRIPT_DIR, '..', '..');
 export const VM_ROOT = '/data/mls-base';
+
+function isProjectTree(root) {
+  return /(?:^|\/)app\d+\/mls-base\/?$/u.test(String(root).replaceAll('\\', '/'));
+}
+
+// Raiz: --root, senão MLS_BASE_DIR/COLLAB_MLS_BASE, senão o mls-base que contém este script
+// (na árvore nova é /data/app<id>/mls-base; nunca outro caminho por padrão).
+const SCRIPT_ROOT = resolve(SCRIPT_DIR, '..', '..');
+function resolveMlsBaseRoot({ rootFlag, env = process.env } = {}) {
+  const raw = String(rootFlag || env.MLS_BASE_DIR || env.COLLAB_MLS_BASE || SCRIPT_ROOT).trim();
+  return raw.replace(/\/+$/u, '') || SCRIPT_ROOT;
+}
 const GIT_USER_NAME = 'collab-vm';
 const GIT_USER_EMAIL = 'vm@collab.codes';
 const INITIAL_COMMIT_MSG = 'vm-baseline: initial snapshot';
@@ -71,8 +82,8 @@ exit 0
 
 const argv = process.argv.slice(2);
 const rootFlag = argv.indexOf('--root');
-const rootFromFlag = rootFlag >= 0 ? argv[rootFlag + 1] : null;
-const ROOT = resolve(rootFromFlag || DEFAULT_ROOT);
+const rootFromFlag = rootFlag >= 0 ? argv[rootFlag + 1] : '';
+const ROOT = resolve(resolveMlsBaseRoot({ rootFlag: rootFromFlag }));
 const RESET_FROM_ORIGIN = argv.includes('--reset-from-origin');
 
 function fail(message) {
@@ -320,7 +331,8 @@ export function setupRepo(dir, { root } = {}) {
     // Fora do VM_ROOT isto é checkout de desenvolvedor e o guard protege a história.
     // Em /data/mls-base não há clone de desenvolvedor; um repo com origin ali só
     // pode ter vindo do resolveDeps (clone antigo, pré-gb77) — arma e conserva origin.
-    const inVmRoot = resolve(root ?? dirname(dir)) === resolve(VM_ROOT);
+    const armedRoot = resolve(root ?? dirname(dir));
+    const inVmRoot = armedRoot === resolve(VM_ROOT) || isProjectTree(armedRoot);
     if (inVmRoot) return armClonedDep(dir);
     return { status: 'skipped-external-remote', actions };
   }
@@ -523,10 +535,10 @@ function main() {
     );
   }
 
-  if (!rootFromFlag && ROOT !== VM_ROOT) {
+  if (!rootFromFlag && ROOT !== VM_ROOT && !isProjectTree(ROOT)) {
     fail(
       `Refusing to run at ${ROOT}.\n`
-      + `This script initializes git inside every mls-* folder and is meant for the VM (${VM_ROOT}).\n`
+      + `This script initializes git inside every mls-* folder and is meant for the VM (${VM_ROOT} or /data/app<id>/mls-base).\n`
       + 'On the VM: node scripts/runtime/gitReposSetup.mjs\n'
       + 'To override: node scripts/runtime/gitReposSetup.mjs --root <path>',
     );

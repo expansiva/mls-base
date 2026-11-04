@@ -17,9 +17,7 @@
 
 import { spawnSync } from 'node:child_process';
 
-import { resolveProfileConf } from '../publishGit.mjs';
-
-const DEFAULT_REMOTE_BASE = '/data/mls-base';
+import { remoteBaseOf, resolveProfileConf } from '../publishGit.mjs';
 
 function fail(message, code = 1) {
   process.stderr.write(`[configMsgTarget] ${message}\n`);
@@ -139,7 +137,7 @@ function main() {
 
   const conf = resolveProfileConf('local');
   if (!conf.SSH_HOST) fail('PUBLISH_LOCAL_SSH_HOST missing in mls-base/.env (local VM only).');
-  const base = (conf.REMOTE_BASE || DEFAULT_REMOTE_BASE).replace(/\/+$/u, '');
+  const base = remoteBaseOf(conf);
 
   const sshArgs = [];
   if (conf.SSH_CONFIG) sshArgs.push('-F', conf.SSH_CONFIG);

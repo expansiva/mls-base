@@ -33,7 +33,7 @@ export function usage() {
     '',
     '  node scripts/runtime/ensureMlsBaseCheckout.mjs [--root DIR] [--repo URL]',
     '',
-    `  --root  default MLS_BASE_DIR or the mls-base that contains this script`,
+    `  --root  default MLS_BASE_DIR, COLLAB_MLS_BASE, or the mls-base that contains this script`,
     `  --repo  default MLS_BASE_REPO or ${DEFAULT_MLS_BASE_REPO}`,
   ].join('\n');
 }
@@ -53,7 +53,7 @@ export function parseArgs(argv, defaults = {}) {
   return {
     ok: true,
     help: false,
-    root: String(root || process.env.MLS_BASE_DIR || SCRIPT_MLS_BASE).trim(),
+    root: String(root || process.env.MLS_BASE_DIR || process.env.COLLAB_MLS_BASE || SCRIPT_MLS_BASE).trim(),
     repo: String(repo || process.env.MLS_BASE_REPO || DEFAULT_MLS_BASE_REPO).trim(),
   };
 }

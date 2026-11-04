@@ -50,6 +50,12 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_REMOTE_BASE = '/data/mls-base';
+
+/** REMOTE_BASE do perfil, senão MLS_BASE_DIR / COLLAB_MLS_BASE, senão /data/mls-base. */
+export function remoteBaseOf(conf, env = process.env) {
+  return String(conf.REMOTE_BASE || env.MLS_BASE_DIR || env.COLLAB_MLS_BASE || DEFAULT_REMOTE_BASE)
+    .replace(/\/+$/u, '');
+}
 const VM_REMOTE = 'vm';
 const LOCAL_ENV_TO_CONF = {
   PUBLISH_LOCAL_SSH_HOST: 'SSH_HOST',
@@ -326,7 +332,7 @@ function sshUrl(conf, projectName) {
   if (!conf.SSH_HOST) {
     fail('perfil sem SSH_HOST: use --git-url=https://<vm> (publish por JWT) ou informe --ssh-host.');
   }
-  const base = (conf.REMOTE_BASE || DEFAULT_REMOTE_BASE).replace(/\/+$/u, '');
+  const base = remoteBaseOf(conf);
   return `ssh://${conf.SSH_HOST}${base}/${projectName}`;
 }
 

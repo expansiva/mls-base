@@ -29,7 +29,7 @@ import {
 } from '../validateClientConfig.mjs';
 import { VM_TSCONFIG, writeVmTsconfig } from './addNewVersion.mjs';
 import { ensureProjectApp, hostedProjectIds } from './vmApps.mjs';
-import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
+import { appNameOf, isProjectTree, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 import { homedir } from 'node:os';
 
 const require = createRequire(import.meta.url);
@@ -466,10 +466,11 @@ export function clientIdForRelease(root, pushedId = '') {
  * ou lima sem aggregator ainda).
  */
 export function releaseAliasesToFlip({ root, clientId, ownClient }) {
-  if (ownClient && clientId) return [releaseAliasOf(clientId)];
+  if (isProjectTree(root)) return [];
+  if (ownClient && clientId) return [releaseAliasOf(clientId, root)];
   const hosted = hostedProjectIds(root);
-  if (hosted.length > 0) return hosted.map((id) => releaseAliasOf(id));
-  if (clientId) return [releaseAliasOf(clientId)];
+  if (hosted.length > 0) return hosted.map((id) => releaseAliasOf(id, root));
+  if (clientId) return [releaseAliasOf(clientId, root)];
   return [];
 }
 
