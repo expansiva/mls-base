@@ -87,6 +87,17 @@ if (remote.startsWith('node --input-type=module')) {
     process.stdout.write('##gitBackend build=error project=mls-102047##\\n');
     process.exit(0);
   }
+  if (process.env.PREPARE_BUILD === 'lines') {
+    const lines = [];
+    for (let i = 1; i <= 30; i += 1) lines.push('build-line-' + i);
+    lines.push('fetch https://u:segredo@host/repo');
+    lines.push('cookie=secret-value');
+    process.stdout.write(lines.join('\\n') + '\\n');
+    process.exit(1);
+  }
+  if (process.env.PREPARE_BUILD === 'empty') {
+    process.exit(1);
+  }
   const rootSha = spawnSync('git', ['-C', vm, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
   const appSha = spawnSync('git', ['-C', join(vm, 'mls-102047'), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
   const pin = JSON.parse(readFileSync(process.env.PREPARE_PIN, 'utf8'));
@@ -344,6 +355,7 @@ test('dependency repos updated on the VM by another prepare still force this rel
   const movedResult = await quietPrepare(moved);
   assert.equal(movedResult.ok, true);
   assert.equal(movedResult.forcedBuild, true);
+  assert.equal(Object.hasOwn(movedResult, 'detail'), false);
   assert.notEqual(oldTree, newTree);
   assert.deepEqual(movedResult.evidence.release.deps, { 102034: newTree });
   assert.equal(logText(moved.sshLog).includes('gitPostReceive.mjs --root /data/mls-base --project 102047'), true);
@@ -371,6 +383,7 @@ test('build error is not ready and a disconnect keeps the worktree', async () =>
     assert.equal(result.ready, false);
     assert.equal(result.phase, 'failed');
     assert.equal(result.code, 'build');
+    assert.match(result.detail, /build=error/u);
   });
 
   const lost = bench();
@@ -385,6 +398,38 @@ test('build error is not ready and a disconnect keeps the worktree', async () =>
     assert.equal(result.phase, 'failed');
   });
   assert.equal(readFileSync(join(lost.mac, '.git', 'HEAD'), 'utf8').includes('ref:'), true);
+});
+
+test('a forced build failure reports the last lines with credentials masked', async () => {
+  const broken = bench({ build: 'lines' });
+  commitFile(broken.mac, 'again.txt', 'root\n', 'root again');
+  await held(broken, async () => {
+    const result = await prepareSources({
+      root: broken.mac, profile: broken.profile, session: 'codex-s5', env: broken.env, sshBin: broken.options.sshBin,
+      lockPath: broken.options.lockPath,
+      spawnPublish: () => ({ code: 0, text: 'Nothing to publish\n', uncertain: false }),
+    });
+    assert.equal(result.code, 'build');
+    const lines = result.detail.split('\n');
+    assert.equal(lines.length, 25);
+    assert.match(lines.at(-1), /:\/\/\*\*\*@host\/repo/u);
+    assert.equal(result.detail.includes('segredo'), false);
+    assert.equal(result.detail.includes('cookie'), false);
+    assert.match(result.detail, /build-line-30/u);
+    assert.equal(result.detail.includes('build-line-6'), false);
+  });
+
+  const empty = bench({ build: 'empty' });
+  commitFile(empty.mac, 'again.txt', 'root\n', 'root again');
+  await held(empty, async () => {
+    const result = await prepareSources({
+      root: empty.mac, profile: empty.profile, session: 'codex-s5', env: empty.env, sshBin: empty.options.sshBin,
+      lockPath: empty.options.lockPath,
+      spawnPublish: () => ({ code: 0, text: 'Nothing to publish\n', uncertain: false }),
+    });
+    assert.equal(result.code, 'build');
+    assert.equal(result.detail, '(no build output captured)');
+  });
 });
 
 test('a raced edit aborts before push and a refused lease stays uncertain', async () => {

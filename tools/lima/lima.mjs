@@ -375,19 +375,22 @@ export async function runPrepare(parsed, profile, env = process.env) {
   ref = { ...ref, operationId: started.operationId };
   saveOwnerRef(profile, ref);
 
-  const fail = async (code, message, uncertain = true) => {
+  const fail = async (code, message, uncertain = true, detail) => {
     await vm(profile, {
       op: 'finishOperation', ownerId: ref.ownerId, operationId: ref.operationId, uncertain: true,
     }, env);
     saveOwnerRef(profile, { ...ref, operationId: ref.operationId });
-    publishDiagnosis(env, parsed.session, {
+    const diagnosis = {
       ok: false, ready: false, session: parsed.session, phase: 'failed', at: new Date().toISOString(), code, message, uncertain,
-    });
+    };
+    if (detail) diagnosis.detail = detail;
+    publishDiagnosis(env, parsed.session, diagnosis);
     const error = new Error(message);
     error.code = code;
     error.exitCode = 1;
     error.uncertain = true;
     error.result = { ok: false, ready: false, phase: 'failed', code };
+    if (detail) error.result.detail = detail;
     throw error;
   };
 
@@ -406,7 +409,9 @@ export async function runPrepare(parsed, profile, env = process.env) {
   } catch (error) {
     await fail(error.code || 'sources', error.message);
   }
-  if (!sources?.ok) await fail(sources?.code || 'sources', sources?.message || 'source prepare failed', sources?.uncertain !== false);
+  if (!sources?.ok) {
+    await fail(sources?.code || 'sources', sources?.message || 'source prepare failed', sources?.uncertain !== false, sources?.detail);
+  }
 
   const bench = await prepareBenchOnVm(profile, env, {
     db: parsed.db,

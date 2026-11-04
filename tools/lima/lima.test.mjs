@@ -433,6 +433,7 @@ export async function prepareSources(input) {
   }
   if (process.env.LIMA_FAIL === 'sources') return { ok: false, code: 'dirty', uncertain: false, sent: false };
   if (process.env.LIMA_FAIL === 'sources-sent') return { ok: false, code: 'build', uncertain: true, sent: true };
+  if (process.env.LIMA_FAIL === 'sources-detail') return { ok: false, code: 'build', uncertain: true, sent: true, detail: 'tail of the build' };
   return {
     ok: true,
     evidence: {
@@ -596,6 +597,18 @@ test('dry-run does not reserve, publish, or seed', async () => {
   assert.equal(existsSync(box.lockPath), false);
   assert.equal(readFileSync(stageLogOf(env), 'utf8').trim(), 'plan');
   assert.equal(existsSync(join(box.stateDir, 'lima-receipt-campanha.json')), false);
+});
+
+test('a source failure detail is on the prepare JSON and the diagnosis file', async () => {
+  const box = bench();
+  const env = withStages(box, { LIMA_FAIL: 'sources-detail' });
+  const prepared = await runCli(['prepare', '102047', '--session', 'campanha'], env);
+  assert.notEqual(prepared.code, 0);
+  const view = JSON.parse(prepared.stderr.trim().split('\n')[0]);
+  assert.equal(view.detail, 'tail of the build');
+  assert.equal(view.code, 'build');
+  const diagnosis = JSON.parse(readFileSync(join(box.stateDir, 'lima-receipt-campanha.diagnosis.json'), 'utf8'));
+  assert.equal(diagnosis.detail, 'tail of the build');
 });
 
 test('a failure in sources or bench is not ready and does not unlock', async () => {

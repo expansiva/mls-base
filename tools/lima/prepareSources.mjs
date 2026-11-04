@@ -386,6 +386,28 @@ function sourcesMatch(plan, vm, appSha, env) {
   return true;
 }
 
+const SECRET_LINE = /cookieKey|postgres:\/\/|PGPASSWORD|secretAccess|DATABASE_URL|token|cookie/iu;
+const CREDENTIAL = /:\/\/[^\s/@:]+:[^\s/@]+@/g;
+
+/** Last lines of a build or ssh transcript, safe to put on the prepare receipt. */
+export function failureDetail(text) {
+  const raw = String(text ?? '');
+  if (!raw.trim()) return '(no build output captured)';
+  const kept = [];
+  for (const line of raw.split(/\r?\n/u)) {
+    if (!line.trim() || SECRET_LINE.test(line)) continue;
+    kept.push(line.replace(CREDENTIAL, '://***@'));
+  }
+  if (kept.length === 0) return '(no build output captured)';
+  return kept.slice(-25).join('\n');
+}
+
+function capturedOutput(result) {
+  if (!result) return '';
+  if (typeof result.text === 'string' && result.text.trim()) return result.text;
+  return `${result.stdout || ''}\n${result.stderr || ''}`;
+}
+
 function failed(phase, extra = {}) {
   return { ok: false, ready: false, phase, ...extra };
 }
@@ -426,14 +448,18 @@ export async function prepareSources({
 
   const vmRoot = projectMlsBase(projectId, env);
   const vmHead = await ssh(profile, `git -C ${vmRoot} rev-parse HEAD`, options);
-  if (vmHead.uncertain || vmHead.code !== 0) return failed('failed', { code: 'ssh', sent: false, uncertain: true });
+  if (vmHead.uncertain || vmHead.code !== 0) {
+    return failed('failed', { code: 'ssh', sent: false, uncertain: true, detail: failureDetail(capturedOutput(vmHead)) });
+  }
 
   let sent = false;
   const rootChanged = vmHead.stdout !== plan.rootSha;
   if (rootChanged) {
     const pushed = await pushRoot(root, profile, plan.rootSha, vmHead.stdout, options, projectId);
     sent = true;
-    if (pushed.code !== 0) return failed('failed', { code: 'root-push', sent: true, uncertain: true });
+    if (pushed.code !== 0) {
+      return failed('failed', { code: 'root-push', sent: true, uncertain: true, detail: failureDetail(capturedOutput(pushed)) });
+    }
     const seen = await ssh(profile, `git -C ${vmRoot} rev-parse HEAD`, options);
     if (seen.uncertain || seen.stdout !== plan.rootSha) return failed('failed', { code: 'root-sha', sent: true, uncertain: true });
   }
@@ -467,33 +493,36 @@ export async function prepareSources({
   }
   const publishMarker = markerOf(publishText, projectId);
   if (publishMarker.kind === 'error' || (published.code !== 0 && appPushed)) {
-    return failed('failed', { code: 'build', sent: true, initialAppSha: plan.appSha, finalAppSha: after.appSha });
+    return failed('failed', {
+      code: 'build', sent: true, initialAppSha: plan.appSha, finalAppSha: after.appSha, detail: failureDetail(publishText),
+    });
   }
 
   let observed = await readVm(profile, plan, options);
-  if (observed.uncertain) return failed('failed', { code: 'ssh', sent, uncertain: true });
+  if (observed.uncertain) return failed('failed', { code: 'ssh', sent, uncertain: true, detail: failureDetail('') });
   let buildText = publishText;
   let forcedBuild = false;
   const coherent = sourcesMatch(plan, observed, after.appSha, env);
   if (!coherent) {
     if (appPushed && publishMarker.kind === 'ok') {
-      return failed('failed', { code: 'release', sent: true });
+      return failed('failed', { code: 'release', sent: true, detail: failureDetail(buildText) });
     }
     const built = await ssh(profile,
       `flock ${projectBuildLock(projectId, env)} node ${vmRoot}/scripts/runtime/gitPostReceive.mjs --root ${vmRoot} --project ${projectId}`,
       options);
     forcedBuild = true;
     sent = true;
-    buildText += `\n${built.stdout}\n${built.stderr}`;
+    const builtText = `${built.stdout}\n${built.stderr}`;
+    buildText += `\n${builtText}`;
     if (built.uncertain) return failed('failed', { code: 'build-disconnect', sent: true, uncertain: true });
-    if (markerOf(`${built.stdout}\n${built.stderr}`, projectId).kind !== 'ok') {
-      return failed('failed', { code: 'build', sent: true });
+    if (markerOf(builtText, projectId).kind !== 'ok') {
+      return failed('failed', { code: 'build', sent: true, detail: failureDetail(builtText) });
     }
     observed = await readVm(profile, plan, options);
-    if (observed.uncertain) return failed('failed', { code: 'ssh', sent: true, uncertain: true });
+    if (observed.uncertain) return failed('failed', { code: 'ssh', sent: true, uncertain: true, detail: failureDetail('') });
   }
-  if (markerOf(buildText, projectId).kind === 'error') return failed('failed', { code: 'build', sent });
-  if (!sourcesMatch(plan, observed, after.appSha, env)) return failed('failed', { code: 'release', sent });
+  if (markerOf(buildText, projectId).kind === 'error') return failed('failed', { code: 'build', sent, detail: failureDetail(buildText) });
+  if (!sourcesMatch(plan, observed, after.appSha, env)) return failed('failed', { code: 'release', sent, detail: failureDetail(buildText) });
   return {
     ok: true,
     ready: false,
