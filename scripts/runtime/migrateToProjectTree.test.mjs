@@ -229,27 +229,113 @@ test('a failed release removes the folder this run created', async () => {
   assert.equal(existsSync(dest), false);
 });
 
+// startOrReload of a running app leaves cwd alone. delete removes it.
+// start sets cwd from the config path, unless startSetsCwd is false.
+function fakePm2(oldCwd, newCwd, startSetsCwd = true) {
+  const pair = (cwd) => [0, 1].map(() => ({ name: 'app2056', pm2_env: { status: 'online', pm_cwd: cwd } }));
+  let rows = pair(oldCwd);
+  const calls = [];
+  const cwdFor = (config) => (config.includes(`${newCwd.split('/').slice(0, -1).join('/')}/pm2`) ? newCwd : oldCwd);
+  return {
+    calls,
+    rows: () => rows.map((row) => ({ name: row.name, pm2_env: { ...row.pm2_env } })),
+    pm2Instances() {
+      return rows.map((row) => ({ name: row.name, pm2_env: { ...row.pm2_env } }));
+    },
+    pm2Delete(app) {
+      calls.push(`delete ${app}`);
+      rows = rows.filter((row) => row.name !== app);
+    },
+    pm2(config) {
+      calls.push(`start ${config}`);
+      const cwd = startSetsCwd ? cwdFor(config) : oldCwd;
+      rows = pair(cwd);
+    },
+    pm2Save() {
+      calls.push('save');
+    },
+  };
+}
+
+test('pm2 delete then start moves every instance onto the new cwd', async () => {
+  const { source, box } = fixture();
+  const args = parseArgs(['102056', '--root', source]);
+  const dest = join(box, 'app102056', 'mls-base');
+  const oldCwd = join(source, 'current-102056');
+  const newCwd = join(dest, 'current');
+  const pm2 = fakePm2(oldCwd, newCwd);
+  await migrateToProjectTree({
+    ...args,
+    commands: { ...commands(dest), ...pm2 },
+  });
+  assert.deepEqual(pm2.rows().map((row) => row.pm2_env.pm_cwd), [newCwd, newCwd]);
+  assert.deepEqual(pm2.calls, [
+    'delete app2056',
+    `start ${join(dest, 'pm2.apps.d', 'app2056.config.js')}`,
+    'save',
+  ]);
+});
+
+test('a start that leaves the old cwd fails, restores that cwd, and removes the new folder', async () => {
+  const { source, box } = fixture();
+  const args = parseArgs(['102056', '--root', source]);
+  const dest = join(box, 'app102056', 'mls-base');
+  const oldCwd = join(source, 'current-102056');
+  const pm2 = fakePm2(oldCwd, join(dest, 'current'), false);
+  await assert.rejects(
+    () => migrateToProjectTree({ ...args, commands: { ...commands(dest), ...pm2 } }),
+    new RegExp(`pm2 app2056 cwd is still ${oldCwd}, wanted ${join(dest, 'current')}`),
+  );
+  assert.equal(existsSync(dest), false);
+  assert.deepEqual(pm2.rows().map((row) => row.pm2_env.pm_cwd), [oldCwd, oldCwd]);
+  assert.equal(pm2.calls.filter((call) => call.startsWith('delete')).length, 2);
+});
+
+test('a second run whose cwd is already the new tree skips pm2 and does not delete', async () => {
+  const { source, box } = fixture();
+  const args = parseArgs(['102056', '--root', source]);
+  const dest = join(box, 'app102056', 'mls-base');
+  const newCwd = join(dest, 'current');
+  await migrateToProjectTree({
+    ...args,
+    commands: { ...commands(dest), ...fakePm2(join(source, 'current-102056'), newCwd) },
+  });
+  const pm2 = fakePm2(newCwd, newCwd);
+  const second = await migrateToProjectTree({
+    ...args,
+    commands: { ...commands(dest), ...pm2 },
+  });
+  assert.match(second.lines.join('\n'), /skip pm2 app2056/);
+  assert.equal(pm2.calls.some((call) => call.startsWith('delete')), false);
+});
+
 test('a health failure after the pm2 switch puts pm2 back on the old tree and removes the new folder', async () => {
   const { source, box } = fixture();
   const args = parseArgs(['102056', '--root', source]);
   const dest = join(box, 'app102056', 'mls-base');
-  const started = [];
+  const oldCwd = join(source, 'current-102056');
+  const pm2 = fakePm2(oldCwd, join(dest, 'current'));
   await assert.rejects(
     () => migrateToProjectTree({
       ...args,
       commands: {
         ...commands(dest),
-        pm2(config) { started.push(config); },
-        pm2Cwd() { return ''; },
+        ...pm2,
         health() { throw new Error('health boom'); },
       },
     }),
     new RegExp(`migration failed: health boom; removed ${dest}; pm2 app2056 restored to ${source}`),
   );
-  assert.equal(started.length, 2);
-  assert.equal(started[0], join(dest, 'pm2.apps.d', 'app2056.config.js'));
-  assert.equal(started[1], join(source, 'pm2.apps.d', 'app2056.config.js'));
   assert.equal(existsSync(dest), false);
+  assert.deepEqual(pm2.rows().map((row) => row.pm2_env.pm_cwd), [oldCwd, oldCwd]);
+  assert.deepEqual(pm2.calls, [
+    'delete app2056',
+    `start ${join(dest, 'pm2.apps.d', 'app2056.config.js')}`,
+    'save',
+    'delete app2056',
+    `start ${join(source, 'pm2.apps.d', 'app2056.config.js')}`,
+    'save',
+  ]);
 });
 
 test('refuses an unfinished destination and does not delete it', async () => {

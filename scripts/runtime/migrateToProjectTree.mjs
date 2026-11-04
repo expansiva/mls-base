@@ -336,21 +336,58 @@ function ensureEnv(destRoot, key, value) {
   writeFileSync(file, `${text}${text && !text.endsWith('\n') ? '\n' : ''}${key}=${value}\n`);
 }
 
-function pm2Cwd(appName) {
-  const listed = spawnSync('pm2', ['jlist'], { encoding: 'utf8' });
-  if ((listed.status ?? 1) !== 0) return '';
-  try {
-    const rows = JSON.parse(listed.stdout || '[]');
-    const row = rows.find((item) => item && item.name === appName);
-    return row?.pm2_env?.pm_cwd || '';
-  } catch {
-    return '';
-  }
+function instanceCwd(row) {
+  return row?.pm2_env?.pm_cwd || '';
 }
 
-function defaultPm2(configFile) {
-  const result = spawnSync('pm2', ['startOrReload', configFile, '--update-env'], { encoding: 'utf8' });
-  if ((result.status ?? 1) !== 0) throw new Error(`pm2 startOrReload failed: ${(result.stderr || result.stdout || '').trim()}`);
+function pm2Failed(args, result) {
+  throw new Error(`pm2 ${args.join(' ')} failed: ${(result.stderr || result.stdout || '').trim()}`);
+}
+
+function pm2Spawn(args) {
+  const result = spawnSync('pm2', args, { encoding: 'utf8' });
+  if ((result.status ?? 1) !== 0) pm2Failed(args, result);
+}
+
+// startOrReload of an app that already exists reloads it and leaves pm_cwd
+// on the old tree. Switching the tree is delete, then start, then save.
+function readAppInstances(appName, commands) {
+  if (commands.pm2Instances) return commands.pm2Instances(appName);
+  if (commands.pm2Cwd) {
+    const cwd = commands.pm2Cwd(appName) || '';
+    return [{ name: appName, pm2_env: { status: 'online', pm_cwd: cwd } }];
+  }
+  const listed = spawnSync('pm2', ['jlist'], { encoding: 'utf8' });
+  if ((listed.status ?? 1) !== 0) pm2Failed(['jlist'], listed);
+  let rows = [];
+  try {
+    rows = JSON.parse(listed.stdout || '[]');
+  } catch (error) {
+    throw new Error(`pm2 jlist failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return rows.filter((item) => item && item.name === appName);
+}
+
+function pm2Actions(commands) {
+  const injected = Boolean(commands.pm2 || commands.pm2Delete || commands.pm2Save || commands.pm2Instances || commands.pm2Cwd);
+  return {
+    deleteApp: commands.pm2Delete || (injected ? () => {} : (app) => pm2Spawn(['delete', app])),
+    start: commands.pm2 || ((config) => pm2Spawn(['start', config])),
+    save: commands.pm2Save || (injected ? () => {} : () => pm2Spawn(['save'])),
+  };
+}
+
+function assertCwd(appName, rows, wanted, online) {
+  const bad = rows.find((row) => instanceCwd(row) !== wanted);
+  if (rows.length === 0 || bad) {
+    const got = bad ? instanceCwd(bad) : '(none)';
+    throw new Error(`pm2 ${appName} cwd is still ${got}, wanted ${wanted}`);
+  }
+  if (!online) return;
+  const down = rows.find((row) => row?.pm2_env?.status !== 'online');
+  if (down) {
+    throw new Error(`pm2 ${appName} status is ${down.pm2_env?.status || 'missing'}, wanted online`);
+  }
 }
 
 export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, markNew = false, state = {}, commands = {} }) {
@@ -367,7 +404,6 @@ export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, m
       throw new Error(`release failed: ${(result.stderr || result.stdout || '').trim()}`);
     }
   });
-  const pm2 = commands.pm2 || defaultPm2;
   const health = commands.health || (async (url) => {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`health ${url} returned ${response.status}`);
@@ -380,7 +416,6 @@ export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, m
       throw new Error(`build obj failed: ${(result.stderr || result.stdout || '').trim()}`);
     }
   });
-  const readCwd = commands.pm2Cwd || pm2Cwd;
   const done = [];
   let buildIds = [];
   const flushBuild = () => {
@@ -440,15 +475,20 @@ export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, m
       release(destRoot, projectId);
       if (!currentInside(destRoot)) throw new Error(`release did not create ${destRoot}/current`);
     } else if (step.id === 'pm2') {
-      const cwd = readCwd(step.appName);
       const wanted = join(destRoot, 'current');
-      if (cwd === wanted) {
+      const before = readAppInstances(step.appName, commands);
+      if (before.length > 0 && before.every((row) => instanceCwd(row) === wanted)) {
         done.push(`skip ${step.text}`);
         continue;
       }
-      ensureProjectApp({ root: destRoot, projectId, remoteBase: destRoot });
-      pm2(join(destRoot, 'pm2.apps.d', `${step.appName}.config.js`));
+      state.oldCwd = before[0] ? instanceCwd(before[0]) : '';
       state.switched = step.appName;
+      ensureProjectApp({ root: destRoot, projectId, remoteBase: destRoot });
+      const actions = pm2Actions(commands);
+      actions.deleteApp(step.appName);
+      actions.start(join(destRoot, 'pm2.apps.d', `${step.appName}.config.js`));
+      actions.save();
+      assertCwd(step.appName, readAppInstances(step.appName, commands), wanted, true);
     } else if (step.id === 'health') {
       done.push(step.text);
       return { lines: done, health };
@@ -490,9 +530,12 @@ export async function migrateToProjectTree(options) {
     // The app already runs from the new tree: put it back on the old one before the folder goes away.
     let restored = '';
     if (state.switched) {
-      const oldConfig = join(options.sourceRoot, 'pm2.apps.d', `${state.switched}.config.js`);
       try {
-        (options.commands?.pm2 || defaultPm2)(oldConfig);
+        const actions = pm2Actions(options.commands || {});
+        actions.deleteApp(state.switched);
+        actions.start(join(options.sourceRoot, 'pm2.apps.d', `${state.switched}.config.js`));
+        actions.save();
+        assertCwd(state.switched, readAppInstances(state.switched, options.commands || {}), state.oldCwd, false);
         restored = `; pm2 ${state.switched} restored to ${options.sourceRoot}`;
       } catch (restoreError) {
         const why = restoreError instanceof Error ? restoreError.message : String(restoreError);
