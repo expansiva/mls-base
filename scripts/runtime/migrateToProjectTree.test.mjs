@@ -94,6 +94,59 @@ test('copies one project with history, then a second run does not clone again', 
   assert.equal(first.lines.filter((line) => line.startsWith('clone ')).length, 2);
 });
 
+function heads(repo) {
+  return execFileSync('git', ['-C', repo, 'for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads'], { encoding: 'utf8' });
+}
+
+function withDraft(dirty) {
+  const built = fixture();
+  const app = join(built.source, 'mls-102056');
+  git(app, ['branch', 'team/7']);
+  git(app, ['checkout', '-b', 'user/ab']);
+  writeFileSync(join(app, 'user.txt'), 'user\n');
+  git(app, ['add', 'user.txt']);
+  git(app, ['commit', '-m', 'user']);
+  git(app, ['checkout', 'main']);
+  const slug = 'ada';
+  const work = join(built.source, 'drafts', slug, 'mls-102056');
+  mkdirSync(join(built.source, 'drafts', slug), { recursive: true });
+  git(app, ['worktree', 'add', work, 'team/7']);
+  writeFileSync(join(built.source, 'drafts', slug, 'owner.json'), '{"person":"ada"}\n');
+  writeFileSync(join(built.source, 'drafts', slug, 'dev.json'), '{"port":1}\n');
+  if (dirty) writeFileSync(join(work, 'dirty.txt'), 'x\n');
+  return { ...built, app, slug };
+}
+
+test('copies draft branches and owner.json, not the worktree', async () => {
+  const { source, app, slug } = withDraft(false);
+  const args = parseArgs(['102056', '--root', source, '--store', join(source, '..', 'pnpm-store')]);
+  await migrateToProjectTree({ ...args, commands: commands(args.destRoot) });
+  const destApp = join(args.destRoot, 'mls-102056');
+  assert.equal(heads(destApp), heads(app));
+  assert.equal(readFileSync(join(args.destRoot, 'drafts', slug, 'owner.json'), 'utf8'), '{"person":"ada"}\n');
+  assert.equal(existsSync(join(args.destRoot, 'drafts', slug, 'mls-102056')), false);
+  assert.equal(existsSync(join(args.destRoot, 'drafts', slug, 'dev.json')), false);
+  const owner = readFileSync(join(args.destRoot, 'drafts', slug, 'owner.json'));
+  const before = heads(destApp);
+  const second = await migrateToProjectTree({ ...args, commands: commands(args.destRoot) });
+  assert.equal(heads(destApp), before);
+  assert.deepEqual(readFileSync(join(args.destRoot, 'drafts', slug, 'owner.json')), owner);
+  assert.match(second.lines.join('\n'), new RegExp(`skip copy drafts/${slug}/owner.json`));
+});
+
+test('refuses a dirty draft before writing, including dry-run', async () => {
+  const { source, box, slug } = withDraft(true);
+  const args = parseArgs(['102056', '--root', source]);
+  await assert.rejects(
+    () => migrateToProjectTree({ ...args, commands: commands(args.destRoot) }),
+    new RegExp(`refusing project 102056: uncommitted draft changes: ${slug} \\(1 files\\)`),
+  );
+  assert.equal(existsSync(join(box, 'app102056')), false);
+  const dry = await migrateToProjectTree({ ...args, dryRun: true });
+  assert.match(dry.lines.join('\n'), new RegExp(`refusing project 102056: uncommitted draft changes: ${slug} \\(1 files\\)`));
+  assert.equal(existsSync(join(box, 'app102056')), false);
+});
+
 test('cli --dry-run exits 0', () => {
   const { source } = fixture();
   const result = spawnSync(process.execPath, [

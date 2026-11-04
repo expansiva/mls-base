@@ -52,6 +52,81 @@ function hasGit(dir) {
   return existsSync(join(dir, '.git'));
 }
 
+/** Drafts of this project: drafts/<slug>/mls-<id>. The worktree itself is not copied. */
+export function draftWorktrees(sourceRoot, projectId) {
+  const root = join(sourceRoot, 'drafts');
+  if (!existsSync(root)) return [];
+  const appDir = `mls-${projectId}`;
+  const rows = [];
+  for (const slug of readdirSync(root).sort()) {
+    const work = join(root, slug, appDir);
+    if (!existsSync(work)) continue;
+    rows.push({ slug, work, owner: join(root, slug, 'owner.json') });
+  }
+  return rows;
+}
+
+function porcelainFiles(stdout) {
+  return stdout.split('\n').filter((line) => line.trim() !== '').length;
+}
+
+/** Uncommitted files in a draft worktree of this project. Empty when every draft is clean. */
+export function uncommittedDrafts(sourceRoot, projectId) {
+  const dirty = [];
+  for (const row of draftWorktrees(sourceRoot, projectId)) {
+    const result = spawnSync('git', ['-C', row.work, 'status', '--porcelain'], { encoding: 'utf8' });
+    if ((result.status ?? 1) !== 0) {
+      throw new Error(`git status failed in draft ${row.slug}: ${(result.stderr || result.stdout || '').trim()}`);
+    }
+    const files = porcelainFiles(result.stdout || '');
+    if (files > 0) dirty.push({ slug: row.slug, files });
+  }
+  return dirty;
+}
+
+export function refusalLine(projectId, dirty) {
+  const list = dirty.map((row) => `${row.slug} (${row.files} files)`).join(', ');
+  return `refusing project ${projectId}: uncommitted draft changes: ${list}`;
+}
+
+function headRefs(repo) {
+  const result = spawnSync('git', ['-C', repo, 'for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads'], { encoding: 'utf8' });
+  if ((result.status ?? 1) !== 0) {
+    throw new Error(`git for-each-ref failed in ${repo}: ${(result.stderr || result.stdout || '').trim()}`);
+  }
+  const map = new Map();
+  for (const line of (result.stdout || '').split('\n')) {
+    if (!line) continue;
+    const space = line.lastIndexOf(' ');
+    map.set(line.slice(0, space), line.slice(space + 1));
+  }
+  return map;
+}
+
+function sameHeads(source, dest) {
+  if (source.size !== dest.size) return false;
+  for (const [name, sha] of source) {
+    if (dest.get(name) !== sha) return false;
+  }
+  return true;
+}
+
+/** git clone --local keeps only the current branch. Recreate every refs/heads/* at the same SHA. */
+function mirrorBranches(src, dest, git) {
+  const origin = headRefs(src);
+  const local = headRefs(dest);
+  for (const [name, sha] of origin) {
+    if (local.get(name) === sha) continue;
+    if (local.has(name)) {
+      throw new Error(`branch ${name} in ${dest} is ${local.get(name)}, source is ${sha}`);
+    }
+    git(['-C', dest, 'branch', name, sha]);
+  }
+  if (!sameHeads(origin, headRefs(dest))) {
+    throw new Error(`branch list of ${dest} does not match ${src}`);
+  }
+}
+
 /** Directories to bring over: this app, plus every mls-* that is not another hosted app. */
 export function reposToCopy(sourceRoot, projectId) {
   const others = new Set(hostedIds(sourceRoot).filter((id) => id !== projectId));
@@ -111,6 +186,16 @@ export function buildPlan({ sourceRoot, destRoot, projectId, storeDir }) {
       mode,
       skip: present,
       text: `${mode} ${src} -> ${dest}`,
+    });
+  }
+  for (const row of draftWorktrees(sourceRoot, projectId)) {
+    if (!existsSync(row.owner)) continue;
+    const destFile = join(destRoot, 'drafts', row.slug, 'owner.json');
+    steps.push({
+      id: 'draft-owner',
+      slug: row.slug,
+      skip: existsSync(destFile),
+      text: `copy drafts/${row.slug}/owner.json -> ${destFile}`,
     });
   }
   for (const file of ['config.json', '.env']) {
@@ -229,8 +314,15 @@ export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, c
       if (step.mode === 'clone') {
         rmSync(dest, { recursive: true, force: true });
         git(['clone', '--local', src, dest]);
+        if (step.name === `mls-${projectId}`) mirrorBranches(src, dest, git);
       } else if (!existsSync(dest)) {
         cpSync(src, dest, { recursive: true });
+      }
+    } else if (step.id === 'draft-owner') {
+      const dest = join(destRoot, 'drafts', step.slug, 'owner.json');
+      if (!existsSync(dest)) {
+        mkdirSync(dirname(dest), { recursive: true });
+        cpSync(join(sourceRoot, 'drafts', step.slug, 'owner.json'), dest);
       }
     } else if (step.id === 'copy-file') {
       if (existsSync(join(sourceRoot, step.file))) cpSync(join(sourceRoot, step.file), join(destRoot, step.file));
@@ -260,6 +352,12 @@ export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, c
 }
 
 export async function migrateToProjectTree(options) {
+  const dirty = uncommittedDrafts(options.sourceRoot, options.projectId);
+  if (dirty.length > 0) {
+    const line = refusalLine(options.projectId, dirty);
+    if (options.dryRun) return { lines: [line] };
+    throw new Error(line);
+  }
   const plan = buildPlan(options);
   if (options.dryRun) {
     return { lines: plan.map((step) => `${step.skip ? 'skip' : 'would'} ${step.text}`) };
