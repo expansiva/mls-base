@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -307,6 +308,116 @@ test('a second run whose cwd is already the new tree skips pm2 and does not dele
   });
   assert.match(second.lines.join('\n'), /skip pm2 app2056/);
   assert.equal(pm2.calls.some((call) => call.startsWith('delete')), false);
+});
+
+function listenLater(port, delayMs, status) {
+  let server;
+  let timer;
+  return {
+    arm() {
+      timer = setTimeout(() => {
+        server = createServer((req, res) => {
+          res.writeHead(status);
+          res.end('ok');
+        });
+        server.listen(port, '127.0.0.1');
+      }, delayMs);
+    },
+    close() {
+      clearTimeout(timer);
+      return new Promise((resolve) => {
+        if (!server || !server.listening) resolve();
+        else server.close(() => resolve());
+      });
+    },
+  };
+}
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      probe.close(() => resolve(address.port));
+    });
+    probe.on('error', reject);
+  });
+}
+
+test('health waits until a late server answers, and a dead or 500 port fails with the real cause', async () => {
+  // 2056 is the lima app. The migration still asks for that URL; fetch lands on a free port.
+  const port = await freePort();
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (url, init) => origFetch(String(url).replace('127.0.0.1:2056', `127.0.0.1:${port}`), init);
+  const late = listenLater(port, 600, 200);
+  try {
+    const { source, box } = fixture();
+    const args = parseArgs(['102056', '--root', source]);
+    const dest = join(box, 'app102056', 'mls-base');
+    const base = commands(dest);
+    delete base.health;
+    const ok = await migrateToProjectTree({
+      ...args,
+      healthTimeoutMs: 3000,
+      healthStepMs: 100,
+      commands: {
+        ...base,
+        ...fakePm2(join(source, 'current-102056'), join(dest, 'current')),
+        release(root) {
+          base.release(root);
+          late.arm();
+        },
+      },
+    });
+    assert.match(ok.lines.join('\n'), /GET http:\/\/127.0.0.1:2056\/health/);
+    assert.equal(existsSync(dest), true);
+    await late.close();
+
+    const { source: source2, box: box2 } = fixture();
+    const args2 = parseArgs(['102056', '--root', source2]);
+    const dest2 = join(box2, 'app102056', 'mls-base');
+    const oldCwd = join(source2, 'current-102056');
+    const pm2 = fakePm2(oldCwd, join(dest2, 'current'));
+    const refusedCommands = commands(dest2);
+    delete refusedCommands.health;
+    await assert.rejects(
+      () => migrateToProjectTree({
+        ...args2,
+        healthTimeoutMs: 400,
+        healthStepMs: 100,
+        commands: { ...refusedCommands, ...pm2 },
+      }),
+      /health http:\/\/127\.0\.0\.1:2056\/health not ready after \d+ ms: ECONNREFUSED/,
+    );
+    assert.equal(existsSync(dest2), false);
+    assert.deepEqual(pm2.rows().map((row) => row.pm2_env.pm_cwd), [oldCwd, oldCwd]);
+
+    const failing = listenLater(port, 0, 500);
+    failing.arm();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    try {
+      const { source: source3, box: box3 } = fixture();
+      const args3 = parseArgs(['102056', '--root', source3]);
+      const dest3 = join(box3, 'app102056', 'mls-base');
+      const failingCommands = commands(dest3);
+      delete failingCommands.health;
+      await assert.rejects(
+        () => migrateToProjectTree({
+          ...args3,
+          healthTimeoutMs: 2000,
+          healthStepMs: 100,
+          commands: { ...failingCommands, ...fakePm2(join(source3, 'current-102056'), join(dest3, 'current')) },
+        }),
+        /health http:\/\/127\.0\.0\.1:2056\/health not ready after \d+ ms: HTTP 500/,
+      );
+      assert.equal(existsSync(dest3), false);
+    } finally {
+      await failing.close();
+    }
+  } finally {
+    globalThis.fetch = origFetch;
+    await late.close();
+  }
 });
 
 test('a health failure after the pm2 switch puts pm2 back on the old tree and removes the new folder', async () => {

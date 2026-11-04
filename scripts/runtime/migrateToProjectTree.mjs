@@ -377,6 +377,37 @@ function pm2Actions(commands) {
   };
 }
 
+const HEALTH_TIMEOUT_MS = 60_000;
+const HEALTH_STEP_MS = 250;
+
+function healthCause(error) {
+  const cause = error && error.cause;
+  if (cause && (cause.code || cause.message)) return cause.code || cause.message;
+  if (error && error.code) return error.code;
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Poll until the first HTTP 2xx, or fail with the real cause after the ceiling. */
+export async function waitForHealth(url, timeoutMs = HEALTH_TIMEOUT_MS, stepMs = HEALTH_STEP_MS) {
+  const started = Date.now();
+  let last = 'fetch failed';
+  for (;;) {
+    try {
+      const response = await fetch(url);
+      if (response.status >= 200 && response.status < 300) return;
+      throw new Error(`health ${url} not ready after ${Date.now() - started} ms: HTTP ${response.status}`);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('health ')) throw error;
+      last = healthCause(error);
+    }
+    const elapsed = Date.now() - started;
+    if (elapsed >= timeoutMs) {
+      throw new Error(`health ${url} not ready after ${elapsed} ms: ${last}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(stepMs, timeoutMs - elapsed)));
+  }
+}
+
 function assertCwd(appName, rows, wanted, online) {
   const bad = rows.find((row) => instanceCwd(row) !== wanted);
   if (rows.length === 0 || bad) {
@@ -390,7 +421,10 @@ function assertCwd(appName, rows, wanted, online) {
   }
 }
 
-export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, markNew = false, state = {}, commands = {} }) {
+export function executePlan(plan, {
+  sourceRoot, destRoot, projectId, storeDir, markNew = false, state = {}, commands = {},
+  healthTimeoutMs = HEALTH_TIMEOUT_MS, healthStepMs = HEALTH_STEP_MS,
+}) {
   const git = commands.git || runGit;
   const pnpm = commands.pnpm || ((cwd, store) => {
     const result = spawnSync('pnpm', ['install', '--store-dir', store], { cwd, encoding: 'utf8' });
@@ -404,10 +438,7 @@ export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, m
       throw new Error(`release failed: ${(result.stderr || result.stdout || '').trim()}`);
     }
   });
-  const health = commands.health || (async (url) => {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`health ${url} returned ${response.status}`);
-  });
+  const health = commands.health || ((url) => waitForHealth(url, healthTimeoutMs, healthStepMs));
   const buildObj = commands.buildObj || ((dest, ids) => {
     const result = spawnSync(process.execPath, [
       join(dest, 'scripts/runtime/buildProjectsObj.mjs'), '--only', ids.join(','),
