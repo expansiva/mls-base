@@ -5,7 +5,7 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { VM_BENCH_SCRIPT, VM_CM_ROOT } from './prepareBench.mjs';
+import { VM_CM_ROOT, vmBenchScript } from './prepareBench.mjs';
 import { planLocalSources, prepareSources } from './prepareSources.mjs';
 import {
   LONG_TIMEOUT_MS,
@@ -32,10 +32,11 @@ export function usage() {
     'usage: node tools/lima/lima.mjs <command>',
     '  begin <102047|102056> --session <name>',
     '  status [--session <name>]',
-    '  prepare <102047|102056> --session <name> [--db migrate] [--dry-run]',
+    '  prepare <102047|102056> --session <name> [--db migrate] [--dry-run] [--tree project]',
     '  end --session <name>',
     'help and status do not start prepare or a browser.',
     'prepare keeps the reservation; --dry-run only reports occupation and the plan.',
+    '--tree project (or LIMA_PROJECT_TREE=1) uses /data/app<id>/mls-base and current. The default is /data/mls-base and current-<id>.',
   ].join('\n');
 }
 
@@ -60,6 +61,7 @@ export function parseCli(argv) {
   let projectId = '';
   let db = 'migrate';
   let dryRun = false;
+  let tree = '';
   const positional = [];
   for (let i = 1; i < args.length; i += 1) {
     const sessionValue = takeSession(args, i);
@@ -78,6 +80,14 @@ export function parseCli(argv) {
     }
     if (args[i] === '--dry-run') {
       dryRun = true;
+      continue;
+    }
+    if (args[i] === '--tree') {
+      tree = args[++i] || '';
+      continue;
+    }
+    if (args[i].startsWith('--tree=')) {
+      tree = args[i].slice('--tree='.length);
       continue;
     }
     if (args[i].startsWith('--')) throw Object.assign(new Error(`unknown argument ${args[i]}`), { code: 'usage', exitCode: 2 });
@@ -108,7 +118,13 @@ export function parseCli(argv) {
   if (dryRun && command !== 'prepare') {
     throw Object.assign(new Error('--dry-run belongs to prepare'), { code: 'usage', exitCode: 2 });
   }
-  return { command, session, projectId, db, dryRun };
+  if (tree && tree !== 'project') {
+    throw Object.assign(new Error('--tree must be project'), { code: 'usage', exitCode: 2 });
+  }
+  if (tree && command !== 'prepare') {
+    throw Object.assign(new Error('--tree belongs to prepare'), { code: 'usage', exitCode: 2 });
+  }
+  return { command, session, projectId, db, dryRun, tree };
 }
 
 function sessionOptions(env) {
@@ -266,7 +282,7 @@ function lastJson(stdout) {
 
 async function prepareBenchOnVm(profile, env, payload) {
   const sshBin = env.LIMA_SSH_BIN || 'ssh';
-  const remote = `node ${VM_BENCH_SCRIPT}`;
+  const remote = `node ${vmBenchScript(payload.projectId, env)}`;
   const result = await runSsh(
     sshBin,
     ['-F', profile.sshConfig, profile.alias, remote],
@@ -395,7 +411,7 @@ export async function runPrepare(parsed, profile, env = process.env) {
   const bench = await prepareBenchOnVm(profile, env, {
     db: parsed.db,
     projectId: parsed.projectId,
-    runtimeRoot: projectRuntimeRoot(parsed.projectId),
+    runtimeRoot: projectRuntimeRoot(parsed.projectId, env),
     cmRoot: VM_CM_ROOT,
     operation: { ownerId: ref.ownerId, operationId: ref.operationId, lockPath: options.lockPath },
   });
@@ -429,8 +445,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.stdout.write(`${usage()}\n`);
     return 0;
   }
-  const profile = resolveLocalProfile(undefined, env);
-  if (parsed.command === 'prepare') return runPrepare(parsed, profile, env);
+  const runEnv = parsed.tree === 'project' ? { ...env, LIMA_PROJECT_TREE: '1' } : env;
+  const profile = resolveLocalProfile(undefined, runEnv);
+  if (parsed.command === 'prepare') return runPrepare(parsed, profile, runEnv);
   if (parsed.command === 'begin') {
     const begun = await beginSession(profile, parsed.session, parsed.projectId);
     printView({ ...begun.view, resumed: begun.resumed });

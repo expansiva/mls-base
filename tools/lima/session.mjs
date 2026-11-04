@@ -34,8 +34,27 @@ export function projectApp(projectId) {
   return `app${2000 + Number(id.slice(-3))}`;
 }
 
-export function projectRuntimeRoot(projectId) {
-  return `/data/mls-base/current-${assertProjectId(projectId)}`;
+/** `1` or `project` selects `/data/app<id>/mls-base`. Anything else keeps `/data/mls-base`. */
+export function projectTreeMode(env = process.env) {
+  const value = env?.LIMA_PROJECT_TREE;
+  return value === '1' || value === 'project';
+}
+
+export function projectMlsBase(projectId, env = process.env) {
+  const id = assertProjectId(projectId);
+  if (projectTreeMode(env)) return `/data/app${id}/mls-base`;
+  return '/data/mls-base';
+}
+
+export function projectRuntimeRoot(projectId, env = process.env) {
+  const id = assertProjectId(projectId);
+  const base = projectMlsBase(id, env);
+  if (projectTreeMode(env)) return `${base}/current`;
+  return `${base}/current-${id}`;
+}
+
+export function projectBuildLock(projectId, env = process.env) {
+  return `${projectMlsBase(projectId, env)}/.gitbuild.lock`;
 }
 
 function limaError(message, code, extra = {}) {

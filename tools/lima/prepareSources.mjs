@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { readDepIds, snapshotTree } from '../../scripts/publishGitDeps.mjs';
-import { SUPPORTED_PROJECTS, loadOwnerRef, projectApp, shQuote, spawnArgsFor, statusSession } from './session.mjs';
+import {
+  SUPPORTED_PROJECTS, loadOwnerRef, projectApp, projectBuildLock, projectMlsBase, projectTreeMode, shQuote, spawnArgsFor, statusSession,
+} from './session.mjs';
 
 const require = createRequire(import.meta.url);
 const { resolveLibsVersion } = require('../../scripts/install/libsPin.js');
@@ -72,7 +74,7 @@ export async function planLocalSources(root, projectId = PROJECT_ID, env = proce
   const appRepo = join(root, `mls-${projectId}`);
   const app = await captureRepo(appRepo, env);
   const declared = readDepIds(appRepo, projectId);
-  if (declared.includes('102056')) {
+  if (declared.includes('102056') && !projectTreeMode(env)) {
     throw Object.assign(new Error('refusing project 102056'), { code: 'project', sent: false });
   }
   const depIds = declared.filter((id) => existsSync(join(root, `mls-${id}`, '.git')));
@@ -265,8 +267,9 @@ function shPath(value) {
   return shQuote(String(value).replaceAll('\\', '/'));
 }
 
-async function pushRoot(root, profile, capturedSha, remoteSha, options) {
-  const url = `ssh://${profile.alias}${VM_ROOT}`;
+async function pushRoot(root, profile, capturedSha, remoteSha, options, projectId) {
+  const vmRoot = projectMlsBase(projectId, options.env);
+  const url = `ssh://${profile.alias}${vmRoot}`;
   const sshBin = options.sshBin || process.env.LIMA_SSH_BIN || 'ssh';
   const env = {
     ...process.env,
@@ -317,14 +320,16 @@ function markerOf(text, projectId) {
 
 async function readVm(profile, plan, options) {
   const projectId = plan.projectId;
-  const rootSha = await ssh(profile, `git -C ${VM_ROOT} rev-parse HEAD`, options);
-  const appSha = await ssh(profile, `git -C ${VM_ROOT}/mls-${projectId} rev-parse HEAD`, options);
-  const alias = await ssh(profile, `readlink ${VM_ROOT}/current-${projectId}`, options);
+  const vmRoot = projectMlsBase(projectId, options.env);
+  const aliasName = projectTreeMode(options.env) ? 'current' : `current-${projectId}`;
+  const rootSha = await ssh(profile, `git -C ${vmRoot} rev-parse HEAD`, options);
+  const appSha = await ssh(profile, `git -C ${vmRoot}/mls-${projectId} rev-parse HEAD`, options);
+  const alias = await ssh(profile, `readlink ${vmRoot}/${aliasName}`, options);
   const workersRaw = await ssh(profile, 'pm2 jlist', options);
   if ([rootSha, appSha, alias].some((item) => item.uncertain || item.code !== 0)) {
     return { uncertain: true };
   }
-  const releasePath = alias.stdout.startsWith('/') ? alias.stdout : `${VM_ROOT}/${alias.stdout}`;
+  const releasePath = alias.stdout.startsWith('/') ? alias.stdout : `${vmRoot}/${alias.stdout}`;
   const stampRaw = await ssh(profile,
     `node -e 'const fs=require("node:fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); const keep=["id","client","versionRef","platformCommit","libs","monaco","deps"]; const out={}; for (const key of keep) out[key]=j[key]??null; process.stdout.write(JSON.stringify(out));' ${releasePath}/release.json`,
     options);
@@ -342,7 +347,7 @@ async function readVm(profile, plan, options) {
   }
   const depTrees = {};
   for (const dep of plan.deps) {
-    const tree = await ssh(profile, `git -C ${VM_ROOT}/mls-${dep.id} rev-parse 'HEAD^{tree}'`, options);
+    const tree = await ssh(profile, `git -C ${vmRoot}/mls-${dep.id} rev-parse 'HEAD^{tree}'`, options);
     if (tree.uncertain || tree.code !== 0) return { uncertain: Boolean(tree.uncertain), stamp, workers, alias: alias.stdout, depTrees };
     depTrees[dep.id] = tree.stdout;
   }
@@ -357,7 +362,7 @@ async function readVm(profile, plan, options) {
   };
 }
 
-function sourcesMatch(plan, vm, appSha) {
+function sourcesMatch(plan, vm, appSha, env) {
   const stamp = vm.stamp;
   if (!stamp) return false;
   if (stamp.platformCommit !== plan.rootSha) return false;
@@ -367,7 +372,8 @@ function sourcesMatch(plan, vm, appSha) {
   if (!String(vm.alias || '').includes(String(stamp.id || ''))) return false;
   const app = (vm.workers || []).find((item) => item.name === projectApp(plan.projectId));
   if (!app) return false;
-  if (!app.cwd.includes(`current-${plan.projectId}`)) return false;
+  const releaseAlias = projectTreeMode(env) ? `${projectMlsBase(plan.projectId, env)}/current` : `current-${plan.projectId}`;
+  if (!app.cwd.includes(releaseAlias)) return false;
   // The active release must have been built from these dependency trees, not only the
   // repos on the VM: another project's prepare can move them without rebuilding this one.
   // A stamp without deps (older release) cannot prove it, so it is not coherent.
@@ -418,16 +424,17 @@ export async function prepareSources({
   }
   if (planKey(plan) !== planKey(again)) return failed('preparing', { code: 'concurrent', sent: false });
 
-  const vmHead = await ssh(profile, `git -C ${VM_ROOT} rev-parse HEAD`, options);
+  const vmRoot = projectMlsBase(projectId, env);
+  const vmHead = await ssh(profile, `git -C ${vmRoot} rev-parse HEAD`, options);
   if (vmHead.uncertain || vmHead.code !== 0) return failed('failed', { code: 'ssh', sent: false, uncertain: true });
 
   let sent = false;
   const rootChanged = vmHead.stdout !== plan.rootSha;
   if (rootChanged) {
-    const pushed = await pushRoot(root, profile, plan.rootSha, vmHead.stdout, options);
+    const pushed = await pushRoot(root, profile, plan.rootSha, vmHead.stdout, options, projectId);
     sent = true;
     if (pushed.code !== 0) return failed('failed', { code: 'root-push', sent: true, uncertain: true });
-    const seen = await ssh(profile, `git -C ${VM_ROOT} rev-parse HEAD`, options);
+    const seen = await ssh(profile, `git -C ${vmRoot} rev-parse HEAD`, options);
     if (seen.uncertain || seen.stdout !== plan.rootSha) return failed('failed', { code: 'root-sha', sent: true, uncertain: true });
   }
 
@@ -467,13 +474,13 @@ export async function prepareSources({
   if (observed.uncertain) return failed('failed', { code: 'ssh', sent, uncertain: true });
   let buildText = publishText;
   let forcedBuild = false;
-  const coherent = sourcesMatch(plan, observed, after.appSha);
+  const coherent = sourcesMatch(plan, observed, after.appSha, env);
   if (!coherent) {
     if (appPushed && publishMarker.kind === 'ok') {
       return failed('failed', { code: 'release', sent: true });
     }
     const built = await ssh(profile,
-      `flock ${BUILD_LOCK} node ${VM_ROOT}/scripts/runtime/gitPostReceive.mjs --root ${VM_ROOT} --project ${projectId}`,
+      `flock ${projectBuildLock(projectId, env)} node ${vmRoot}/scripts/runtime/gitPostReceive.mjs --root ${vmRoot} --project ${projectId}`,
       options);
     forcedBuild = true;
     sent = true;
@@ -486,7 +493,7 @@ export async function prepareSources({
     if (observed.uncertain) return failed('failed', { code: 'ssh', sent: true, uncertain: true });
   }
   if (markerOf(buildText, projectId).kind === 'error') return failed('failed', { code: 'build', sent });
-  if (!sourcesMatch(plan, observed, after.appSha)) return failed('failed', { code: 'release', sent });
+  if (!sourcesMatch(plan, observed, after.appSha, env)) return failed('failed', { code: 'release', sent });
   return {
     ok: true,
     ready: false,

@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { inspectSlot, runOnVm, testDatabaseUrlFromEnvText } from '../../scripts/runtime/prepareLocalTestBench.mjs';
 import { TEST_DATABASE_NAME, declaredTestMode } from '../../scripts/runtime/vmApps.mjs';
 import { probeBenchHealth } from './health.mjs';
-import { SUPPORTED_PROJECTS, projectApp, projectRuntimeRoot } from './session.mjs';
+import { SUPPORTED_PROJECTS, projectApp, projectMlsBase, projectRuntimeRoot } from './session.mjs';
 import { DEFAULT_LOCK_PATH, dispatch } from './sessionVm.mjs';
 
 export const BENCH_PROJECT_ID = SUPPORTED_PROJECTS[0];
@@ -21,6 +21,10 @@ export const VM_RUNTIME_ROOT = projectRuntimeRoot(BENCH_PROJECT_ID);
 const MEMBER_ROLE_PROJECTS = new Set(['102047']);
 export const VM_CM_ROOT = '/data/msg.collab.codes/current';
 export const VM_BENCH_SCRIPT = '/data/mls-base/tools/lima/prepareBench.mjs';
+
+export function vmBenchScript(projectId = BENCH_PROJECT_ID, env = process.env) {
+  return `${projectMlsBase(projectId, env)}/tools/lima/prepareBench.mjs`;
+}
 
 export const PROBE_DATABASE_SQL = 'SELECT current_database() AS current_database';
 export const PROBE_ACTIVITY_SQL = `SELECT application_name, client_addr::text AS client_addr, datname
