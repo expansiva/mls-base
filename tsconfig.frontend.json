@@ -17,6 +17,7 @@
         "**/*.spec.ts",
         "**/*.test.ts",
         "**/nodejs*",
+        "**/fixtures/**/*.ts",
         "**/l2/certificacao/**/*",
         "./mls-102030/**/*",
         "./mls-102049-Old/**/*"
