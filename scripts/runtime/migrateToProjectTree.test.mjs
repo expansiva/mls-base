@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { migrateToProjectTree, parseArgs } from './migrateToProjectTree.mjs';
+import { migrateToProjectTree, parseArgs, revertProjectTree } from './migrateToProjectTree.mjs';
 
 function git(cwd, args) {
   execFileSync('git', args, { cwd, stdio: 'ignore' });
@@ -463,6 +463,94 @@ test('refuses an unfinished destination and does not delete it', async () => {
   const dry = await migrateToProjectTree({ ...args, dryRun: true });
   assert.match(dry.lines.join('\n'), line);
   assert.equal(readFileSync(join(args.destRoot, 'keep.txt'), 'utf8'), 'keep\n');
+});
+
+function oldConfig(source, cwd) {
+  const file = join(source, 'pm2.apps.d', 'app2056.config.js');
+  writeFileSync(file, `module.exports = { cwd: ${JSON.stringify(cwd)}, env: { COLLAB_PROJECT_ID: "102056" } };\n`);
+  return file;
+}
+
+test('revert points the app at the old cwd and leaves the new folder', async () => {
+  const { source, box } = fixture();
+  const dest = join(box, 'app102056', 'mls-base');
+  mkdirSync(dest, { recursive: true });
+  writeFileSync(join(dest, 'keep.txt'), 'keep\n');
+  const oldCwd = join(source, 'current-102056');
+  const config = oldConfig(source, oldCwd);
+  const pm2 = fakePm2(join(dest, 'current'), oldCwd);
+  let asked = '';
+  const result = await revertProjectTree({
+    ...parseArgs(['102056', '--root', source, '--revert']),
+    commands: {
+      ...pm2,
+      health(url) { asked = url; },
+    },
+  });
+  assert.equal(asked, 'http://127.0.0.1:2056/health');
+  assert.deepEqual(pm2.rows().map((row) => row.pm2_env.pm_cwd), [oldCwd, oldCwd]);
+  assert.deepEqual(pm2.calls, ['delete app2056', `start ${config}`, 'save']);
+  assert.equal(result.lines[0], `pm2 app2056 → ${oldCwd}`);
+  assert.equal(readFileSync(join(dest, 'keep.txt'), 'utf8'), 'keep\n');
+});
+
+test('revert skips when the cwd is already the old tree', async () => {
+  const { source } = fixture();
+  const oldCwd = join(source, 'current-102056');
+  oldConfig(source, oldCwd);
+  const pm2 = fakePm2(oldCwd, oldCwd);
+  const result = await revertProjectTree({
+    ...parseArgs(['102056', '--root', source, '--revert']),
+    commands: { ...pm2, health() { throw new Error('health should not run'); } },
+  });
+  assert.match(result.lines.join('\n'), /skip pm2 app2056/);
+  assert.equal(pm2.calls.some((call) => call.startsWith('delete')), false);
+});
+
+test('revert fails when start leaves the new cwd', async () => {
+  const { source } = fixture();
+  const oldCwd = join(source, 'current-102056');
+  const newCwd = join(source, '..', 'app102056', 'mls-base', 'current');
+  oldConfig(source, oldCwd);
+  const pm2 = fakePm2(newCwd, oldCwd, false);
+  await assert.rejects(
+    () => revertProjectTree({
+      ...parseArgs(['102056', '--root', source, '--revert']),
+      commands: { ...pm2, health() { throw new Error('health should not run'); } },
+    }),
+    (error) => {
+      assert.equal(error.message, `pm2 app2056 cwd is still ${newCwd}, wanted ${oldCwd}`);
+      return true;
+    },
+  );
+});
+
+test('revert refuses when the old config is missing', async () => {
+  const { source } = fixture();
+  unlinkSync(join(source, 'pm2.apps.d', 'app2056.config.js'));
+  await assert.rejects(
+    () => revertProjectTree(parseArgs(['102056', '--root', source, '--revert'])),
+    new RegExp(`refusing revert of 102056: missing ${join(source, 'pm2.apps.d', 'app2056.config.js')}`),
+  );
+});
+
+test('revert --dry-run lists the steps and writes nothing', async () => {
+  const { source, box } = fixture();
+  const dest = join(box, 'app102056', 'mls-base');
+  mkdirSync(dest, { recursive: true });
+  writeFileSync(join(dest, 'keep.txt'), 'keep\n');
+  const oldCwd = join(source, 'current-102056');
+  const config = oldConfig(source, oldCwd);
+  const before = readFileSync(config, 'utf8');
+  const pm2 = fakePm2(join(dest, 'current'), oldCwd);
+  const result = await revertProjectTree({
+    ...parseArgs(['102056', '--root', source, '--dry-run', '--revert']),
+    commands: pm2,
+  });
+  assert.equal(result.lines[0], `would pm2 delete app2056; start ${config}; save`);
+  assert.equal(pm2.calls.length, 0);
+  assert.equal(readFileSync(config, 'utf8'), before);
+  assert.equal(readFileSync(join(dest, 'keep.txt'), 'utf8'), 'keep\n');
 });
 
 test('cli --dry-run exits 0', () => {

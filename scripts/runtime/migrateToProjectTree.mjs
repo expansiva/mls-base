@@ -2,6 +2,7 @@
 // Move one project from the shared tree (/data/mls-base, current-<id>) into
 // /data/app<id>/mls-base. The old tree is left in place. A second run does not
 // clone or copy again. --dry-run only prints the plan.
+// --revert points app<port> back at the old tree and leaves /data/app<id> in place.
 
 import { spawnSync } from 'node:child_process';
 import {
@@ -14,11 +15,12 @@ import { ensureProjectApp } from './vmApps.mjs';
 const MLS_DIR = /^mls-\d+$/u;
 
 export function parseArgs(argv) {
-  const args = { dryRun: false, projectId: '', sourceRoot: '/data/mls-base', destRoot: '', storeDir: '/data/.pnpm-store' };
+  const args = { dryRun: false, revert: false, projectId: '', sourceRoot: '/data/mls-base', destRoot: '', storeDir: '/data/.pnpm-store' };
   const rest = [];
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (token === '--dry-run') args.dryRun = true;
+    else if (token === '--revert') args.revert = true;
     else if (token === '--root') args.sourceRoot = argv[++i] || '';
     else if (token === '--dest') args.destRoot = argv[++i] || '';
     else if (token === '--store') args.storeDir = argv[++i] || '';
@@ -336,6 +338,18 @@ function ensureEnv(destRoot, key, value) {
   writeFileSync(file, `${text}${text && !text.endsWith('\n') ? '\n' : ''}${key}=${value}\n`);
 }
 
+/** cwd quoted in pm2.apps.d/app<port>.config.js. Empty when the field is absent. */
+export function configCwd(text) {
+  const match = String(text).match(/cwd:\s*("(?:\\.|[^"])*")/u);
+  if (!match) return '';
+  try {
+    const value = JSON.parse(match[1]);
+    return typeof value === 'string' ? value : '';
+  } catch {
+    return '';
+  }
+}
+
 function instanceCwd(row) {
   return row?.pm2_env?.pm_cwd || '';
 }
@@ -582,9 +596,48 @@ export async function migrateToProjectTree(options) {
   }
 }
 
+/** Point app<port> at the old tree's pm2 config. The new folder stays. */
+export async function revertProjectTree(options) {
+  const port = projectIdToPort(options.projectId);
+  const appName = appNameOf(port);
+  const configPath = join(options.sourceRoot, 'pm2.apps.d', `${appName}.config.js`);
+  if (!existsSync(configPath)) {
+    throw new Error(`refusing revert of ${options.projectId}: missing ${configPath}`);
+  }
+  const wanted = configCwd(readFileSync(configPath, 'utf8'));
+  if (!wanted) {
+    throw new Error(`refusing revert of ${options.projectId}: ${configPath} has no cwd`);
+  }
+  const commands = options.commands || {};
+  const before = readAppInstances(appName, commands);
+  const already = before.length > 0 && before.every((row) => instanceCwd(row) === wanted);
+  const healthUrl = `http://127.0.0.1:${port}/health`;
+  if (options.dryRun) {
+    return {
+      lines: already
+        ? [`skip pm2 ${appName} → ${wanted}`, `skip GET ${healthUrl}`]
+        : [`would pm2 delete ${appName}; start ${configPath}; save`, `would GET ${healthUrl}`],
+    };
+  }
+  if (already) return { lines: [`skip pm2 ${appName} → ${wanted}`] };
+  const actions = pm2Actions(commands);
+  actions.deleteApp(appName);
+  actions.start(configPath);
+  actions.save();
+  assertCwd(appName, readAppInstances(appName, commands), wanted, true);
+  const health = commands.health || ((url) => waitForHealth(
+    url,
+    options.healthTimeoutMs ?? HEALTH_TIMEOUT_MS,
+    options.healthStepMs ?? HEALTH_STEP_MS,
+  ));
+  await health(healthUrl);
+  return { lines: [`pm2 ${appName} → ${wanted}`, `GET ${healthUrl}`] };
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  migrateToProjectTree(args).then((result) => {
+  const run = args.revert ? revertProjectTree(args) : migrateToProjectTree(args);
+  run.then((result) => {
     for (const line of result.lines) console.log(line);
   }).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
