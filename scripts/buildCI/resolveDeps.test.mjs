@@ -216,7 +216,7 @@ test('scanImportRefs conta especificador de módulo, não comentário nem URL de
   }
 });
 
-test('o guard varre o MESMO conjunto que o compile — teste e nodejs* ficam de fora', async () => {
+test('o guard varre o MESMO conjunto que o compile — teste, nodejs* e fixtures/ ficam de fora', async () => {
   const root = mkdtempSync(join(tmpdir(), 'scan2-'));
   try {
     const project = join(root, 'mls-102020');
@@ -226,6 +226,8 @@ test('o guard varre o MESMO conjunto que o compile — teste e nodejs* ficam de 
     writeFileSync(join(project, 'l2', 'helpers', 'x.test.ts'), "import { b } from '/_102046_/l2/y.js';\n");
     writeFileSync(join(project, 'l2', 'helpers', 'x.spec.ts'), "import { c } from '/_102054_/l2/z.js';\n");
     writeFileSync(join(project, 'l2', 'nodejsHost', 'h.ts'), "import { d } from '/_100111_/l2/w.js';\n");
+    mkdirSync(join(project, 'l2', 'newRelease', 'fixtures', 'ensaio'), { recursive: true });
+    writeFileSync(join(project, 'l2', 'newRelease', 'fixtures', 'ensaio', 'inicio.ts'), '/// <mls fileReference="_102047_/l2/tarefas/web/shared/inicio.ts" />\nimport { e } from \'/_102040_/l2/v.js\';\n');
 
     const hits = await scanImportRefs(project, ['l2']);
     assert.deepEqual([...hits.keys()], ['102033'], 'só o import que de facto compila');
@@ -324,4 +326,10 @@ test('isVmInstall usa COLLAB_ON_VM, não o caminho do mls-base', () => {
   assert.equal(isVmInstall({ projectId: '102047', env: {} }), false);
   assert.equal(isVmInstall({ projectId: '102047', env: { COLLAB_ON_VM: '1' } }), true);
   assert.equal(isVmInstall({ env: { COLLAB_ON_VM: '1' } }), true);
+});
+
+test('COMPILE_EXCLUDES tira só os .ts de fixtures/, não os recursos (json)', async () => {
+  const { COMPILE_EXCLUDES } = await import('./createTsconfig.mjs');
+  assert.ok(COMPILE_EXCLUDES.includes('**/fixtures/**/*.ts'));
+  assert.equal(COMPILE_EXCLUDES.some((pattern) => pattern.includes('fixtures') && !pattern.endsWith('.ts')), false);
 });

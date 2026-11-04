@@ -15,7 +15,7 @@ import { join } from 'node:path';
 // dependência não declarada (resolveDeps.scanImportRefs) tem de varrer
 // exatamente o mesmo conjunto: reprovar por um import que nunca é compilado é
 // um finding impossível — e ele ABORTA o build antes do tsc rodar.
-export const COMPILE_EXCLUDES = ['**/node_modules', '**/*.spec.ts', '**/*.test.ts', '**/nodejs*'];
+export const COMPILE_EXCLUDES = ['**/node_modules', '**/*.spec.ts', '**/*.test.ts', '**/nodejs*', '**/fixtures/**/*.ts'];
 
 export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
   // /_<x>_/* -> ./project/_<x>_/* para todo projeto do fechamento (alvo incluso)

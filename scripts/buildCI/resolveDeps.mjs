@@ -135,7 +135,7 @@ export async function readManifestDeps(projectDir, defaultRepo) {
 // `/_(\d+)_/` specifiers in the target's sources (imports, fileReference, …).
 // First hit per id is kept so the finding names one file instead of 300 tsc errors.
 // O guard varre exatamente o que o passe de compilação varre. Um `.test.ts` ou
-// um `nodejs*` NÃO é compilado (createTsconfig.COMPILE_EXCLUDES), então uma
+// um `nodejs*` ou arquivo sob `fixtures/` NÃO é compilado (createTsconfig.COMPILE_EXCLUDES), então uma
 // dependência que só aparece lá não pode reprovar nada. Medido em 03/09 na
 // lima: o mls-102020 abortava com 9 achados, 8 deles vindos de `.test.ts` e
 // fixtures — inclusive um projeto de id "1".
@@ -170,7 +170,7 @@ function isExcludedFromCompile(relPath) {
   const name = relPath.split('/').pop() ?? '';
   return name.endsWith('.test.ts')
     || name.endsWith('.spec.ts')
-    || relPath.split('/').some((segment) => segment.startsWith('nodejs'));
+    || relPath.split('/').some((segment) => segment.startsWith('nodejs') || segment === 'fixtures');
 }
 
 // `/_<id>_/` só conta quando é ESPECIFICADOR DE MÓDULO — o que o tsc de facto
