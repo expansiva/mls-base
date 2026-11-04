@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -39,11 +39,17 @@ function fixture() {
   return { box, source, appHead: execFileSync('git', ['-C', app, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() };
 }
 
-function commands(dest) {
+function commands(dest, extra = {}) {
   let switched = false;
   return {
     pnpm(cwd) {
       mkdirSync(join(cwd, 'node_modules'));
+    },
+    buildObj(root, ids) {
+      for (const id of ids) {
+        mkdirSync(join(root, `mls-${id}`, 'obj'), { recursive: true });
+        writeFileSync(join(root, `mls-${id}`, 'obj', 'compiled.zip'), `built ${id}\n`);
+      }
     },
     release(root) {
       mkdirSync(join(root, 'releases', '1'), { recursive: true });
@@ -56,6 +62,7 @@ function commands(dest) {
       return switched ? join(dest, 'current') : '';
     },
     health() {},
+    ...extra,
   };
 }
 
@@ -145,6 +152,120 @@ test('refuses a dirty draft before writing, including dry-run', async () => {
   const dry = await migrateToProjectTree({ ...args, dryRun: true });
   assert.match(dry.lines.join('\n'), new RegExp(`refusing project 102056: uncommitted draft changes: ${slug} \\(1 files\\)`));
   assert.equal(existsSync(join(box, 'app102056')), false);
+});
+
+function writeObj(repo, body) {
+  mkdirSync(join(repo, 'obj'), { recursive: true });
+  writeFileSync(join(repo, 'obj', 'compiled.zip'), body);
+  writeFileSync(join(repo, 'obj', 'source.zip'), `${body}source`);
+}
+
+test('copies obj from the old tree at the same commit and skips it the second time', async () => {
+  const { source } = fixture();
+  const lib = join(source, 'mls-102034');
+  git(lib, ['init', '-b', 'main']);
+  git(lib, ['config', 'user.email', 'rt172@example.com']);
+  git(lib, ['config', 'user.name', 'rt172']);
+  git(lib, ['add', '.']);
+  git(lib, ['commit', '-m', 'lib']);
+  writeObj(lib, 'lib-zip');
+  writeObj(join(source, 'mls-102056'), 'app-zip');
+  const args = parseArgs(['102056', '--root', source, '--store', join(source, '..', 'pnpm-store')]);
+  const built = [];
+  const run = { ...commands(args.destRoot), buildObj(root, ids) { built.push(...ids); } };
+  const dry = await migrateToProjectTree({ ...args, dryRun: true });
+  assert.match(dry.lines.join('\n'), /would copy obj mls-102034/);
+  assert.match(dry.lines.join('\n'), /would copy obj mls-102056/);
+  assert.equal(existsSync(args.destRoot), false);
+  await migrateToProjectTree({ ...args, commands: run });
+  assert.equal(built.length, 0);
+  assert.equal(readFileSync(join(args.destRoot, 'mls-102056', 'obj', 'compiled.zip'), 'utf8'), 'app-zip');
+  assert.equal(readFileSync(join(args.destRoot, 'mls-102056', 'obj', 'source.zip'), 'utf8'), 'app-zipsource');
+  assert.equal(existsSync(join(args.destRoot, '.migrando')), false);
+  const zip = readFileSync(join(args.destRoot, 'mls-102056', 'obj', 'compiled.zip'));
+  const second = await migrateToProjectTree({ ...args, commands: commands(args.destRoot) });
+  assert.match(second.lines.join('\n'), /skip copy obj mls-102056/);
+  assert.deepEqual(readFileSync(join(args.destRoot, 'mls-102056', 'obj', 'compiled.zip')), zip);
+});
+
+test('builds obj when the old tree has no zip or a different commit', async () => {
+  const { source } = fixture();
+  writeFileSync(join(source, 'config.json'), '{"projects":{"102099":{"root":"../mls-102099"}}}\n');
+  const args = parseArgs(['102056', '--root', source, '--store', join(source, '..', 'pnpm-store')]);
+  const built = [];
+  const record = (_root, ids) => {
+    built.push(ids.join(','));
+    for (const id of ids) {
+      mkdirSync(join(_root, `mls-${id}`, 'obj'), { recursive: true });
+      writeFileSync(join(_root, `mls-${id}`, 'obj', 'compiled.zip'), `built ${id}\n`);
+    }
+  };
+  await migrateToProjectTree({
+    ...args,
+    commands: { ...commands(args.destRoot), buildObj: record },
+  });
+  assert.deepEqual(built, ['102034,102056,102099']);
+  unlinkSync(join(args.destRoot, 'mls-102056', 'obj', 'compiled.zip'));
+  git(join(source, 'mls-102056'), ['commit', '--allow-empty', '-m', 'ahead']);
+  built.length = 0;
+  await migrateToProjectTree({
+    ...args,
+    commands: { ...commands(args.destRoot), buildObj: record },
+  });
+  assert.deepEqual(built, ['102056']);
+});
+
+test('a failed release removes the folder this run created', async () => {
+  const { source, box } = fixture();
+  const args = parseArgs(['102056', '--root', source]);
+  const dest = join(box, 'app102056', 'mls-base');
+  await assert.rejects(
+    () => migrateToProjectTree({
+      ...args,
+      commands: { ...commands(dest), release() { throw new Error('release boom'); } },
+    }),
+    new RegExp(`migration failed: release boom; removed ${dest}`),
+  );
+  assert.equal(existsSync(dest), false);
+});
+
+test('a health failure after the pm2 switch puts pm2 back on the old tree and removes the new folder', async () => {
+  const { source, box } = fixture();
+  const args = parseArgs(['102056', '--root', source]);
+  const dest = join(box, 'app102056', 'mls-base');
+  const started = [];
+  await assert.rejects(
+    () => migrateToProjectTree({
+      ...args,
+      commands: {
+        ...commands(dest),
+        pm2(config) { started.push(config); },
+        pm2Cwd() { return ''; },
+        health() { throw new Error('health boom'); },
+      },
+    }),
+    new RegExp(`migration failed: health boom; removed ${dest}; pm2 app2056 restored to ${source}`),
+  );
+  assert.equal(started.length, 2);
+  assert.equal(started[0], join(dest, 'pm2.apps.d', 'app2056.config.js'));
+  assert.equal(started[1], join(source, 'pm2.apps.d', 'app2056.config.js'));
+  assert.equal(existsSync(dest), false);
+});
+
+test('refuses an unfinished destination and does not delete it', async () => {
+  const { source } = fixture();
+  const args = parseArgs(['102056', '--root', source]);
+  mkdirSync(args.destRoot, { recursive: true });
+  writeFileSync(join(args.destRoot, 'keep.txt'), 'keep\n');
+  const line = new RegExp(`destination exists but is not a finished migration: ${args.destRoot} \\(remove it first\\)`);
+  await assert.rejects(
+    () => migrateToProjectTree({ ...args, commands: commands(args.destRoot) }),
+    line,
+  );
+  assert.equal(readFileSync(join(args.destRoot, 'keep.txt'), 'utf8'), 'keep\n');
+  const dry = await migrateToProjectTree({ ...args, dryRun: true });
+  assert.match(dry.lines.join('\n'), line);
+  assert.equal(readFileSync(join(args.destRoot, 'keep.txt'), 'utf8'), 'keep\n');
 });
 
 test('cli --dry-run exits 0', () => {

@@ -157,6 +157,73 @@ function envHas(file, key) {
   return readFileSync(file, 'utf8').split('\n').some((line) => line.startsWith(`${key}=`));
 }
 
+function configProjectIds(sourceRoot) {
+  const file = join(sourceRoot, 'config.json');
+  if (!existsSync(file)) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return [];
+  }
+  const projects = parsed && parsed.projects;
+  if (!projects || typeof projects !== 'object') return [];
+  return Object.keys(projects)
+    .map((key) => key.replace(/^mls-/u, ''))
+    .filter((id) => /^\d+$/u.test(id));
+}
+
+function gitHead(repo) {
+  const result = spawnSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  if ((result.status ?? 1) !== 0) return '';
+  return (result.stdout || '').trim();
+}
+
+/** Tracked changes only. An untracked obj/ does not count. */
+function trackedClean(repo) {
+  if (!hasGit(repo)) return false;
+  const result = spawnSync('git', ['-C', repo, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' });
+  return (result.status ?? 1) === 0 && (result.stdout || '').trim() === '';
+}
+
+/** Copy obj when the old repo has compiled.zip at the same commit and is clean. */
+export function objMode(sourceRoot, destRoot, id) {
+  const src = join(sourceRoot, `mls-${id}`);
+  if (!existsSync(join(src, 'obj', 'compiled.zip'))) return 'build';
+  if (!trackedClean(src)) return 'build';
+  const srcHead = gitHead(src);
+  if (!srcHead) return 'build';
+  const dest = join(destRoot, `mls-${id}`);
+  if (hasGit(dest)) {
+    if (gitHead(dest) !== srcHead) return 'build';
+    if (!trackedClean(dest)) return 'build';
+  }
+  return 'copy';
+}
+
+export function closureIds(sourceRoot, projectId) {
+  const ids = new Set(reposToCopy(sourceRoot, projectId).keep.map((name) => name.slice(4)));
+  for (const id of configProjectIds(sourceRoot)) ids.add(id);
+  return [...ids].sort();
+}
+
+function copyObj(sourceRoot, destRoot, id) {
+  const src = join(sourceRoot, `mls-${id}`, 'obj');
+  const dest = join(destRoot, `mls-${id}`, 'obj');
+  mkdirSync(dest, { recursive: true });
+  for (const name of ['compiled.zip', 'source.zip']) {
+    if (existsSync(join(src, name))) cpSync(join(src, name), join(dest, name));
+  }
+}
+
+export function partialDestination(destRoot) {
+  if (!existsSync(destRoot)) return '';
+  if (existsSync(join(destRoot, '.migrando')) || !currentInside(destRoot)) {
+    return `destination exists but is not a finished migration: ${destRoot} (remove it first)`;
+  }
+  return '';
+}
+
 export function buildPlan({ sourceRoot, destRoot, projectId, storeDir }) {
   const appDir = `mls-${projectId}`;
   if (!existsSync(join(sourceRoot, appDir))) {
@@ -224,6 +291,16 @@ export function buildPlan({ sourceRoot, destRoot, projectId, storeDir }) {
     skip: existsSync(join(destRoot, 'node_modules')),
     text: `pnpm install --store-dir ${storeDir} in ${destRoot}`,
   });
+  for (const id of closureIds(sourceRoot, projectId)) {
+    const mode = objMode(sourceRoot, destRoot, id);
+    steps.push({
+      id: 'obj',
+      projectId: id,
+      mode,
+      skip: existsSync(join(destRoot, `mls-${id}`, 'obj', 'compiled.zip')),
+      text: `${mode} obj mls-${id}`,
+    });
+  }
   steps.push({
     id: 'release',
     skip: currentInside(destRoot),
@@ -271,7 +348,12 @@ function pm2Cwd(appName) {
   }
 }
 
-export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, commands = {} }) {
+function defaultPm2(configFile) {
+  const result = spawnSync('pm2', ['startOrReload', configFile, '--update-env'], { encoding: 'utf8' });
+  if ((result.status ?? 1) !== 0) throw new Error(`pm2 startOrReload failed: ${(result.stderr || result.stdout || '').trim()}`);
+}
+
+export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, markNew = false, state = {}, commands = {} }) {
   const git = commands.git || runGit;
   const pnpm = commands.pnpm || ((cwd, store) => {
     const result = spawnSync('pnpm', ['install', '--store-dir', store], { cwd, encoding: 'utf8' });
@@ -285,19 +367,42 @@ export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, c
       throw new Error(`release failed: ${(result.stderr || result.stdout || '').trim()}`);
     }
   });
-  const pm2 = commands.pm2 || ((configFile) => {
-    const result = spawnSync('pm2', ['startOrReload', configFile, '--update-env'], { encoding: 'utf8' });
-    if ((result.status ?? 1) !== 0) throw new Error(`pm2 startOrReload failed: ${(result.stderr || result.stdout || '').trim()}`);
-  });
+  const pm2 = commands.pm2 || defaultPm2;
   const health = commands.health || (async (url) => {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`health ${url} returned ${response.status}`);
   });
+  const buildObj = commands.buildObj || ((dest, ids) => {
+    const result = spawnSync(process.execPath, [
+      join(dest, 'scripts/runtime/buildProjectsObj.mjs'), '--only', ids.join(','),
+    ], { cwd: dest, encoding: 'utf8' });
+    if ((result.status ?? 1) !== 0) {
+      throw new Error(`build obj failed: ${(result.stderr || result.stdout || '').trim()}`);
+    }
+  });
   const readCwd = commands.pm2Cwd || pm2Cwd;
   const done = [];
+  let buildIds = [];
+  const flushBuild = () => {
+    if (buildIds.length === 0) return;
+    const ids = buildIds;
+    buildIds = [];
+    buildObj(destRoot, ids);
+    for (const id of ids) done.push(`build obj mls-${id}`);
+  };
   for (const step of plan) {
+    if (step.id !== 'obj') flushBuild();
     if (step.skip) {
       done.push(`skip ${step.text}`);
+      continue;
+    }
+    if (step.id === 'obj' && step.mode === 'build') {
+      buildIds.push(step.projectId);
+      continue;
+    }
+    if (step.id === 'obj' && step.mode === 'copy') {
+      copyObj(sourceRoot, destRoot, step.projectId);
+      done.push(step.text);
       continue;
     }
     if (step.id === 'clone-base') {
@@ -306,6 +411,7 @@ export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, c
       mkdirSync(dirname(destRoot), { recursive: true });
       git(['clone', sourceRoot, destRoot]);
       git(['-C', destRoot, 'checkout', '--detach', head.stdout.trim()]);
+      if (markNew) writeFileSync(join(destRoot, '.migrando'), '');
     } else if (step.id === 'drop-other') {
       rmSync(join(destRoot, step.name), { recursive: true, force: true });
     } else if (step.id === 'copy-repo') {
@@ -342,12 +448,14 @@ export function executePlan(plan, { sourceRoot, destRoot, projectId, storeDir, c
       }
       ensureProjectApp({ root: destRoot, projectId, remoteBase: destRoot });
       pm2(join(destRoot, 'pm2.apps.d', `${step.appName}.config.js`));
+      state.switched = step.appName;
     } else if (step.id === 'health') {
       done.push(step.text);
       return { lines: done, health };
     }
     done.push(step.text);
   }
+  flushBuild();
   return { lines: done, health: null };
 }
 
@@ -358,16 +466,46 @@ export async function migrateToProjectTree(options) {
     if (options.dryRun) return { lines: [line] };
     throw new Error(line);
   }
+  const partial = partialDestination(options.destRoot);
+  if (partial) {
+    if (options.dryRun) return { lines: [partial] };
+    throw new Error(partial);
+  }
   const plan = buildPlan(options);
   if (options.dryRun) {
     return { lines: plan.map((step) => `${step.skip ? 'skip' : 'would'} ${step.text}`) };
   }
-  const result = executePlan(plan, options);
-  if (result.health) {
-    const healthStep = plan.find((step) => step.id === 'health');
-    await result.health(`http://127.0.0.1:${healthStep.port}/health`);
+  const existed = existsSync(options.destRoot);
+  const state = {};
+  try {
+    const result = executePlan(plan, { ...options, markNew: !existed, state });
+    if (result.health) {
+      const healthStep = plan.find((step) => step.id === 'health');
+      await result.health(`http://127.0.0.1:${healthStep.port}/health`);
+    }
+    if (!existed) rmSync(join(options.destRoot, '.migrando'), { force: true });
+    return { lines: result.lines };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    // The app already runs from the new tree: put it back on the old one before the folder goes away.
+    let restored = '';
+    if (state.switched) {
+      const oldConfig = join(options.sourceRoot, 'pm2.apps.d', `${state.switched}.config.js`);
+      try {
+        (options.commands?.pm2 || defaultPm2)(oldConfig);
+        restored = `; pm2 ${state.switched} restored to ${options.sourceRoot}`;
+      } catch (restoreError) {
+        const why = restoreError instanceof Error ? restoreError.message : String(restoreError);
+        restored = `; pm2 ${state.switched} restore failed (${why}), kept ${options.destRoot}`;
+        throw new Error(`migration failed: ${reason}${restored}`);
+      }
+    }
+    if (!existed && existsSync(options.destRoot)) {
+      rmSync(options.destRoot, { recursive: true, force: true });
+      throw new Error(`migration failed: ${reason}; removed ${options.destRoot}${restored}`);
+    }
+    throw error;
   }
-  return { lines: result.lines };
 }
 
 function main() {
