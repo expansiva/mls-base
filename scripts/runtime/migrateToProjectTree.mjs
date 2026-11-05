@@ -15,12 +15,13 @@ import { ensureProjectApp } from './vmApps.mjs';
 const MLS_DIR = /^mls-\d+$/u;
 
 export function parseArgs(argv) {
-  const args = { dryRun: false, revert: false, projectId: '', sourceRoot: '/data/mls-base', destRoot: '', storeDir: '/data/.pnpm-store' };
+  const args = { dryRun: false, revert: false, discardDrafts: false, projectId: '', sourceRoot: '/data/mls-base', destRoot: '', storeDir: '/data/.pnpm-store' };
   const rest = [];
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (token === '--dry-run') args.dryRun = true;
     else if (token === '--revert') args.revert = true;
+    else if (token === '--discard-drafts') args.discardDrafts = true;
     else if (token === '--root') args.sourceRoot = argv[++i] || '';
     else if (token === '--dest') args.destRoot = argv[++i] || '';
     else if (token === '--store') args.storeDir = argv[++i] || '';
@@ -84,6 +85,59 @@ export function uncommittedDrafts(sourceRoot, projectId) {
     if (files > 0) dirty.push({ slug: row.slug, files });
   }
   return dirty;
+}
+
+function git(repo, args) {
+  const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  if ((result.status ?? 1) !== 0) {
+    throw new Error(`git ${args.join(' ')} failed in ${repo}: ${(result.stderr || result.stdout || '').trim()}`);
+  }
+  return result.stdout || '';
+}
+
+function defaultStopDrafts(commands) {
+  return commands.stopDrafts || ((source, id) => {
+    const stopped = [];
+    for (const child of oldDraftChildren(source, id)) {
+      try {
+        process.kill(child.pid, 'SIGTERM');
+        rmSync(child.file, { force: true });
+        stopped.push(`${child.slug}:${child.port ?? '?'}`);
+      } catch { /* already gone */ }
+    }
+    return stopped;
+  });
+}
+
+/**
+ * --discard-drafts: remove the drafts of this project before the migration. Draft children stop first (they hold
+ * the worktree as cwd), then the worktree folders and the local branches team/* and user/* go. Databases stay.
+ * Returns one line per thing removed.
+ */
+export function discardDrafts(sourceRoot, projectId, { stopDrafts } = {}) {
+  const lines = [];
+  const rows = draftWorktrees(sourceRoot, projectId);
+  const stopped = stopDrafts ? stopDrafts(sourceRoot, projectId) : [];
+  if (stopped.length) lines.push(`stopped draft children (${stopped.join(', ')})`);
+  const repo = join(sourceRoot, `mls-${projectId}`);
+  for (const row of rows) {
+    if (hasGit(repo)) git(repo, ['worktree', 'remove', '--force', row.work]);
+    else rmSync(row.work, { recursive: true, force: true });
+    const slugDir = dirname(row.work);
+    const others = readdirSync(slugDir).filter((name) => MLS_DIR.test(name));
+    if (others.length === 0) rmSync(slugDir, { recursive: true, force: true });
+    lines.push(`discarded draft ${row.slug}`);
+  }
+  if (hasGit(repo)) {
+    git(repo, ['worktree', 'prune']);
+    const refs = git(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/team', 'refs/heads/user'])
+      .split('\n').map((line) => line.trim()).filter(Boolean);
+    for (const branch of refs) {
+      git(repo, ['branch', '-D', branch]);
+      lines.push(`deleted branch ${branch}`);
+    }
+  }
+  return lines;
 }
 
 export function refusalLine(projectId, dirty) {
@@ -524,17 +578,7 @@ export function executePlan(plan, {
       throw new Error(`arm git repos failed: ${(result.stderr || result.stdout || '').trim()}`);
     }
   });
-  const stopDrafts = commands.stopDrafts || ((source, id) => {
-    const stopped = [];
-    for (const child of oldDraftChildren(source, id)) {
-      try {
-        process.kill(child.pid, 'SIGTERM');
-        rmSync(child.file, { force: true });
-        stopped.push(`${child.slug}:${child.port ?? '?'}`);
-      } catch { /* already gone */ }
-    }
-    return stopped;
-  });
+  const stopDrafts = defaultStopDrafts(commands);
   const health = commands.health || ((url) => waitForHealth(url, healthTimeoutMs, healthStepMs));
   const buildObj = commands.buildObj || ((dest, ids) => {
     const result = spawnSync(process.execPath, [
@@ -643,7 +687,11 @@ export function executePlan(plan, {
 }
 
 export async function migrateToProjectTree(options) {
-  const dirty = uncommittedDrafts(options.sourceRoot, options.projectId);
+  const discarded = [];
+  if (options.discardDrafts && !options.dryRun) {
+    discarded.push(...discardDrafts(options.sourceRoot, options.projectId, { stopDrafts: defaultStopDrafts(options.commands || {}) }));
+  }
+  const dirty = options.discardDrafts ? [] : uncommittedDrafts(options.sourceRoot, options.projectId);
   if (dirty.length > 0) {
     const line = refusalLine(options.projectId, dirty);
     if (options.dryRun) return { lines: [line] };
@@ -656,7 +704,10 @@ export async function migrateToProjectTree(options) {
   }
   const plan = buildPlan(options);
   if (options.dryRun) {
-    return { lines: plan.map((step) => `${step.skip ? 'skip' : 'would'} ${step.text}`) };
+    const head = options.discardDrafts
+      ? draftWorktrees(options.sourceRoot, options.projectId).map((row) => `would discard draft ${row.slug}`)
+      : [];
+    return { lines: [...head, ...plan.map((step) => `${step.skip ? 'skip' : 'would'} ${step.text}`)] };
   }
   const existed = existsSync(options.destRoot);
   const state = {};
@@ -667,7 +718,7 @@ export async function migrateToProjectTree(options) {
       await result.health(`http://127.0.0.1:${healthStep.port}/health`);
     }
     if (!existed) rmSync(join(options.destRoot, '.migrando'), { force: true });
-    return { lines: result.lines };
+    return { lines: [...discarded, ...result.lines] };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     // The app already runs from the new tree: put it back on the old one before the folder goes away.

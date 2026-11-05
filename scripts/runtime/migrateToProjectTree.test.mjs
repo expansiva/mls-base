@@ -157,6 +157,29 @@ test('refuses a dirty draft before writing, including dry-run', async () => {
   assert.equal(existsSync(join(box, 'app102056')), false);
 });
 
+test('--discard-drafts removes dirty drafts and their branches, keeps main, then migrates', async () => {
+  const { source, app, slug } = withDraft(true);
+  const args = parseArgs(['102056', '--root', source, '--discard-drafts', '--store', join(source, '..', 'pnpm-store')]);
+  assert.equal(args.discardDrafts, true);
+  const dry = await migrateToProjectTree({ ...args, dryRun: true });
+  assert.match(dry.lines.join('\n'), new RegExp(`would discard draft ${slug}`));
+  assert.equal(existsSync(join(source, 'drafts', slug)), true);
+  const stopped = [];
+  const result = await migrateToProjectTree({
+    ...args,
+    commands: { ...commands(args.destRoot), stopDrafts: (_s, id) => { stopped.push(id); return []; } },
+  });
+  assert.deepEqual(stopped, ['102056']);
+  assert.match(result.lines.join('\n'), new RegExp(`discarded draft ${slug}`));
+  assert.match(result.lines.join('\n'), /deleted branch team\/7/);
+  assert.match(result.lines.join('\n'), /deleted branch user\/ab/);
+  assert.equal(existsSync(join(source, 'drafts', slug)), false);
+  const names = (repo) => heads(repo).trim().split('\n').map((l) => l.split(' ')[0]).join(',');
+  assert.equal(names(app), 'main');
+  assert.equal(names(join(args.destRoot, 'mls-102056')), 'main');
+  assert.equal(existsSync(join(args.destRoot, 'drafts', slug)), false);
+});
+
 function writeObj(repo, body) {
   mkdirSync(join(repo, 'obj'), { recursive: true });
   writeFileSync(join(repo, 'obj', 'compiled.zip'), body);
