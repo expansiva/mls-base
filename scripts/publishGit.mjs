@@ -236,6 +236,7 @@ export function parseArgs(argv) {
   let align = false;
   let autocommit = false;
   let noDeps = false;
+  let depsHead = false;
   let installHelper = false;
   let paste = false;
   for (const arg of argv) {
@@ -243,6 +244,8 @@ export function parseArgs(argv) {
       align = true;
     } else if (arg === '--no-deps') {
       noDeps = true;
+    } else if (arg === '--deps-head') {
+      depsHead = true;
     } else if (arg === '--autocommit') {
       autocommit = true;
     } else if (arg === '--install-helper') {
@@ -267,7 +270,7 @@ export function parseArgs(argv) {
   // `login` não tem projeto nem perfil: é a identidade da PESSOA, e vale para todas as VMs.
   if (positional[0] === 'login') {
     if (positional.length !== 1) fail(usage());
-    return { command: 'login', installHelper, paste, id: '', profile: '', align, autocommit, noDeps, flagConf };
+    return { command: 'login', installHelper, paste, id: '', profile: '', align, autocommit, noDeps, depsHead, flagConf };
   }
   const projectRaw = positional[0] || '';
   const second = positional[1] || '';
@@ -284,7 +287,7 @@ export function parseArgs(argv) {
   if (!idMatch || (profile !== 'local' && profile !== 'remote')) {
     fail(usage());
   }
-  return { id: idMatch[1], profile, command, align, autocommit, noDeps, installHelper, paste, flagConf };
+  return { id: idMatch[1], profile, command, align, autocommit, noDeps, depsHead, installHelper, paste, flagConf };
 }
 
 function gitSync(cwd, args, env = process.env) {
@@ -890,7 +893,7 @@ function explainDirtyVm(out) {
  * na VM: aviso, não erro — o push do cliente dispara o hook, o build clona, e
  * o próximo publish envia o retrato.
  */
-async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, profile }) {
+async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, profile, depsHead = false }) {
   const declared = readDepIds(clientRepo, clientId);
   const onDesktop = declared.filter((depId) => existsSync(join(root, `mls-${depId}`, '.git')));
   if (!onDesktop.length) return { changed: [], missing: [] };
@@ -911,6 +914,7 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, prof
       env,
       gitSync,
       ensureRemote: (repo, remoteUrl) => ensureProfileRemote(repo, remoteUrl, profile),
+      fromHead: depsHead,
     });
     if (plan.status === 'missing') {
       process.stderr.write(`${missingVmRepoMessage(depName)}\n`);
@@ -962,7 +966,7 @@ export function makeRebuildCommit(repo, changedDeps) {
 }
 
 async function main() {
-  const { id, profile, command, align, autocommit, noDeps, installHelper, paste, flagConf } = parseArgs(process.argv.slice(2));
+  const { id, profile, command, align, autocommit, noDeps, depsHead, installHelper, paste, flagConf } = parseArgs(process.argv.slice(2));
   if (command === 'login') {
     process.exit(await runLogin({ installHelper, paste, flagConf }));
   }
@@ -1007,7 +1011,7 @@ async function main() {
       activeGuard = createLocalPublishGuard();
       await activeGuard.begin(ROOT);
     }
-    await publishTree({ id, profile, repo, url, env, projectName, align, autocommit, noDeps, conf });
+    await publishTree({ id, profile, repo, url, env, projectName, align, autocommit, noDeps, depsHead, conf });
   } catch (error) {
     if (error && error.limaExit) {
       await leaveLima(limaControl, { retain: error.limaRetain === true });
@@ -1017,7 +1021,7 @@ async function main() {
   }
 }
 
-async function publishTree({ id, profile, repo, url, env, projectName, align, autocommit, noDeps, conf }) {
+async function publishTree({ id, profile, repo, url, env, projectName, align, autocommit, noDeps, depsHead, conf }) {
 
   const branch = gitOut(repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (branch !== 'main') {
@@ -1056,7 +1060,7 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
   const { changed: changedDeps, missing: missingDeps = [] } = noDeps
     ? { changed: [], missing: [] }
     : await publishPlatformDeps({
-      root: ROOT, clientRepo: repo, clientId: id, conf, env, profile,
+      root: ROOT, clientRepo: repo, clientId: id, conf, env, profile, depsHead,
     });
 
   if (rel === 'same') {

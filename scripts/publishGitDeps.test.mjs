@@ -450,3 +450,36 @@ test('runPush com skip-build também envia o commit criado, não o ref técnico'
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('snapshotTree fromHead leva o último commit, sem o não commitado e sem obj/', () => {
+  const root = mkdtempSync(join(tmpdir(), 'snap-head-'));
+  try {
+    const repo = makeRepo(root, 'mls-102035', { 'obj/compiled.zip': 'antigo', 'l2/a.ts': 'const a = 1;\n' });
+    writeFileSync(join(repo, 'l2', 'a.ts'), 'const a = 2;\n');
+    writeFileSync(join(repo, 'l2', 'novo.ts'), 'const n = 1;\n');
+    const snap = snapshotTree(repo, GIT_ENV, { fromHead: true });
+    assert.equal(snap.ok, true, snap.reason);
+    const listed = git(repo, 'ls-tree', '-r', '--name-only', snap.tree).split('\n');
+    assert.deepEqual(listed, ['l2/a.ts']);
+    assert.match(git(repo, 'show', `${snap.tree}:l2/a.ts`), /a = 1/u);
+    // sem alteração no disco as duas formas dão a mesma árvore
+    git(repo, 'checkout', '-q', '--', 'l2/a.ts');
+    rmSync(join(repo, 'l2', 'novo.ts'));
+    assert.equal(snapshotTree(repo, GIT_ENV).tree, snap.tree);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('planSnapshot fromHead ignora a alteração não commitada e o retrato não sai marcado como sujo', () => {
+  withRemote(({ repo, vm, gitSync, ensureRemote }) => {
+    writeFileSync(join(repo, 'l2', 'a.ts'), 'const a = 2;\n');
+    const unchanged = planSnapshot({ repo, remote: 'vm', url: vm, env: GIT_ENV, gitSync, ensureRemote, fromHead: true });
+    assert.equal(unchanged.status, 'unchanged', 'o HEAD é o que a VM já tem');
+    const changed = planSnapshot({ repo, remote: 'vm', url: vm, env: GIT_ENV, gitSync, ensureRemote });
+    assert.equal(changed.status, 'changed', 'sem fromHead o disco sujo é enviado, como antes');
+    const sent = sendSnapshot({ plan: changed, remote: 'vm', env: GIT_ENV, pushOptions: ['skip-build'], gitSync });
+    assert.equal(sent.status, 'pushed', sent.reason);
+    assert.match(git(vm, 'log', '-1', '--pretty=%s', 'main'), /\+dirty/u);
+  });
+});

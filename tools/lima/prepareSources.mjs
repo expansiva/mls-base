@@ -39,11 +39,11 @@ function git(repo, args, env = process.env, raw = false) {
   });
 }
 
-export async function captureRepo(repo, env) {
+export async function captureRepo(repo, env, { fromHead = false } = {}) {
   const head = await git(repo, ['rev-parse', 'HEAD'], env);
   const status = await git(repo, ['status', '--porcelain'], env);
   const subject = await git(repo, ['log', '-1', '--pretty=%s'], env);
-  const snap = snapshotTree(repo, env);
+  const snap = snapshotTree(repo, env, { fromHead });
   return {
     sha: head.code === 0 ? head.stdout : '',
     dirty: status.code !== 0 || status.stdout.length > 0,
@@ -79,14 +79,16 @@ export async function planLocalSources(root, projectId = PROJECT_ID, env = proce
   }
   const depIds = declared.filter((id) => existsSync(join(root, `mls-${id}`, '.git')));
   const deps = [];
-  for (const id of depIds) deps.push({ id, ...(await captureRepo(join(root, `mls-${id}`), env)) });
+  // A dependency is prepared from its HEAD: uncommitted work in another queue's repo is a warning, not a block.
+  for (const id of depIds) deps.push({ id, ...(await captureRepo(join(root, `mls-${id}`), env, { fromHead: true })) });
   const blocked = [];
+  const warnings = [];
   if (platform.dirty) blocked.push('mls-base');
   if (platform.lock) blocked.push('mls-base:.collab-msg.lock');
   if (app.dirty) blocked.push(`mls-${projectId}`);
   if (app.lock) blocked.push(`mls-${projectId}:.collab-msg.lock`);
   for (const dep of deps) {
-    if (dep.dirty) blocked.push(`mls-${dep.id}`);
+    if (dep.dirty) warnings.push(`mls-${dep.id}: uncommitted changes left out, prepared from HEAD ${String(dep.sha).slice(0, 7)}`);
     if (dep.lock) blocked.push(`mls-${dep.id}:.collab-msg.lock`);
   }
   return {
@@ -98,6 +100,7 @@ export async function planLocalSources(root, projectId = PROJECT_ID, env = proce
     appSubject: app.subject,
     deps: deps.map((dep) => ({ id: dep.id, sha: dep.sha, tree: dep.tree, subject: dep.subject })),
     blocked,
+    warnings,
   };
 }
 
@@ -287,7 +290,7 @@ async function pushRoot(root, profile, capturedSha, remoteSha, options, projectI
 }
 
 export function publishCommand(root, projectId = PROJECT_ID) {
-  return [process.execPath, [join(root, 'scripts', 'publishGit.mjs'), String(projectId), 'local'], { cwd: root }];
+  return [process.execPath, [join(root, 'scripts', 'publishGit.mjs'), String(projectId), 'local', '--deps-head'], { cwd: root }];
 }
 
 function runPublish(root, projectId, options) {
@@ -543,6 +546,7 @@ export async function prepareSources({
       release: observed.stamp,
       alias: observed.alias,
       workers: (observed.workers || []).filter((item) => item.name === projectApp(projectId)),
+      warnings: plan.warnings,
     },
   };
 }

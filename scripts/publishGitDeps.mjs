@@ -100,21 +100,25 @@ function gitOut(repo, args, env) {
 
 /**
  * Árvore do worktree AGORA (inclusive não commitado), sem obj/, num índice
- * temporário — o índice real do Wagner não é tocado.
+ * temporário — o índice real do Wagner não é tocado. Com `fromHead`, a árvore do
+ * último commit (o não commitado fica de fora).
  *
  * `git add -A` respeita o .gitignore do repo (que já cobre /obj/ — ensureObjGitignore
  * do publishGit). O `rm --cached` a seguir é cinto e suspensórios: se um obj/ tiver
  * sido versionado alguma vez, ele NÃO vai para a VM.
  */
-export function snapshotTree(repo, env = process.env) {
+export function snapshotTree(repo, env = process.env, { fromHead = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'collab-snap-'));
   const indexFile = join(dir, 'index');
   const snapEnv = { ...env, GIT_INDEX_FILE: indexFile };
   try {
-    const read = git(repo, ['read-tree', '--empty'], snapEnv);
+    // fromHead: the committed tree only (work in progress is left out), still without obj/.
+    const read = git(repo, ['read-tree', fromHead ? 'HEAD' : '--empty'], snapEnv);
     if (read.code !== 0) return { ok: false, tree: '', reason: read.out };
-    const add = git(repo, ['add', '-A', '--', '.'], snapEnv);
-    if (add.code !== 0) return { ok: false, tree: '', reason: add.out };
+    if (!fromHead) {
+      const add = git(repo, ['add', '-A', '--', '.'], snapEnv);
+      if (add.code !== 0) return { ok: false, tree: '', reason: add.out };
+    }
     git(repo, ['rm', '-r', '--cached', '--ignore-unmatch', '-q', '--', 'obj'], snapEnv);
     const write = git(repo, ['write-tree'], snapEnv);
     if (write.code !== 0) return { ok: false, tree: '', reason: write.out };
@@ -162,7 +166,7 @@ export function missingVmRepoMessage(depName) {
  * `missing` = o alvo ainda não existe na VM. Não é erro: o publish segue e o
  * build clona a dep; um segundo publish envia o retrato.
  */
-export function planSnapshot({ repo, remote, url, env, gitSync, ensureRemote }) {
+export function planSnapshot({ repo, remote, url, env, gitSync, ensureRemote, fromHead = false }) {
   ensureRemote(repo, url);
   const fetched = gitSync(repo, ['fetch', remote, `+refs/heads/main:refs/remotes/${remote}/main`], env);
   if (fetched.code !== 0) {
@@ -174,15 +178,15 @@ export function planSnapshot({ repo, remote, url, env, gitSync, ensureRemote }) 
   const remoteSha = gitOut(repo, ['rev-parse', `refs/remotes/${remote}/main`], env);
   if (!remoteSha) return { status: 'error', reason: 'the VM has no main (run gitReposSetup)' };
 
-  const snap = snapshotTree(repo, env);
+  const snap = snapshotTree(repo, env, { fromHead });
   if (!snap.ok) return { status: 'error', reason: `write-tree failed: ${snap.reason}` };
 
   // Compara ÁRVORES, não commits: dois retratos do mesmo disco dão a mesma
   // árvore mesmo com mensagens diferentes, então rodar duas vezes é no-op real.
   const remoteTree = gitOut(repo, ['rev-parse', `${remoteSha}^{tree}`], env);
-  if (remoteTree && remoteTree === snap.tree) return { status: 'unchanged', reason: '', repo, remoteSha, tree: snap.tree };
+  if (remoteTree && remoteTree === snap.tree) return { status: 'unchanged', reason: '', repo, remoteSha, tree: snap.tree, fromHead };
 
-  return { status: 'changed', reason: '', repo, remoteSha, tree: snap.tree };
+  return { status: 'changed', reason: '', repo, remoteSha, tree: snap.tree, fromHead };
 }
 
 /**
@@ -191,10 +195,10 @@ export function planSnapshot({ repo, remote, url, env, gitSync, ensureRemote }) 
  * dispara a build entrega o marcador do hook ao terminal do dev.
  */
 export function sendSnapshot({ plan, remote, env, pushOptions = [], gitSync, runPush }) {
-  const { repo, remoteSha, tree } = plan;
+  const { repo, remoteSha, tree, fromHead } = plan;
   const headSha = gitOut(repo, ['rev-parse', 'HEAD'], env);
   const subject = gitOut(repo, ['log', '-1', '--pretty=%s'], env);
-  const dirty = git(repo, ['status', '--porcelain'], env).out.length > 0;
+  const dirty = !fromHead && git(repo, ['status', '--porcelain'], env).out.length > 0;
   const message = snapshotMessage(headSha, dirty, subject);
 
   // Parent = o que a VM tem agora ⇒ o push é fast-forward, sempre. É isto que

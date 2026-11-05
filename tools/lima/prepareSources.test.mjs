@@ -6,7 +6,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { beginSession, withLimaOperation } from './session.mjs';
-import { planLocalSources, prepareSources, PROJECT_ID } from './prepareSources.mjs';
+import { planLocalSources, prepareSources, publishCommand, PROJECT_ID } from './prepareSources.mjs';
+import { snapshotTree } from '../../scripts/publishGitDeps.mjs';
 
 // The expected lib version is resolved from the environment (the brake), never from a file in the repo.
 // The libs id must be newer than the first lib without Firebase (the resolver refuses older ones).
@@ -957,4 +958,31 @@ test('a forced build slower than the read timeout is not cut as a disconnect', a
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.forcedBuild, true);
   });
+});
+
+test('a dirty dependency of another queue is a warning and is prepared from its HEAD; the app and the platform still block', async () => {
+  const dirty = bench();
+  const dep = join(dirty.mac, 'mls-102034');
+  const headTree = git(dep, ['rev-parse', 'HEAD^{tree}']);
+  writeFileSync(join(dep, 'wip.txt'), 'work in progress of another queue');
+  const plan = await planLocalSources(dirty.mac, PROJECT_ID, dirty.env);
+  assert.equal(plan.blocked.includes('mls-102034'), false);
+  assert.equal(plan.warnings.length, 1);
+  assert.match(plan.warnings[0], /^mls-102034: uncommitted changes left out, prepared from HEAD [0-9a-f]{7}$/u);
+  const planned = plan.deps.find((entry) => entry.id === '102034');
+  assert.equal(planned.tree, headTree, 'the dependency tree is the HEAD tree, without wip.txt');
+  assert.equal(snapshotTree(dep, dirty.env).tree === headTree, false, 'the working tree snapshot would have included wip.txt');
+  // the repo that the proof asks for keeps blocking
+  writeFileSync(join(dirty.mac, 'mls-102047', 'wip.txt'), 'x');
+  const again = await planLocalSources(dirty.mac, PROJECT_ID, dirty.env);
+  assert.ok(again.blocked.includes('mls-102047'));
+  // the publish step is told to send dependencies from HEAD
+  assert.ok(publishCommand(dirty.mac, PROJECT_ID)[1].includes('--deps-head'));
+});
+
+test('a dependency lock still blocks even when its changes are only a warning', async () => {
+  const locked = bench();
+  writeFileSync(join(locked.mac, 'mls-102034', '.collab-msg.lock'), 'agent');
+  const plan = await planLocalSources(locked.mac, PROJECT_ID, locked.env);
+  assert.ok(plan.blocked.includes('mls-102034:.collab-msg.lock'));
 });
