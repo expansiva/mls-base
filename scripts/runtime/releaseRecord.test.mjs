@@ -351,7 +351,7 @@ test('the shared app belongs to COLLAB_RELEASE_PROJECT_ID, else the only project
     writeFileSync(join(projects, '102047.json'), '{}');
     const lines = [];
     assert.equal(resolveSharedProject({ env: {}, projectsDir: projects, log: (line) => lines.push(line) }), '102047');
-    assert.match(lines[0], /2 projects.*smallest id \(102047\)/u);
+    assert.match(lines[0], /the smallest of 2 projects \(102047\) is taken as the main one/u);
     assert.equal(resolveSharedProject({ env: { COLLAB_RELEASE_PROJECT_ID: 'abc' }, projectsDir: projects, log: () => {} }), '102047', 'not a number: ignored');
   });
 });

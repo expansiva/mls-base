@@ -13,6 +13,9 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { hostname } from 'node:os';
+import { mainProjectOf, readSharedVersions } from './sharedApps.mjs';
+
+export { readSharedVersions };
 
 export const CONTRACT_VERSION = 2;
 export const KEEP_PER_QUEUE = 10;
@@ -94,17 +97,6 @@ export function readSwVersion(root) {
     return /MLSSERVICEWORKERVERSION\s*=\s*["']([^"']+)["']/u.exec(text)?.[1] ?? null;
   } catch {
     return null;
-  }
-}
-
-/** Version of each shared app installed on this VM (the cm is the first): `{ cm: '20261102-155346' }`. */
-export function readSharedVersions({ env = process.env } = {}) {
-  const root = String(env.COLLAB_MESSAGES_DEPLOY_ROOT ?? '').trim() || '/data/msg.collab.codes';
-  try {
-    const version = readFileSync(join(root, 'node', 'collab-messages.version'), 'utf8').trim();
-    return version ? { cm: version } : {};
-  } catch {
-    return {};
   }
 }
 
@@ -513,17 +505,10 @@ export function closeRequest({ dir, requestId, step = 'platform', message = 'ste
   return record;
 }
 
-/** The project a shared app (the cm) belongs to: COLLAB_RELEASE_PROJECT_ID, the only hosted project, or the smallest id. */
-export function resolveSharedProject({ env = process.env, projectsDir = '/data/etc/projects', log = () => {} } = {}) {
-  const fromEnv = String(env.COLLAB_RELEASE_PROJECT_ID ?? '').trim();
-  if (/^\d+$/u.test(fromEnv)) return fromEnv;
-  let ids = [];
-  try {
-    ids = readdirSync(projectsDir).map((name) => /^(\d+)\.json$/u.exec(name)?.[1]).filter(Boolean).sort((a, b) => Number(a) - Number(b));
-  } catch { /* no projects folder */ }
-  if (ids.length === 0) return null;
-  if (ids.length > 1) log(`releaseRecord: ${ids.length} projects on this VM and no COLLAB_RELEASE_PROJECT_ID: the shared app goes to the smallest id (${ids[0]})`);
-  return ids[0];
+/** The project a shared app (the cm) belongs to: COLLAB_RELEASE_PROJECT_ID, shared.json, then the smallest id (see sharedApps.mjs). */
+export function resolveSharedProject({ env = process.env, projectsDir = '/data/etc/projects', log = () => {}, nome = 'cm', etcDir } = {}) {
+  const found = mainProjectOf(nome, { env, etcDir: etcDir ?? dirname(projectsDir), projectsDir, log });
+  return found ? found.projectId : null;
 }
 
 /** Where a project's records live: its own tree when it exists, else the shared tree. */
