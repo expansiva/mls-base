@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { migrateToProjectTree, parseArgs, revertProjectTree } from './migrateToProjectTree.mjs';
+import { migrateToProjectTree, oldDraftChildren, parseArgs, revertProjectTree } from './migrateToProjectTree.mjs';
 
 function git(cwd, args) {
   execFileSync('git', args, { cwd, stdio: 'ignore' });
@@ -63,6 +63,7 @@ function commands(dest, extra = {}) {
       return switched ? join(dest, 'current') : '';
     },
     arm() {},
+    stopDrafts() { return []; },
     health() {},
     ...extra,
   };
@@ -584,4 +585,21 @@ test('the new root is on main with the old origin and push settings; the copied 
   assert.equal(read(copied, 'config', '--local', '--get', 'receive.denyCurrentBranch'), 'updateInstead');
   assert.equal(execFileSync('git', ['-C', copied, 'remote'], { encoding: 'utf8' }).trim(), '', 'the app had no origin');
   assert.deepEqual(armed, [dest], 'the git repos are armed once, from the new root');
+});
+
+test('the draft children of the old tree for this project are found, and only live deno ones of that project', () => {
+  const { source } = fixture();
+  const write = (slug, info) => {
+    mkdirSync(join(source, 'drafts', slug), { recursive: true });
+    writeFileSync(join(source, 'drafts', slug, 'dev.json'), JSON.stringify(info));
+  };
+  write('team-102056', { pid: 111, port: 4100, database: 'collab_app_draft_102056_team' });
+  write('user-ab', { pid: 222, port: 4101, database: 'collab_app_draft_102056_uab' });
+  write('user-cd', { pid: 333, port: 4102, database: 'collab_app_draft_102047_ucd' });
+  write('user-ef', { pid: 444, port: 4103, database: 'collab_app_draft_102056_uef' });
+  write('broken', { port: 4104 });
+  const commandOf = (pid) => ({ 111: '/usr/bin/deno run --allow-net=127.0.0.1:4100', 222: 'node something.js', 333: 'deno run', 444: '' })[pid] ?? '';
+  const found = oldDraftChildren(source, '102056', { readCommand: commandOf });
+  assert.deepEqual(found.map((child) => [child.slug, child.pid, child.port]), [['team-102056', 111, 4100]]);
+  assert.deepEqual(oldDraftChildren(source, '102047', { readCommand: commandOf }).map((child) => child.slug), ['user-cd']);
 });

@@ -321,6 +321,11 @@ export function buildPlan({ sourceRoot, destRoot, projectId, storeDir }) {
     text: `pm2 ${appName} → ${join(destRoot, 'current')}`,
   });
   steps.push({
+    id: 'stop-drafts',
+    skip: oldDraftChildren(sourceRoot, projectId).length === 0,
+    text: `stop the draft children of the old tree (they keep the ports 41xx)`,
+  });
+  steps.push({
     id: 'health',
     port,
     skip: false,
@@ -356,6 +361,38 @@ function carryRepoSetup(src, dest, git) {
     const value = gitRead(src, ['config', '--local', '--get', key]);
     if (value) git(['-C', dest, 'config', '--local', key, value]);
   }
+}
+
+/**
+ * Draft child processes of the old tree for this project. They outlive the old principal (pm2 does not own them)
+ * and keep holding their ports (4100…), so the new principal cannot start its own children there. Returns what it
+ * would stop: `{ slug, pid, port }` of every `drafts/<slug>/dev.json` whose database is of this project and whose
+ * pid is a live `deno` process.
+ */
+export function oldDraftChildren(sourceRoot, projectId, { readCommand = defaultReadCommand } = {}) {
+  const found = [];
+  const drafts = join(sourceRoot, 'drafts');
+  if (!existsSync(drafts)) return found;
+  for (const slug of readdirSync(drafts)) {
+    const file = join(drafts, slug, 'dev.json');
+    if (!existsSync(file)) continue;
+    let info;
+    try {
+      info = JSON.parse(readFileSync(file, 'utf8'));
+    } catch {
+      continue;
+    }
+    if (!Number.isInteger(info?.pid) || info.pid <= 0) continue;
+    if (!String(info.database ?? '').startsWith(`collab_app_draft_${projectId}_`)) continue;
+    if (!/(^|[\\/\s])deno(\s|$)/u.test(readCommand(info.pid))) continue;
+    found.push({ slug, pid: info.pid, port: info.port ?? null, file });
+  }
+  return found;
+}
+
+function defaultReadCommand(pid) {
+  const result = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+  return (result.status ?? 1) === 0 ? String(result.stdout || '').trim() : '';
 }
 
 function ensureEnv(destRoot, key, value) {
@@ -487,6 +524,17 @@ export function executePlan(plan, {
       throw new Error(`arm git repos failed: ${(result.stderr || result.stdout || '').trim()}`);
     }
   });
+  const stopDrafts = commands.stopDrafts || ((source, id) => {
+    const stopped = [];
+    for (const child of oldDraftChildren(source, id)) {
+      try {
+        process.kill(child.pid, 'SIGTERM');
+        rmSync(child.file, { force: true });
+        stopped.push(`${child.slug}:${child.port ?? '?'}`);
+      } catch { /* already gone */ }
+    }
+    return stopped;
+  });
   const health = commands.health || ((url) => waitForHealth(url, healthTimeoutMs, healthStepMs));
   const buildObj = commands.buildObj || ((dest, ids) => {
     const result = spawnSync(process.execPath, [
@@ -581,6 +629,9 @@ export function executePlan(plan, {
       actions.start(join(destRoot, 'pm2.apps.d', `${step.appName}.config.js`));
       actions.save();
       assertCwd(step.appName, readAppInstances(step.appName, commands), wanted, true);
+    } else if (step.id === 'stop-drafts') {
+      const stopped = stopDrafts(sourceRoot, projectId);
+      done.push(`${step.text}${stopped.length ? ` (${stopped.join(', ')})` : ''}`);
     } else if (step.id === 'health') {
       done.push(step.text);
       return { lines: done, health };
