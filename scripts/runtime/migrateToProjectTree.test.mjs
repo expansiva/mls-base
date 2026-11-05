@@ -62,6 +62,7 @@ function commands(dest, extra = {}) {
     pm2Cwd() {
       return switched ? join(dest, 'current') : '';
     },
+    arm() {},
     health() {},
     ...extra,
   };
@@ -561,4 +562,26 @@ test('cli --dry-run exits 0', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /would clone/);
   assert.match(result.stdout, /leave mls-102056/);
+});
+
+test('the new root is on main with the old origin and push settings; the copied repos keep origin and receive settings', async () => {
+  const { source } = fixture();
+  git(source, ['remote', 'add', 'origin', 'https://github.com/expansiva/mls-base.git']);
+  git(source, ['config', '--local', 'receive.denyCurrentBranch', 'updateInstead']);
+  git(source, ['config', '--local', 'receive.denyDeletes', 'true']);
+  const app = join(source, 'mls-102056');
+  git(app, ['config', '--local', 'receive.denyCurrentBranch', 'updateInstead']);
+  const args = parseArgs(['102056', '--root', source, '--store', join(source, '..', 'pnpm-store')]);
+  const armed = [];
+  await migrateToProjectTree({ ...args, commands: commands(args.destRoot, { arm: (dest) => armed.push(dest) }) });
+  const dest = args.destRoot;
+  const read = (repo, ...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim();
+  assert.equal(read(dest, 'symbolic-ref', '--short', 'HEAD'), 'main', 'not a detached HEAD');
+  assert.equal(read(dest, 'remote', 'get-url', 'origin'), 'https://github.com/expansiva/mls-base.git');
+  assert.equal(read(dest, 'config', '--local', '--get', 'receive.denyCurrentBranch'), 'updateInstead');
+  assert.equal(read(dest, 'config', '--local', '--get', 'receive.denyDeletes'), 'true');
+  const copied = join(dest, 'mls-102056');
+  assert.equal(read(copied, 'config', '--local', '--get', 'receive.denyCurrentBranch'), 'updateInstead');
+  assert.equal(execFileSync('git', ['-C', copied, 'remote'], { encoding: 'utf8' }).trim(), '', 'the app had no origin');
+  assert.deepEqual(armed, [dest], 'the git repos are armed once, from the new root');
 });

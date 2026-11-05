@@ -275,6 +275,11 @@ export function buildPlan({ sourceRoot, destRoot, projectId, storeDir }) {
       text: `copy ${file} -> ${destRoot}`,
     });
   }
+  steps.push({
+    id: 'arm',
+    skip: existsSync(join(destRoot, `mls-${projectId}`, '.git', 'hooks', 'post-receive')),
+    text: `arm the git repos in ${destRoot} (gitReposSetup: hooks, baseline, ignore list)`,
+  });
   const envFile = join(destRoot, '.env');
   for (const [key, value] of [
     ['CBE_PROJECTS_DIR', destRoot],
@@ -328,6 +333,28 @@ function runGit(args, cwd) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
   if ((result.status ?? 1) !== 0) {
     throw new Error(`git ${args.join(' ')} failed: ${(result.stderr || result.stdout || '').trim()}`);
+  }
+}
+
+function gitRead(repo, args) {
+  const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  return (result.status ?? 1) === 0 ? String(result.stdout || '').trim() : '';
+}
+
+const PUSH_CONFIG_KEYS = ['receive.denyCurrentBranch', 'receive.denyDeletes', 'receive.advertisePushOptions'];
+
+/**
+ * A fresh `git clone` of the old tree is not a copy of what the VM had set up: its `origin` is the old folder
+ * and the push settings are gone. Carry both over from the source repo: the same origin (or none) and the
+ * `receive.*` keys, so a push into this tree behaves as it did in the old one.
+ */
+function carryRepoSetup(src, dest, git) {
+  const origin = gitRead(src, ['remote', 'get-url', 'origin']);
+  if (origin) git(['-C', dest, 'remote', 'set-url', 'origin', origin]);
+  else if (gitRead(dest, ['remote', 'get-url', 'origin'])) git(['-C', dest, 'remote', 'remove', 'origin']);
+  for (const key of PUSH_CONFIG_KEYS) {
+    const value = gitRead(src, ['config', '--local', '--get', key]);
+    if (value) git(['-C', dest, 'config', '--local', key, value]);
   }
 }
 
@@ -452,6 +479,14 @@ export function executePlan(plan, {
       throw new Error(`release failed: ${(result.stderr || result.stdout || '').trim()}`);
     }
   });
+  const arm = commands.arm || ((dest) => {
+    const result = spawnSync(process.execPath, [
+      join(dest, 'scripts/runtime/gitReposSetup.mjs'), '--root', dest,
+    ], { cwd: dest, encoding: 'utf8' });
+    if ((result.status ?? 1) !== 0) {
+      throw new Error(`arm git repos failed: ${(result.stderr || result.stdout || '').trim()}`);
+    }
+  });
   const health = commands.health || ((url) => waitForHealth(url, healthTimeoutMs, healthStepMs));
   const buildObj = commands.buildObj || ((dest, ids) => {
     const result = spawnSync(process.execPath, [
@@ -490,7 +525,12 @@ export function executePlan(plan, {
       if ((head.status ?? 1) !== 0) throw new Error(`cannot read commit of ${sourceRoot}`);
       mkdirSync(dirname(destRoot), { recursive: true });
       git(['clone', sourceRoot, destRoot]);
-      git(['-C', destRoot, 'checkout', '--detach', head.stdout.trim()]);
+      // On `main`, not detached: a push of refs/heads/main must move the checked-out HEAD (prepare checks it).
+      git(['-C', destRoot, 'checkout', '-q', '-B', 'main', head.stdout.trim()]);
+      carryRepoSetup(sourceRoot, destRoot, git);
+      if (!gitRead(destRoot, ['config', '--local', '--get', 'receive.denyCurrentBranch'])) {
+        git(['-C', destRoot, 'config', '--local', 'receive.denyCurrentBranch', 'updateInstead']);
+      }
       if (markNew) writeFileSync(join(destRoot, '.migrando'), '');
     } else if (step.id === 'drop-other') {
       rmSync(join(destRoot, step.name), { recursive: true, force: true });
@@ -500,6 +540,7 @@ export function executePlan(plan, {
       if (step.mode === 'clone') {
         rmSync(dest, { recursive: true, force: true });
         git(['clone', '--local', src, dest]);
+        carryRepoSetup(src, dest, git);
         if (step.name === `mls-${projectId}`) mirrorBranches(src, dest, git);
       } else if (!existsSync(dest)) {
         cpSync(src, dest, { recursive: true });
@@ -512,6 +553,9 @@ export function executePlan(plan, {
       }
     } else if (step.id === 'copy-file') {
       if (existsSync(join(sourceRoot, step.file))) cpSync(join(sourceRoot, step.file), join(destRoot, step.file));
+    } else if (step.id === 'arm') {
+      arm(destRoot);
+      done.push(step.text);
     } else if (step.id === 'env') {
       ensureEnv(destRoot, step.key, step.value);
     } else if (step.id === 'pnpm') {
