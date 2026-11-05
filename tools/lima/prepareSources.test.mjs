@@ -1003,3 +1003,11 @@ test('sourcesMismatch names the first check that fails, and is null when the VM 
   assert.match(sourcesMismatch(plan, { ...vm, workers: [{ name: 'app2047', cwd: '/data/app102047/mls-base/current' }] }, appSha, {}), /cwd \/data\/app102047\/mls-base\/current is not under current-102047$/u);
   assert.match(sourcesMismatch(plan, { ...vm, stamp: null }, appSha, {}), /unreadable/u);
 });
+
+test('the publish step pushes into the project tree in tree mode and keeps the profile base in the old tree', () => {
+  const old = publishCommand('/mac/mls-base', '102047', {})[1];
+  assert.equal(old.some((arg) => String(arg).startsWith('--remote-base')), false);
+  const tree = publishCommand('/mac/mls-base', '102047', { LIMA_PROJECT_TREE: '1' })[1];
+  assert.ok(tree.includes('--remote-base=/data/app102047/mls-base'));
+  assert.ok(tree.includes('--deps-head'));
+});

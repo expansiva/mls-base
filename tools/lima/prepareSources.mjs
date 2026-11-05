@@ -289,13 +289,17 @@ async function pushRoot(root, profile, capturedSha, remoteSha, options, projectI
   ], env);
 }
 
-export function publishCommand(root, projectId = PROJECT_ID) {
-  return [process.execPath, [join(root, 'scripts', 'publishGit.mjs'), String(projectId), 'local', '--deps-head'], { cwd: root }];
+export function publishCommand(root, projectId = PROJECT_ID, env = process.env) {
+  const args = [join(root, 'scripts', 'publishGit.mjs'), String(projectId), 'local', '--deps-head'];
+  // In the project tree the app and its dependencies live under /data/app<id>/mls-base: the publish profile's
+  // REMOTE_BASE (/data/mls-base) would push them into the OLD tree and leave this one stale.
+  if (projectTreeMode(env)) args.push(`--remote-base=${projectMlsBase(projectId, env)}`);
+  return [process.execPath, args, { cwd: root }];
 }
 
 function runPublish(root, projectId, options) {
   if (options.spawnPublish) return options.spawnPublish({ projectId, autocommit: false, cwd: root });
-  const spec = publishCommand(root, projectId);
+  const spec = publishCommand(root, projectId, options.env);
   return new Promise((resolve) => {
     const child = spawn(spec[0], spec[1], {
       cwd: spec[2].cwd,
