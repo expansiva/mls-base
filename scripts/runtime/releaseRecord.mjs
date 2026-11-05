@@ -8,7 +8,7 @@
 // Where it lives: the project queues (base, libs, shared, app) under <root>/releases/registro/<releaseId>.json;
 // the vm queue (the management, collab-runtime) under <etc>/releases/<releaseId>.json.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chownSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -195,12 +195,24 @@ export function decideQueue({ requested, hasRequest, pieces }) {
 }
 
 /** Atomic write: temp file in the same folder, then rename. */
+/** A script run as root (collab msg update) must not leave files the release scripts (ubuntu) cannot rewrite or prune. */
+function matchOwner(path, reference) {
+  if (typeof process.getuid !== 'function' || process.getuid() !== 0) return;
+  try {
+    const owner = statSync(reference);
+    chownSync(path, owner.uid, owner.gid);
+  } catch { /* best effort */ }
+}
+
 export function writeRecordFile(dir, releaseId, record) {
+  const existed = existsSync(dir);
   mkdirSync(dir, { recursive: true });
+  if (!existed) matchOwner(dir, dirname(dir));
   const target = join(dir, `${releaseId}.json`);
   const tmp = join(dir, `.${releaseId}.json.${process.pid}.tmp`);
   writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`);
   renameSync(tmp, target);
+  matchOwner(target, dir);
   return target;
 }
 
@@ -247,7 +259,7 @@ export function closeStaleRecords(dir, { now = Date.now, olderThanMs = STALE_AFT
     const open = [...(record.passos ?? [])].reverse().find((item) => item.resultado === 'andamento');
     for (const item of record.passos ?? []) if (item.resultado === 'andamento') item.resultado = 'falhou';
     record.resultado = 'falhou';
-    record.falha = { passo: open?.nome ?? record.passos?.at(-1)?.nome ?? 'start', mensagem: `interrupted: no end recorded after ${Math.round(olderThanMs / 3600000)} h` };
+    record.falha = { passo: open?.nome ?? record.passos?.at(-1)?.nome ?? 'start', mensagem: 'sem fechamento: passo terminou fora do runtime' };
     record.fim = nowIso(now);
     record.duracaoMs = now() - started;
     writeRecordFile(dir, match[1], record);
@@ -284,6 +296,7 @@ export function addPendingNotice(dir, releaseId, code) {
   const tmp = `${target}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify({ codes }, null, 2)}\n`);
   renameSync(tmp, target);
+  matchOwner(target, dir);
   return codes;
 }
 
@@ -500,14 +513,116 @@ export function closeRequest({ dir, requestId, step = 'platform', message = 'ste
   return record;
 }
 
+/** The project a shared app (the cm) belongs to: COLLAB_RELEASE_PROJECT_ID, the only hosted project, or the smallest id. */
+export function resolveSharedProject({ env = process.env, projectsDir = '/data/etc/projects', log = () => {} } = {}) {
+  const fromEnv = String(env.COLLAB_RELEASE_PROJECT_ID ?? '').trim();
+  if (/^\d+$/u.test(fromEnv)) return fromEnv;
+  let ids = [];
+  try {
+    ids = readdirSync(projectsDir).map((name) => /^(\d+)\.json$/u.exec(name)?.[1]).filter(Boolean).sort((a, b) => Number(a) - Number(b));
+  } catch { /* no projects folder */ }
+  if (ids.length === 0) return null;
+  if (ids.length > 1) log(`releaseRecord: ${ids.length} projects on this VM and no COLLAB_RELEASE_PROJECT_ID: the shared app goes to the smallest id (${ids[0]})`);
+  return ids[0];
+}
+
+/** Where a project's records live: its own tree when it exists, else the shared tree. */
+export function projectRecordsRoot(projectId, { dataRoot = '/data' } = {}) {
+  const own = join(dataRoot, `app${projectId}`, 'mls-base');
+  return existsSync(own) ? own : join(dataRoot, 'mls-base');
+}
+
+/**
+ * Write a whole record in one go (the management update and the cm update are not `addNewVersion`): `fila` vm or
+ * shared. `pecas` and `passos` come from the caller; the notice `release.finished` is left for the agent.
+ */
+export function writeStandaloneRecord({
+  dir, queue, projectId = null, vmId, requestId = null, requestedBy = '', anterior = null, started, ended = Date.now(),
+  ok = true, failedStep = '', message = '', steps = [], pecas = {}, releaseId = newReleaseId(new Date(started ?? ended)),
+}) {
+  const record = {
+    versaoContrato: CONTRACT_VERSION,
+    releaseId,
+    fila: queue,
+    projetoId: projectId === null || projectId === undefined ? null : Number(projectId),
+    vmId: String(vmId),
+    pedidoId: requestId || null,
+    pedidoPor: scrubMessage(requestedBy),
+    inicio: nowIso(() => started ?? ended),
+    fim: nowIso(() => ended),
+    duracaoMs: Math.max(0, ended - (started ?? ended)),
+    resultado: ok ? 'ok' : 'falhou',
+    falha: ok ? null : { passo: failedStep || steps.at(-1) || 'update', mensagem: scrubMessage(message || 'update failed') },
+    passos: steps.map((name, index) => ({ nome: name, inicio: nowIso(() => started ?? ended), duracaoMs: 0, resultado: !ok && index === steps.length - 1 ? 'falhou' : 'ok' })),
+    anterior: anterior ?? null,
+    pecas,
+  };
+  if (requestId === null || requestId === '') addNoticeSafely(dir, releaseId, 'release.started');
+  writeRecordFile(dir, releaseId, record);
+  addNoticeSafely(dir, releaseId, 'release.finished');
+  pruneRecords(dir, { fila: queue, projetoId: record.projetoId });
+  return record;
+}
+
 function flag(argv, name) {
   const at = argv.indexOf(name);
   return at >= 0 ? argv[at + 1] : undefined;
 }
 
+function standaloneFromArgs(argv, env = process.env) {
+  const started = Date.parse(flag(argv, '--inicio') ?? '') || undefined;
+  const ok = (flag(argv, '--resultado') ?? 'ok') !== 'falhou';
+  return {
+    started,
+    ok,
+    failedStep: flag(argv, '--falha') ?? '',
+    message: flag(argv, '--mensagem') ?? '',
+    requestId: String(env.COLLAB_RELEASE_REQUEST_ID ?? '').trim() || null,
+    requestedBy: String(env.COLLAB_RELEASE_REQUESTED_BY ?? '').trim() || `cli:${env.SUDO_USER || env.USER || 'root'}`,
+    vmId: readVmId({ env }),
+    steps: (flag(argv, '--passos') ?? '').split(',').map((item) => item.trim()).filter(Boolean),
+  };
+}
+
 function cli(argv) {
+  if (argv[0] === 'vm') {
+    // releaseRecord.mjs vm --antes <sha> --depois <sha> [--repo-dir <pasta>] [--etc <pasta>] [--passos a,b] [--resultado ok|falhou] [--falha <passo>] [--mensagem <t>] [--inicio <iso>]
+    const base = standaloneFromArgs(argv);
+    const etc = flag(argv, '--etc') ?? '/data/etc';
+    const repoDir = flag(argv, '--repo-dir');
+    const record = writeStandaloneRecord({
+      ...base,
+      dir: recordsDir('', 'vm', { etcDir: etc }),
+      queue: 'vm',
+      pecas: { gestao: { commit: flag(argv, '--depois') ?? null, commitAnterior: flag(argv, '--antes') ?? null, repo: repoDir ? repoUrlOf(repoDir) : null, passos: base.steps } },
+    });
+    process.stdout.write(`recorded vm ${record.releaseId} ${record.resultado}\n`);
+    return 0;
+  }
+  if (argv[0] === 'shared') {
+    // releaseRecord.mjs shared --nome cm --antes <versao> --depois <versao> [--projeto <id>] [--data-root <pasta>] ...
+    const base = standaloneFromArgs(argv);
+    const dataRoot = flag(argv, '--data-root') ?? '/data';
+    const projectId = flag(argv, '--projeto') ?? resolveSharedProject({ projectsDir: join(dataRoot, 'etc', 'projects'), log: (line) => process.stderr.write(`${line}\n`) });
+    if (!projectId) {
+      process.stderr.write('releaseRecord: no project on this VM for the shared app; record not written\n');
+      return 0;
+    }
+    const root = projectRecordsRoot(projectId, { dataRoot });
+    const previous = activeReleaseId(root, projectId, { projectTree: root !== join(dataRoot, 'mls-base') });
+    const record = writeStandaloneRecord({
+      ...base,
+      dir: recordsDir(root, 'shared'),
+      queue: 'shared',
+      projectId,
+      anterior: previous,
+      pecas: { shared: [{ nome: flag(argv, '--nome') ?? 'cm', versao: flag(argv, '--depois') ?? null, versaoAnterior: flag(argv, '--antes') || null, repo: null }] },
+    });
+    process.stdout.write(`recorded shared ${record.releaseId} project ${projectId} ${record.resultado}\n`);
+    return 0;
+  }
   if (argv[0] !== 'close') {
-    process.stderr.write('usage: releaseRecord.mjs close --pedido <id> [--falha <passo>] [--mensagem <texto>] [--root <raiz>]\n');
+    process.stderr.write('usage: releaseRecord.mjs close|vm|shared ... (see the header of the file)\n');
     return 2;
   }
   const root = resolve(flag(argv, '--root') ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));

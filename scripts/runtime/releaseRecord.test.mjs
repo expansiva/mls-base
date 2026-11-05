@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  activeReleaseId, addPendingNotice, appendLateStep, buildPieces, confirmPendingNotice, readPendingNotice, cleanRepoUrl, closeRequest, closeStaleRecords, commitsBetween, decideQueue, findOpenRequest, openRelease, pruneRecords,
+  activeReleaseId, addPendingNotice, appendLateStep, projectRecordsRoot, resolveSharedProject, writeStandaloneRecord, buildPieces, confirmPendingNotice, readPendingNotice, cleanRepoUrl, closeRequest, closeStaleRecords, commitsBetween, decideQueue, findOpenRequest, openRelease, pruneRecords,
   readRecordFile, readSharedVersions, readVmId, recordsDir, requestedByFor, scrubMessage,
 } from './releaseRecord.mjs';
 
@@ -262,7 +262,7 @@ test('a record still andamento after 2 h is closed falhou at its last open step,
     const swept = readRecordFile(dir, '20261105100000');
     assert.equal(swept.resultado, 'falhou');
     assert.equal(swept.falha.passo, 'deps');
-    assert.match(swept.falha.mensagem, /interrupted/u);
+    assert.equal(swept.falha.mensagem, 'sem fechamento: passo terminou fora do runtime');
     assert.ok(swept.fim);
     assert.equal(findOpenRequest(dir, 'req_s'), null);
   });
@@ -337,5 +337,76 @@ test('the pm2 reload that runs after the release script is added to the closed r
     assert.deepEqual(bad.falha, { passo: 'pm2', mensagem: 'reload failed https://***@h/x' });
     assert.deepEqual(readPendingNotice(dir, '20261105110000'), ['release.finished']);
     assert.equal(appendLateStep(dir, 'pm2', { ok: true, now: () => t0 + 3_600_000 + 30 * 60_000 }), null, 'too old to attach');
+  });
+});
+
+test('the shared app belongs to COLLAB_RELEASE_PROJECT_ID, else the only project, else the smallest id (with a log line)', () => {
+  withRoot((root) => {
+    const projects = join(root, 'etc', 'projects');
+    mkdirSync(projects, { recursive: true });
+    assert.equal(resolveSharedProject({ env: {}, projectsDir: projects }), null, 'no project, no record');
+    assert.equal(resolveSharedProject({ env: { COLLAB_RELEASE_PROJECT_ID: '102056' }, projectsDir: projects }), '102056');
+    writeFileSync(join(projects, '102056.json'), '{}');
+    assert.equal(resolveSharedProject({ env: {}, projectsDir: projects }), '102056');
+    writeFileSync(join(projects, '102047.json'), '{}');
+    const lines = [];
+    assert.equal(resolveSharedProject({ env: {}, projectsDir: projects, log: (line) => lines.push(line) }), '102047');
+    assert.match(lines[0], /2 projects.*smallest id \(102047\)/u);
+    assert.equal(resolveSharedProject({ env: { COLLAB_RELEASE_PROJECT_ID: 'abc' }, projectsDir: projects, log: () => {} }), '102047', 'not a number: ignored');
+  });
+});
+
+test('a record is written in one go for the vm and shared queues, with the notices, pruned per queue and project', () => {
+  withRoot((root) => {
+    const dir = join(root, 'registro');
+    const t0 = Date.parse('2026-11-05T10:00:00Z');
+    const vm = writeStandaloneRecord({
+      dir, queue: 'vm', vmId: 'vm-1', requestedBy: 'cli:root', started: t0, ended: t0 + 90_000, steps: ['pull', 'install'],
+      pecas: { gestao: { commit: 'b', commitAnterior: 'a', repo: null, passos: ['pull', 'install'] } },
+    });
+    assert.equal(vm.fila, 'vm');
+    assert.equal(vm.projetoId, null);
+    assert.equal(vm.duracaoMs, 90_000);
+    assert.equal(vm.resultado, 'ok');
+    assert.deepEqual(readPendingNotice(dir, vm.releaseId), ['release.started', 'release.finished']);
+    const failed = writeStandaloneRecord({
+      dir, queue: 'shared', projectId: '102047', vmId: 'vm-1', requestId: 'req_c', started: t0 + 1000, ended: t0 + 5000,
+      ok: false, message: 'download failed https://u:pw@h/x', steps: ['download'],
+      pecas: { shared: [{ nome: 'cm', versao: '2', versaoAnterior: '1', repo: null }] },
+    });
+    assert.equal(failed.resultado, 'falhou');
+    assert.deepEqual(failed.falha, { passo: 'download', mensagem: 'download failed https://***@h/x' });
+    assert.deepEqual(readPendingNotice(dir, failed.releaseId), ['release.finished'], 'a sites request: only finished');
+    assert.equal(failed.projetoId, 102047);
+  });
+});
+
+test('the cli writes the cm record into the project tree and the management record under etc', () => {
+  withRoot((root) => {
+    mkdirSync(join(root, 'etc', 'projects'), { recursive: true });
+    writeFileSync(join(root, 'etc', 'projects', '102047.json'), '{}');
+    mkdirSync(join(root, 'app102047', 'mls-base', 'releases', '20261105090000'), { recursive: true });
+    symlinkSync(join(root, 'app102047', 'mls-base', 'releases', '20261105090000'), join(root, 'app102047', 'mls-base', 'current'));
+    const script = join(import.meta.dirname, 'releaseRecord.mjs');
+    const env = { ...process.env, COLLAB_VM_ID: 'vm-7', COLLAB_RELEASE_REQUESTED_BY: 'user-9' };
+    const shared = execFileSync(process.execPath, [script, 'shared', '--nome', 'cm', '--antes', '20261102-1', '--depois', '20261105-1', '--passos', 'download,install', '--data-root', root], { encoding: 'utf8', env });
+    assert.match(shared, /recorded shared \d{14} project 102047 ok/u);
+    const sharedDir = join(root, 'app102047', 'mls-base', 'releases', 'registro');
+    const [file] = readdirSync(sharedDir).filter((name) => name.endsWith('.json'));
+    const record = JSON.parse(readFileSync(join(sharedDir, file), 'utf8'));
+    assert.equal(record.fila, 'shared');
+    assert.equal(record.projetoId, 102047);
+    assert.equal(record.vmId, 'vm-7');
+    assert.equal(record.pedidoPor, 'user-9');
+    assert.equal(record.anterior, '20261105090000');
+    assert.deepEqual(record.pecas.shared, [{ nome: 'cm', versao: '20261105-1', versaoAnterior: '20261102-1', repo: null }]);
+    const vm = execFileSync(process.execPath, [script, 'vm', '--antes', 'aaa', '--depois', 'bbb', '--passos', 'pull', '--etc', join(root, 'etc')], { encoding: 'utf8', env });
+    assert.match(vm, /recorded vm \d{14} ok/u);
+    const vmFiles = readdirSync(join(root, 'etc', 'releases')).filter((name) => name.endsWith('.json'));
+    assert.equal(vmFiles.length, 1);
+    assert.equal(JSON.parse(readFileSync(join(root, 'etc', 'releases', vmFiles[0]), 'utf8')).pecas.gestao.commit, 'bbb');
+    assert.equal(projectRecordsRoot('999', { dataRoot: root }), join(root, 'mls-base'), 'no own tree: the shared tree');
+    const none = execFileSync(process.execPath, [script, 'shared', '--depois', '1', '--data-root', join(root, 'empty')], { encoding: 'utf8', env });
+    assert.equal(none, '');
   });
 });
