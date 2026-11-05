@@ -528,7 +528,10 @@ export function executePlan(plan, {
       }
       state.oldCwd = before[0] ? instanceCwd(before[0]) : '';
       state.switched = step.appName;
-      ensureProjectApp({ root: destRoot, projectId, remoteBase: destRoot });
+      ensureProjectApp({
+        root: destRoot, projectId, remoteBase: destRoot,
+        inheritFrom: join(sourceRoot, 'pm2.apps.d', `${step.appName}.config.js`),
+      });
       const actions = pm2Actions(commands);
       actions.deleteApp(step.appName);
       actions.start(join(destRoot, 'pm2.apps.d', `${step.appName}.config.js`));

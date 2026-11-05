@@ -186,14 +186,17 @@ export function isAggregator(text) {
  * `{ port, appName, wrote, replacedLegacy }` — `wrote` false quando nada mudou
  * (idempotente: rodar de novo não reescreve).
  */
-export function ensureProjectApp({ root, projectId, remoteBase = root, msgProxyTarget }) {
+export function ensureProjectApp({ root, projectId, remoteBase = root, msgProxyTarget, inheritFrom }) {
   const port = projectIdToPort(projectId);
   const appName = appNameOf(port);
   const appsDir = join(root, APPS_DIR);
   mkdirSync(appsDir, { recursive: true });
 
   const appPath = join(appsDir, `${appName}.config.js`);
-  const existingText = existsSync(appPath) ? readFileSync(appPath, "utf8") : "";
+  // A new project tree starts from the config of the tree it came from: the msg proxy target and the local test
+  // session keys are host settings, not something this function can derive (migrateToProjectTree).
+  const inheritPath = inheritFrom && !existsSync(appPath) && existsSync(inheritFrom) ? inheritFrom : '';
+  const existingText = existsSync(appPath) ? readFileSync(appPath, "utf8") : inheritPath ? readFileSync(inheritPath, "utf8") : "";
   const target = msgProxyTarget === undefined
     ? msgProxyTargetFromPm2Config(existingText)
     : msgProxyTarget;

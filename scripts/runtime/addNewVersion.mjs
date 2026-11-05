@@ -176,7 +176,7 @@ function gitText(repo, args) {
  * Does `mls-<id>/obj/compiled.zip` belong to the project's current commit?
  * Returns `null` when it does (or when nothing can be judged: not a git repo), else the reason.
  * - missing zip: reason `missing`.
- * - zip tracked in git (the GitHub Action's commit): it is current when the source levels l1..l7 are the same
+ * - zip tracked at HEAD (the GitHub Action's commit): it is current when the source levels l1..l7 are the same
  *   tree at HEAD as at the last commit that touched the zip. A tree comparison, not mtimes: a `git pull` rewrites
  *   every file mtime, which is how a stale zip looked fresh (mls-102035, 04/11).
  * - zip not tracked, or already regenerated here (modified in the worktree): it is current when it is newer than
@@ -191,7 +191,10 @@ export function compiledZipStaleReason(root, id) {
   } catch {
     return null;
   }
-  const zipCommit = gitText(repo, ['log', '-1', '--format=%H', '--', 'obj/compiled.zip']);
+  // Tracked at HEAD: `git log -- <path>` alone also answers for a path that was later dropped from the tree
+  // (the lima's snapshot commits carry no obj/) and is now an ignored file regenerated here.
+  const tracked = gitText(repo, ['ls-tree', 'HEAD', '--', 'obj/compiled.zip']) !== '';
+  const zipCommit = tracked ? gitText(repo, ['log', '-1', '--format=%H', '--', 'obj/compiled.zip']) : '';
   const zipModified = gitText(repo, ['status', '--porcelain', '--', 'obj/compiled.zip']) !== '';
   if (zipCommit && !zipModified) {
     try {

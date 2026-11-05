@@ -375,3 +375,29 @@ test('a expressão monta a URL do banco de teste com o que o .env já tem', () =
     assert.equal(run.stdout.includes('/mdm'), false);
   });
 });
+
+test('ensureProjectApp herda o alvo do msg proxy e a sessão local da árvore de origem; a config própria do destino vale mais', () => {
+  withRoot((root) => {
+    const source = join(root, 'old', 'pm2.apps.d');
+    const dest = join(root, 'new');
+    mkdirSync(source, { recursive: true });
+    const inherited = pm2AppConfig('102099', 2099, '/data/mls-base', 'https://102099.collabcodes.com', false, {
+      file: '/etc/collab/local-tests/102099.json',
+    });
+    writeFileSync(join(source, 'app2099.config.js'), inherited);
+    const inheritFrom = join(source, 'app2099.config.js');
+    ensureProjectApp({ root: dest, projectId: '102099', remoteBase: dest, inheritFrom });
+    const written = readFileSync(join(dest, 'pm2.apps.d', 'app2099.config.js'), 'utf8');
+    assert.match(written, /MSG_PROXY_TARGET: "https:\/\/102099\.collabcodes\.com"/u);
+    assert.match(written, /LOCAL_TEST_SESSION_ENABLED: "true"/u);
+    assert.match(written, /LOCAL_TEST_SESSIONS_FILE: "\/etc\/collab\/local-tests\/102099\.json"/u);
+    // a destination config that already exists is not overwritten by the source
+    writeFileSync(inheritFrom, pm2AppConfig('102099', 2099, '/data/mls-base'));
+    ensureProjectApp({ root: dest, projectId: '102099', remoteBase: dest, inheritFrom });
+    assert.match(readFileSync(join(dest, 'pm2.apps.d', 'app2099.config.js'), 'utf8'), /LOCAL_TEST_SESSION_ENABLED: "true"/u);
+    // without a source config nothing changes
+    const bare = join(root, 'bare');
+    ensureProjectApp({ root: bare, projectId: '102099', remoteBase: bare, inheritFrom: join(root, 'missing.config.js') });
+    assert.doesNotMatch(readFileSync(join(bare, 'pm2.apps.d', 'app2099.config.js'), 'utf8'), /LOCAL_TEST_SESSION_ENABLED/u);
+  });
+});

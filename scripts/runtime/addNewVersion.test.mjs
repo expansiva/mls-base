@@ -472,3 +472,24 @@ test('ensureFechoCompiledZips gera só o que falta ou não corresponde, uma linh
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('compiledZipStaleReason: zip que já foi rastreado, saiu da árvore do HEAD e foi regerado (ignorado) segue a regra do mtime', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt172-s5d-'));
+  try {
+    const repo = join(root, 'mls-900004');
+    const git = gitRepo(repo, [writeIn('l2/a.ts', 'a1'), writeIn('obj/compiled.zip', 'z1'), commitAll('source + zip')]);
+    // a snapshot commit of the lima: new sources, no obj/ in the tree
+    writeIn('l2/a.ts', 'a2')(git, repo);
+    writeIn('.gitignore', 'obj/\n')(git, repo);
+    git('rm', '-q', '--cached', '-r', 'obj');
+    commitAll('snapshot without obj')(git);
+    const fresh = new Date(Date.now() + 5_000);
+    utimesSync(join(repo, 'obj', 'compiled.zip'), fresh, fresh);
+    assert.equal(compiledZipStaleReason(root, '900004'), null, 'zip regerado depois do commit está em dia');
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(join(repo, 'obj', 'compiled.zip'), old, old);
+    assert.equal(compiledZipStaleReason(root, '900004'), 'zip is older than the HEAD commit');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
