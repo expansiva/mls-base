@@ -1,0 +1,444 @@
+// releaseRecord.mjs — the release record of the controleReleases contract (versaoContrato 2).
+//
+// ONE module writes it: open at the start of a release, continue it step by step, close it in a `finally`
+// (also on failure), atomically, keeping the last 10 per queue and project. The same stamp that
+// releaseStamp.mjs writes into releases/<id>/release.json is what this reads for "what changed", so there is
+// no second source of what a release used.
+//
+// Where it lives: the project queues (base, libs, shared, app) under <root>/releases/registro/<releaseId>.json;
+// the vm queue (the management, collab-runtime) under <etc>/releases/<releaseId>.json.
+
+import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { hostname } from 'node:os';
+
+export const CONTRACT_VERSION = 2;
+export const KEEP_PER_QUEUE = 10;
+export const MAX_COMMITS = 200;
+export const MAX_FILES = 50;
+export const MAX_MESSAGE = 500;
+export const STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+const PROJECT_QUEUES = new Set(['base', 'libs', 'shared', 'app']);
+const VM_QUEUES = new Set(['vm']);
+const RELEASE_ID = /^\d{14}$/u;
+const SECRET_LINE = /(?:secret|token|password|passwd|api[_-]?key|authorization|bearer|cookie)\b[^\n]*/giu;
+
+export function isVmQueue(queue) {
+  return VM_QUEUES.has(queue);
+}
+
+export function recordsDir(root, queue, { etcDir = '/data/etc' } = {}) {
+  return isVmQueue(queue) ? join(etcDir, 'releases') : join(root, 'releases', 'registro');
+}
+
+/** A message short and free of secrets and of URLs with credentials. */
+export function scrubMessage(value) {
+  const text = String(value ?? '')
+    .replace(/:\/\/[^\s/@:]+(?::[^\s/@]*)?@/gu, '://***@')
+    .replace(SECRET_LINE, '[redacted]')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  return text.length > MAX_MESSAGE ? `${text.slice(0, MAX_MESSAGE - 1)}…` : text;
+}
+
+/** https://host/owner/repo for a git remote, without credentials or `.git`; null when it is not an https/ssh/scp GitHub-like address. */
+export function cleanRepoUrl(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  const scp = /^git@([^:]+):(.+?)(?:\.git)?$/u.exec(text);
+  if (scp) return `https://${scp[1]}/${scp[2]}`;
+  try {
+    const url = new URL(text);
+    if (!['https:', 'http:', 'ssh:'].includes(url.protocol)) return null;
+    const path = url.pathname.replace(/\.git$/u, '').replace(/\/+$/u, '');
+    return path.split('/').filter(Boolean).length >= 2 ? `https://${url.hostname}${path}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function git(repo, args) {
+  const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  return (result.status ?? 1) === 0 ? String(result.stdout ?? '') : null;
+}
+
+export function repoUrlOf(repo) {
+  if (!repo || !existsSync(join(repo, '.git'))) return null;
+  return cleanRepoUrl(git(repo, ['remote', 'get-url', 'origin']));
+}
+
+/** git log between two commits: up to 200 commits, up to 50 files each, with `truncado` flags. */
+export function commitsBetween(repo, from, to) {
+  if (!repo || !from || !to || from === to) return { commits: [], truncado: false };
+  const raw = git(repo, ['log', `--max-count=${MAX_COMMITS + 1}`, '--format=%x1e%H%x1f%an%x1f%aI%x1f%s', '--name-only', `${from}..${to}`]);
+  if (raw === null) return { commits: [], truncado: false };
+  const rows = raw.split('\x1e').map((chunk) => chunk.trim()).filter(Boolean);
+  const commits = rows.slice(0, MAX_COMMITS).map((row) => {
+    const [head, ...files] = row.split('\n');
+    const [sha, autor, data, mensagem] = head.split('\x1f');
+    const arquivos = files.map((file) => file.trim()).filter(Boolean);
+    return {
+      sha, autor, data, mensagem: scrubMessage(mensagem),
+      arquivos: arquivos.slice(0, MAX_FILES),
+      ...(arquivos.length > MAX_FILES ? { truncado: true } : {}),
+    };
+  });
+  return { commits, truncado: rows.length > MAX_COMMITS };
+}
+
+export function readSwVersion(root) {
+  try {
+    const text = readFileSync(join(root, 'static', 'mlsServiceWorker.js'), 'utf8');
+    return /MLSSERVICEWORKERVERSION\s*=\s*["']([^"']+)["']/u.exec(text)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Version of each shared app installed on this VM (the cm is the first): `{ cm: '20261102-155346' }`. */
+export function readSharedVersions({ env = process.env } = {}) {
+  const root = String(env.COLLAB_MESSAGES_DEPLOY_ROOT ?? '').trim() || '/data/msg.collab.codes';
+  try {
+    const version = readFileSync(join(root, 'node', 'collab-messages.version'), 'utf8').trim();
+    return version ? { cm: version } : {};
+  } catch {
+    return {};
+  }
+}
+
+/** `release.json` of a release folder, or null. */
+export function readStamp(root, releaseId) {
+  if (!releaseId) return null;
+  try {
+    return JSON.parse(readFileSync(join(root, 'releases', releaseId, 'release.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** The release id the project's alias points to right now (before this release activates), or null. */
+export function activeReleaseId(root, clientId, { projectTree = false } = {}) {
+  const names = projectTree || !clientId ? ['current'] : [`current-${clientId}`, 'current'];
+  for (const name of names) {
+    try {
+      const id = basename(readlinkSync(join(root, name)));
+      if (RELEASE_ID.test(id)) return id;
+    } catch { /* no such alias */ }
+  }
+  return null;
+}
+
+/** What each piece was and is. `previous` is the stamp of the release that was active before, or null. */
+export function buildPieces({ root, clientId, stamp, previous }) {
+  const base = {
+    commit: stamp.platformCommit ?? null,
+    commitAnterior: previous?.platformCommit ?? null,
+    repo: repoUrlOf(root),
+  };
+  const baseLog = commitsBetween(root, base.commitAnterior, base.commit);
+  const libs = Object.entries(stamp.deps ?? {}).map(([id, arvore]) => {
+    const dir = join(root, `mls-${id}`);
+    const commit = stamp.depCommits?.[id] ?? null;
+    const commitAnterior = previous?.depCommits?.[id] ?? null;
+    const mudou = commit && commitAnterior ? commit !== commitAnterior : (previous?.deps?.[id] ?? null) !== arvore;
+    const entry = { id: Number(id), commit, commitAnterior, arvore: arvore || null, repo: repoUrlOf(dir), mudou: Boolean(mudou) };
+    if (mudou && commit && commitAnterior) {
+      const log = commitsBetween(dir, commitAnterior, commit);
+      entry.commits = log.commits;
+      if (log.truncado) entry.truncado = true;
+    }
+    return entry;
+  });
+  const appDir = clientId ? join(root, `mls-${clientId}`) : '';
+  const appLog = commitsBetween(appDir, previous?.versionRef, stamp.versionRef);
+  return {
+    base: { ...base, commits: baseLog.commits, ...(baseLog.truncado ? { truncado: true } : {}) },
+    libs,
+    libStudio: {
+      libs: stamp.libs ?? null,
+      monaco: stamp.monaco ?? null,
+      libsAnterior: previous?.libs ?? null,
+      monacoAnterior: previous?.monaco ?? null,
+    },
+    serviceWorker: { versao: stamp.swVersion ?? null, versaoAnterior: previous?.swVersion ?? null },
+    shared: Object.entries(stamp.sharedApps ?? {}).map(([nome, versao]) => ({
+      nome, versao, versaoAnterior: previous?.sharedApps?.[nome] ?? null, repo: null,
+    })),
+    app: {
+      commit: stamp.versionRef ?? null,
+      commitAnterior: previous?.versionRef ?? null,
+      repo: appDir ? repoUrlOf(appDir) : null,
+      commits: appLog.commits,
+      ...(appLog.truncado ? { truncado: true } : {}),
+    },
+  };
+}
+
+/**
+ * The queue that triggered the release. COLLAB_RELEASE_QUEUE wins when it is a project queue. A release asked by
+ * the sites (a request id) is, in this order, `base` when the platform changed, `libs` when a dependency, the
+ * Studio lib or the service worker changed, `shared` when a shared app (the cm) changed, else `app`. A push or the Studio's Publish (no request id) is `app`.
+ */
+export function decideQueue({ requested, hasRequest, pieces }) {
+  if (PROJECT_QUEUES.has(requested)) return requested;
+  if (!hasRequest || !pieces) return 'app';
+  const { base, libs, libStudio, serviceWorker, shared = [] } = pieces;
+  if (base.commitAnterior && base.commit !== base.commitAnterior) return 'base';
+  const studioChanged = (libStudio.libsAnterior && libStudio.libs !== libStudio.libsAnterior)
+    || (libStudio.monacoAnterior && libStudio.monaco !== libStudio.monacoAnterior);
+  const swChanged = serviceWorker.versaoAnterior && serviceWorker.versao !== serviceWorker.versaoAnterior;
+  if (libs.some((lib) => lib.mudou) || studioChanged || swChanged) return 'libs';
+  if (shared.some((item) => item.versaoAnterior && item.versao !== item.versaoAnterior)) return 'shared';
+  return 'app';
+}
+
+/** Atomic write: temp file in the same folder, then rename. */
+export function writeRecordFile(dir, releaseId, record) {
+  mkdirSync(dir, { recursive: true });
+  const target = join(dir, `${releaseId}.json`);
+  const tmp = join(dir, `.${releaseId}.json.${process.pid}.tmp`);
+  writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`);
+  renameSync(tmp, target);
+  return target;
+}
+
+export function readRecordFile(dir, releaseId) {
+  try {
+    return JSON.parse(readFileSync(join(dir, `${releaseId}.json`), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** Keep the last `keep` records of one queue and project (by release id); remove the rest. */
+export function pruneRecords(dir, { fila, projetoId }, keep = KEEP_PER_QUEUE) {
+  if (!existsSync(dir)) return [];
+  const mine = [];
+  for (const name of readdirSync(dir)) {
+    const match = /^(\d{14})\.json$/u.exec(name);
+    if (!match) continue;
+    const record = readRecordFile(dir, match[1]);
+    if (record && record.fila === fila && (record.projetoId ?? null) === (projetoId ?? null)) mine.push(match[1]);
+  }
+  const removed = mine.sort().reverse().slice(keep);
+  for (const id of removed) {
+    rmSync(join(dir, `${id}.json`), { force: true });
+    rmSync(join(dir, `${id}.aviso-pendente`), { force: true });
+  }
+  return removed;
+}
+
+/**
+ * Close, as `falhou`, the records still `andamento` after `olderThanMs` (a step that does not run through node, like
+ * the sites' `git pull`, can stop a release without closing it). The failing step is the last one left open.
+ */
+export function closeStaleRecords(dir, { now = Date.now, olderThanMs = STALE_AFTER_MS } = {}) {
+  const closed = [];
+  if (!existsSync(dir)) return closed;
+  for (const name of readdirSync(dir)) {
+    const match = /^(\d{14})\.json$/u.exec(name);
+    if (!match) continue;
+    const record = readRecordFile(dir, match[1]);
+    if (!record || record.resultado !== 'andamento') continue;
+    const started = Date.parse(record.inicio);
+    if (!Number.isFinite(started) || now() - started < olderThanMs) continue;
+    const open = [...(record.passos ?? [])].reverse().find((item) => item.resultado === 'andamento');
+    for (const item of record.passos ?? []) if (item.resultado === 'andamento') item.resultado = 'falhou';
+    record.resultado = 'falhou';
+    record.falha = { passo: open?.nome ?? record.passos?.at(-1)?.nome ?? 'start', mensagem: `interrupted: no end recorded after ${Math.round(olderThanMs / 3600000)} h` };
+    record.fim = nowIso(now);
+    record.duracaoMs = now() - started;
+    writeRecordFile(dir, match[1], record);
+    closed.push(match[1]);
+  }
+  return closed;
+}
+
+/** An open (andamento) record asked by this request id, if one was left by an earlier step of the request. */
+export function findOpenRequest(dir, requestId) {
+  if (!requestId || !existsSync(dir)) return null;
+  for (const name of readdirSync(dir).sort().reverse()) {
+    const match = /^(\d{14})\.json$/u.exec(name);
+    if (!match) continue;
+    const record = readRecordFile(dir, match[1]);
+    if (record && record.pedidoId === requestId && record.resultado === 'andamento') return record;
+  }
+  return null;
+}
+
+function nowIso(now) {
+  return new Date(now()).toISOString().replace(/\.\d{3}Z$/u, 'Z');
+}
+
+/**
+ * Open the record (or continue the one this request already opened). The returned handle runs steps and
+ * closes the record; `step` and `close` never throw because of the record itself, only because of the step.
+ */
+export function openRelease({
+  root, dir = recordsDir(root, 'app'), releaseId, queue = 'app', projectId = null, vmId = 'unknown',
+  requestId = null, requestedBy = '', anterior = null, now = Date.now,
+}) {
+  try {
+    closeStaleRecords(dir, { now });
+  } catch (error) {
+    process.stderr.write(`releaseRecord: stale sweep failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+  const continued = findOpenRequest(dir, requestId);
+  const id = continued?.releaseId ?? releaseId;
+  if (continued) {
+    // The first step of a sites request (deps) does not know the project yet: the release step fills it in.
+    if (continued.projetoId === null && projectId !== null && projectId !== undefined) continued.projetoId = Number(projectId);
+    if (!continued.anterior && anterior) continued.anterior = anterior;
+  }
+  const record = continued ?? {
+    versaoContrato: CONTRACT_VERSION,
+    releaseId: id,
+    fila: queue,
+    projetoId: projectId === null || projectId === undefined ? null : Number(projectId),
+    vmId: String(vmId),
+    pedidoId: requestId || null,
+    pedidoPor: scrubMessage(requestedBy),
+    inicio: nowIso(now),
+    fim: null,
+    duracaoMs: null,
+    resultado: 'andamento',
+    falha: null,
+    passos: [],
+    anterior: anterior ?? null,
+    pecas: {},
+  };
+  const started = continued ? Date.parse(continued.inicio) : now();
+  const persist = () => {
+    try {
+      writeRecordFile(dir, id, record);
+    } catch (error) {
+      process.stderr.write(`releaseRecord: could not write ${id}: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  };
+  persist();
+
+  const handle = {
+    releaseId: id,
+    record,
+    continued: Boolean(continued),
+    step(name, fn) {
+      const startedAt = now();
+      const entry = { nome: name, inicio: nowIso(() => startedAt), duracaoMs: null, resultado: 'andamento' };
+      record.passos.push(entry);
+      persist();
+      try {
+        const value = fn();
+        entry.resultado = 'ok';
+        return value;
+      } catch (error) {
+        entry.resultado = 'falhou';
+        record.falha = { passo: name, mensagem: scrubMessage(error instanceof Error ? error.message : String(error)) };
+        throw error;
+      } finally {
+        entry.duracaoMs = now() - startedAt;
+        persist();
+      }
+    },
+    /** A step that failed outside `step()` (the deferred pm2 reload): record it as the failing step. */
+    markFailed(name, error) {
+      const message = scrubMessage(error instanceof Error ? error.message : String(error));
+      const entry = record.passos.find((item) => item.nome === name);
+      if (entry) entry.resultado = 'falhou';
+      else record.passos.push({ nome: name, inicio: nowIso(now), duracaoMs: 0, resultado: 'falhou' });
+      record.falha = { passo: name, mensagem: message };
+      persist();
+    },
+    /** Close it: ok, or falhou with the step where it stopped. `pieces` and `queue` are best effort. */
+    close({ error = null, pieces = null, queue: decided = null } = {}) {
+      try {
+        if (pieces) record.pecas = pieces;
+        if (decided) record.fila = decided;
+        if (error || record.falha) {
+          record.resultado = 'falhou';
+          if (!record.falha) {
+            record.falha = { passo: record.passos.at(-1)?.nome ?? 'start', mensagem: scrubMessage(error instanceof Error ? error.message : String(error ?? '')) };
+          }
+        } else {
+          record.resultado = 'ok';
+        }
+        record.fim = nowIso(now);
+        record.duracaoMs = now() - started;
+        persist();
+        pruneRecords(dir, { fila: record.fila, projetoId: record.projetoId });
+      } catch (closeError) {
+        process.stderr.write(`releaseRecord: could not close ${id}: ${closeError instanceof Error ? closeError.message : String(closeError)}\n`);
+      }
+      return record;
+    },
+  };
+  return handle;
+}
+
+/** The VM id the sites uses: COLLAB_VM_ID, else only the server id key of the agent env file, else the host name. */
+export function readVmId({ env = process.env, agentEnvFile = '/etc/collab/sites-agent.env' } = {}) {
+  if (String(env.COLLAB_VM_ID ?? '').trim()) return String(env.COLLAB_VM_ID).trim();
+  try {
+    const line = readFileSync(agentEnvFile, 'utf8').split(/\r?\n/u).find((row) => row.startsWith('COLLAB_SITES_SERVER_ID='));
+    const value = line ? line.slice('COLLAB_SITES_SERVER_ID='.length).trim().replace(/^["']|["']$/gu, '') : '';
+    if (value) return value;
+  } catch { /* no agent on this machine */ }
+  return hostname();
+}
+
+/** Who asked: the sites' actor, or the author of the commit that was pushed (`push:`), or the Studio user (`studio:`). */
+export function requestedByFor({ env = process.env, appDir = '' } = {}) {
+  const fromSites = String(env.COLLAB_RELEASE_REQUESTED_BY ?? '').trim();
+  if (fromSites) return fromSites;
+  const author = appDir && existsSync(join(appDir, '.git')) ? (git(appDir, ['log', '-1', '--format=%ae'])?.trim() ?? '') : '';
+  const prefix = String(env.COLLAB_RELEASE_ORIGIN ?? '') === 'studio' ? 'studio' : 'push';
+  return `${prefix}:${author || 'unknown'}`;
+}
+
+/** yyyyMMddHHmmss, the folder name of a release (same shape as addNewVersion.makeReleaseId). */
+export function newReleaseId(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+/** `releaseRecord.mjs close --pedido <id> [--falha <passo>] [--mensagem <texto>] [--root <raiz>]`: the sites closes a request that stopped. */
+export function closeRequest({ dir, requestId, step = 'platform', message = 'step failed', now = Date.now }) {
+  const record = findOpenRequest(dir, requestId);
+  if (!record) return null;
+  const started = Date.parse(record.inicio);
+  for (const item of record.passos ?? []) if (item.resultado === 'andamento') item.resultado = 'falhou';
+  if (!(record.passos ?? []).some((item) => item.nome === step)) record.passos.push({ nome: step, inicio: nowIso(now), duracaoMs: 0, resultado: 'falhou' });
+  record.resultado = 'falhou';
+  record.falha = { passo: step, mensagem: scrubMessage(message) };
+  record.fim = nowIso(now);
+  record.duracaoMs = Number.isFinite(started) ? now() - started : null;
+  writeRecordFile(dir, record.releaseId, record);
+  return record;
+}
+
+function flag(argv, name) {
+  const at = argv.indexOf(name);
+  return at >= 0 ? argv[at + 1] : undefined;
+}
+
+function cli(argv) {
+  if (argv[0] !== 'close') {
+    process.stderr.write('usage: releaseRecord.mjs close --pedido <id> [--falha <passo>] [--mensagem <texto>] [--root <raiz>]\n');
+    return 2;
+  }
+  const root = resolve(flag(argv, '--root') ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));
+  const requestId = flag(argv, '--pedido');
+  if (!requestId) {
+    process.stderr.write('close: --pedido is required\n');
+    return 2;
+  }
+  const record = closeRequest({
+    dir: recordsDir(root, 'app'), requestId, step: flag(argv, '--falha') ?? 'platform', message: flag(argv, '--mensagem') ?? 'step failed',
+  });
+  process.stdout.write(record ? `closed ${record.releaseId} as falhou at ${record.falha.passo}\n` : `no open record for ${requestId}\n`);
+  return 0;
+}
+
+const entry = process.argv[1];
+if (entry && resolve(entry) === fileURLToPath(import.meta.url)) process.exit(cli(process.argv.slice(2)));

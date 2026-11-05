@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { planSnapshot, sendSnapshot } from '../publishGitDeps.mjs';
 import { armClonedDep, resetArmedDepsFromOrigin, resetFromOrigin, setupRepo, VM_ROOT } from './gitReposSetup.mjs';
 
@@ -400,6 +401,41 @@ test('zips de obj regerados na VM não travam o avanço; outra sujeira continua 
     // other dirt still blocks
     writeFileSync(join(dest, 'readme.md'), 'someone work\n');
     assert.throws(() => resetFromOrigin(dest), /dirty worktree/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('um pedido do sites abre o registro no passo deps e o fecha com falha quando um repo não atualiza', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-rec-'));
+  try {
+    const dest = makeCloneWithOrigin(root);
+    armClonedDep(dest);
+    pushHeadToOrigin(dest);
+    const base = join(root, 'base');
+    mkdirSync(base, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main', base]);
+    // dest is a lib with a commit of its own: resetFromOrigin refuses it, so the step reports an error
+    writeFileSync(join(dest, 'readme.md'), 'local only\n');
+    git(dest, 'add', '-A');
+    git(dest, 'commit', '-q', '-m', 'local work');
+    const script = join(dirname(fileURLToPath(import.meta.url)), 'gitReposSetup.mjs');
+    const mlsRoot = join(root, 'tree');
+    mkdirSync(mlsRoot, { recursive: true });
+    execFileSync('mv', [dest, join(mlsRoot, 'mls-100555')]);
+    const result = spawnSync(process.execPath, [script, '--root', mlsRoot, '--reset-from-origin', '100555'], {
+      encoding: 'utf8', env: { ...process.env, COLLAB_RELEASE_REQUEST_ID: 'req_77', COLLAB_RELEASE_REQUESTED_BY: 'user-1', COLLAB_VM_ID: 'vm-t' },
+    });
+    assert.equal(result.status, 1);
+    const dir = join(mlsRoot, 'releases', 'registro');
+    const files = readdirSync(dir).filter((name) => name.endsWith('.json'));
+    assert.equal(files.length, 1);
+    const record = JSON.parse(readFileSync(join(dir, files[0]), 'utf8'));
+    assert.equal(record.resultado, 'falhou');
+    assert.equal(record.falha.passo, 'deps');
+    assert.equal(record.pedidoId, 'req_77');
+    assert.equal(record.pedidoPor, 'user-1');
+    assert.equal(record.vmId, 'vm-t');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

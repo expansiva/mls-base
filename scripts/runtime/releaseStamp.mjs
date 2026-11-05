@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { readDepIds } from '../publishGitDeps.mjs';
+import { readSharedVersions, readSwVersion } from './releaseRecord.mjs';
 
 const require = createRequire(import.meta.url);
 const { readInstalledLibs, buildReleaseStamp } = require('../install/libsPin.js');
@@ -40,6 +41,18 @@ export function readDepTrees(root, clientId) {
   return trees;
 }
 
+// Commits of the same dependency repos, next to their trees: the release record reads "what changed" from them.
+export function readDepCommits(root, clientId) {
+  if (!clientId) return {};
+  const commits = {};
+  for (const id of readDepIds(join(root, `mls-${clientId}`), clientId)) {
+    const repo = join(root, `mls-${id}`);
+    if (!existsSync(join(repo, '.git'))) continue;
+    commits[id] = gitHead(repo);
+  }
+  return commits;
+}
+
 export function collectReleaseStamp({ root, releaseId, clientId, deps, source }) {
   const installed = readInstalledLibs(root);
   const pin = installed ?? { libs: 'unknown', monaco: 'unknown' };
@@ -59,6 +72,9 @@ export function collectReleaseStamp({ root, releaseId, clientId, deps, source })
     ...stamp,
     ...(source ? { source } : {}),
     deps: deps ?? readDepTrees(root, clientId),
+    depCommits: readDepCommits(root, clientId),
+    swVersion: readSwVersion(root),
+    sharedApps: readSharedVersions(),
   };
 }
 

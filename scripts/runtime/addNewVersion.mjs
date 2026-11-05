@@ -24,6 +24,9 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pathIdsOf, versionedTsconfigPathsFile } from '../syncTsconfigPaths.mjs';
 import { collectReleaseStamp, readDepTrees, writeReleaseStamp } from './releaseStamp.mjs';
+import {
+  activeReleaseId, buildPieces, decideQueue, openRelease, readStamp, readVmId, recordsDir, requestedByFor,
+} from './releaseRecord.mjs';
 import { databaseUrlTestFor, declaredTestMode } from './vmApps.mjs';
 import { isProjectTree } from './projectPorts.mjs';
 
@@ -293,8 +296,55 @@ export function parseReleaseAliases(value) {
   return aliases;
 }
 
+/** Open the release record before anything runs; close it (also on failure) in `finishRecord`. */
+function beginRecord(argv) {
+  const clientFlag = argv.indexOf('--client');
+  const clientId = clientFlag >= 0 ? argv[clientFlag + 1] : argv.find((a) => !a.startsWith('--'));
+  const projectTree = isProjectTree(ROOT);
+  const previous = readStamp(ROOT, activeReleaseId(ROOT, clientId || '', { projectTree }));
+  const requestId = String(process.env.COLLAB_RELEASE_REQUEST_ID ?? '').trim();
+  const handle = openRelease({
+    root: ROOT,
+    dir: recordsDir(ROOT, 'app'),
+    releaseId: makeReleaseId(),
+    queue: 'app',
+    projectId: clientId && /^\d+$/u.test(clientId) ? clientId : null,
+    vmId: readVmId(),
+    requestId: requestId || null,
+    requestedBy: requestedByFor({ appDir: clientId ? join(ROOT, `mls-${clientId}`) : '' }),
+    anterior: previous?.id ?? null,
+  });
+  return { handle, clientId: clientId || '', previous, hasRequest: Boolean(requestId) };
+}
+
+function finishRecord(ctx, error, depTrees) {
+  try {
+    const stamp = collectReleaseStamp({ root: ROOT, releaseId: ctx.handle.releaseId, clientId: ctx.clientId, deps: depTrees });
+    const pieces = buildPieces({ root: ROOT, clientId: ctx.clientId, stamp, previous: ctx.previous });
+    const queue = decideQueue({ requested: process.env.COLLAB_RELEASE_QUEUE, hasRequest: ctx.hasRequest, pieces });
+    ctx.handle.close({ error, pieces, queue });
+  } catch (recordError) {
+    process.stderr.write(`releaseRecord: pieces not recorded: ${recordError instanceof Error ? recordError.message : String(recordError)}\n`);
+    ctx.handle.close({ error });
+  }
+}
+
 function main() {
   const argv = process.argv.slice(2);
+  const ctx = beginRecord(argv);
+  const state = { depTrees: undefined };
+  let failure = null;
+  try {
+    runRelease(argv, ctx.handle, state);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    finishRecord(ctx, failure, state.depTrees);
+  }
+}
+
+function runRelease(argv, rec, state) {
   const skipInstall = argv.includes('--skip-install');
   const skipMigrate = argv.includes('--skip-migrate');
   const deferPm2 = skipPm2(argv);
@@ -311,7 +361,7 @@ function main() {
     // Dependency build scripts are gated by pnpm. The allowed ones are declared in
     // package.json "pnpm.onlyBuiltDependencies", so install runs non-interactively
     // without `pnpm approve-builds`. (@tailwindcss/oxide ships prebuilt binaries.)
-    run('pnpm install');
+    rec.step('install', () => run('pnpm install'));
   }
 
   // Client id (passed as `--client <id>` by the publish, or positionally). Forwarded
@@ -321,15 +371,16 @@ function main() {
   const clientArg = clientId ? ` --client ${clientId}` : '';
   // Dependency trees are read before the compile: they are what this release is built from.
   const depTrees = readDepTrees(ROOT, clientId || '');
+  state.depTrees = depTrees;
   console.log(`--- compile${clientId ? ` (client ${clientId})` : ''}`);
   // Call the compiler directly (NOT `pnpm build`, which now points to this file) to
   // avoid infinite recursion.
-  run(`node scripts/build.mjs${clientArg}`);
+  rec.step('compile', () => run(`node scripts/build.mjs${clientArg}`));
 
   // ── assemble release and activate it via the "current" symlink ──────────────
   // A release holds only the runtime output (frontend + backend), no sources.
   // node_modules is shared across releases via a symlink (pnpm store-backed).
-  const releaseId = makeReleaseId();
+  const releaseId = rec.releaseId;
   const releasesDir = join(ROOT, 'releases');
   const releaseDir = join(releasesDir, releaseId);
   mkdirSync(releaseDir, { recursive: true });
@@ -356,28 +407,30 @@ function main() {
   const migrateJs = masterBackendId
     ? join(releaseDir, 'dist', 'local', `_${masterBackendId}_`, 'l1', 'scripts', 'migrate.js')
     : '';
-  if (skipMigrate) {
-    console.log('--- migrate skipped (--skip-migrate)');
-  } else if (migrateJs && existsSync(migrateJs)) {
-    // Same script `pnpm migrate` / scripts/runMigrate.mjs would run after `current` switches;
-    // running it from the new release first keeps a failed migrate from activating.
-    // COLLAB_PROJECT_ID matches vmApps.mjs so the migrate hits the same database the app uses.
-    console.log(`--- migrate (mls-base master backend ${masterBackendId})`);
-    if (clientId && /^\d+$/.test(clientId)) {
-      const migrateEnv = envForMigrate(ROOT, clientId);
-      run(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir, migrateEnv);
+  rec.step('migrate', () => {
+    if (skipMigrate) {
+      console.log('--- migrate skipped (--skip-migrate)');
+    } else if (migrateJs && existsSync(migrateJs)) {
+      // Same script `pnpm migrate` / scripts/runMigrate.mjs would run after `current` switches;
+      // running it from the new release first keeps a failed migrate from activating.
+      // COLLAB_PROJECT_ID matches vmApps.mjs so the migrate hits the same database the app uses.
+      console.log(`--- migrate (mls-base master backend ${masterBackendId})`);
+      if (clientId && /^\d+$/.test(clientId)) {
+        const migrateEnv = envForMigrate(ROOT, clientId);
+        run(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir, migrateEnv);
+      } else {
+        console.log('--- migrate sem client: usa o modo da raiz da release');
+        run(`node '${migrateJs}'`, releaseDir);
+      }
     } else {
-      console.log('--- migrate sem client: usa o modo da raiz da release');
-      run(`node '${migrateJs}'`, releaseDir);
+      console.log(`--- migrate skipped (${migrateJs || 'no master backend in config.json'} not found)`);
     }
-  } else {
-    console.log(`--- migrate skipped (${migrateJs || 'no master backend in config.json'} not found)`);
-  }
+  });
 
   // Atomic activation: point current -> releases/<id> (ln -sfn replaces in place).
   // Guard = detector: every fecho project must have obj/compiled.zip (same
   // existsSync hasCompiledZip uses) or the previous release stays live.
-  activateCurrent(ROOT, releaseDir, fechoProjectIds(releaseConfig));
+  rec.step('ativar', () => activateCurrent(ROOT, releaseDir, fechoProjectIds(releaseConfig)));
   console.log(`--- current -> releases/${releaseId}`);
 
   const aliases = isProjectTree(ROOT) ? [] : parseReleaseAliases(process.env.COLLAB_RELEASE_ALIAS || '');
@@ -421,6 +474,7 @@ function main() {
       try { run('pm2 save'); } catch { /* non-fatal */ }
     } catch (error) {
       pm2Error = error;
+      rec.markFailed('pm2', error);
       console.error(`[addNewVersion] pm2 reload failed — refreshing objs first, then failing: ${error instanceof Error ? error.message : String(error)}`);
     }
   }

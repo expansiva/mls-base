@@ -29,6 +29,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { newReleaseId, openRelease, readVmId, recordsDir, requestedByFor } from './releaseRecord.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 export const VM_ROOT = '/data/mls-base';
@@ -567,11 +568,29 @@ function main() {
       `gitReposSetup --reset-from-origin root=${ROOT}`
       + (ids.length ? ` ids=${ids.join(',')}` : ` projects=${projects.length}`),
     );
-    const rows = resetArmedDepsFromOrigin(ROOT, {
-      ids,
-      log: (line) => console.log(line),
-    });
+    // A release asked by the sites starts here (deps): the record opens now so a failure in this step is not lost.
+    const requestId = String(process.env.COLLAB_RELEASE_REQUEST_ID ?? '').trim();
+    const rec = requestId
+      ? openRelease({
+        root: ROOT, dir: recordsDir(ROOT, 'app'), releaseId: newReleaseId(), queue: 'app', projectId: null,
+        vmId: readVmId(), requestId, requestedBy: requestedByFor(),
+      })
+      : null;
+    let rows;
+    try {
+      rows = rec
+        ? rec.step('deps', () => resetArmedDepsFromOrigin(ROOT, { ids, log: (line) => console.log(line) }))
+        : resetArmedDepsFromOrigin(ROOT, { ids, log: (line) => console.log(line) });
+    } catch (error) {
+      if (rec) rec.close({ error });
+      throw error;
+    }
     const failed = rows.filter((row) => row.status === 'error').length;
+    if (rec && failed) {
+      const error = new Error(`${failed} dependency repo(s) could not be updated from origin`);
+      rec.markFailed('deps', error);
+      rec.close({ error });
+    }
     const counts = new Map();
     for (const row of rows) counts.set(row.status, (counts.get(row.status) || 0) + 1);
     console.log('---');
