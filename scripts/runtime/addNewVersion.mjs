@@ -15,7 +15,7 @@
 //      the 10 newest, and reload pm2 (cluster, no downtime). Rollback = repoint
 //      "current" to an older release + reload.
 
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import {
   cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
   realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
@@ -166,7 +166,67 @@ export function assertFechoCompiledZips(root, ids) {
   throw new Error(`release aborted: obj/compiled.zip missing for ${list}`);
 }
 
-export function activateCurrent(root, releaseDir, fechoIds) {
+const ZIP_SOURCE_LEVELS = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
+
+function gitText(repo, args) {
+  return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+}
+
+/**
+ * Does `mls-<id>/obj/compiled.zip` belong to the project's current commit?
+ * Returns `null` when it does (or when nothing can be judged: not a git repo), else the reason.
+ * - missing zip: reason `missing`.
+ * - zip tracked in git (the GitHub Action's commit): it is current when the source levels l1..l7 are the same
+ *   tree at HEAD as at the last commit that touched the zip. A tree comparison, not mtimes: a `git pull` rewrites
+ *   every file mtime, which is how a stale zip looked fresh (mls-102035, 04/11).
+ * - zip not tracked, or already regenerated here (modified in the worktree): it is current when it is newer than
+ *   HEAD's commit time and the source levels have no uncommitted change.
+ */
+export function compiledZipStaleReason(root, id) {
+  const repo = join(root, `mls-${id}`);
+  const zip = join(repo, 'obj', 'compiled.zip');
+  if (!existsSync(zip)) return 'missing';
+  try {
+    gitText(repo, ['rev-parse', '--git-dir']);
+  } catch {
+    return null;
+  }
+  const zipCommit = gitText(repo, ['log', '-1', '--format=%H', '--', 'obj/compiled.zip']);
+  const zipModified = gitText(repo, ['status', '--porcelain', '--', 'obj/compiled.zip']) !== '';
+  if (zipCommit && !zipModified) {
+    try {
+      execFileSync('git', ['-C', repo, 'diff', '--quiet', zipCommit, 'HEAD', '--', ...ZIP_SOURCE_LEVELS], { stdio: 'ignore' });
+      return null;
+    } catch {
+      return `sources changed since the zip commit ${zipCommit.slice(0, 7)}`;
+    }
+  }
+  if (gitText(repo, ['status', '--porcelain', '--', ...ZIP_SOURCE_LEVELS]) !== '') return 'sources have uncommitted changes';
+  const headTime = Number(gitText(repo, ['log', '-1', '--format=%ct'])) * 1000;
+  return statSync(zip).mtimeMs >= headTime ? null : 'zip is older than the HEAD commit';
+}
+
+/** Build, on this machine, the obj zips the release needs and the repo does not have (or has for another commit). */
+export function ensureFechoCompiledZips(root, ids, { build = defaultBuildObjs, log = console.log } = {}) {
+  const stale = [];
+  for (const id of ids) {
+    const reason = compiledZipStaleReason(root, id);
+    if (reason) stale.push({ id, reason });
+  }
+  if (stale.length === 0) return [];
+  for (const { id, reason } of stale) log(`generated obj mls-${id}: ${reason}`);
+  build(root, stale.map((entry) => entry.id));
+  return stale;
+}
+
+function defaultBuildObjs(root, ids) {
+  execFileSync(process.execPath, [join(root, 'scripts', 'runtime', 'buildProjectsObj.mjs'), '--force', '--only', ids.join(',')], {
+    cwd: root, stdio: 'inherit', env: { ...process.env, BUILDCI_OFFLINE: '1' },
+  });
+}
+
+export function activateCurrent(root, releaseDir, fechoIds, options = {}) {
+  ensureFechoCompiledZips(root, fechoIds, options);
   assertFechoCompiledZips(root, fechoIds);
   execSync(`ln -sfn '${releaseDir}' '${join(root, 'current')}'`);
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,8 @@ import { APPS_DIR, PM2_CONFIG, databaseUrlTestFor, ensureProjectApp } from './vm
 import {
   VM_TSCONFIG,
   activateCurrent,
+  compiledZipStaleReason,
+  ensureFechoCompiledZips,
   assertFechoCompiledZips,
   discoverProjects,
   extrasOutsideFecho,
@@ -208,7 +210,7 @@ test('sem compiled.zip de um projeto do fecho, current não muda e a mensagem li
     mkdirSync(join(root, 'mls-900002'), { recursive: true });
     const before = readlinkSync(join(root, 'current'));
     assert.throws(
-      () => activateCurrent(root, newRel, ['900001', '900002']),
+      () => activateCurrent(root, newRel, ['900001', '900002'], { build: () => {}, log: () => {} }),
       /release aborted: obj\/compiled\.zip missing for mls-900002/,
     );
     assert.equal(readlinkSync(join(root, 'current')), before);
@@ -386,4 +388,87 @@ test('T6: uma falha no pm2 só é lançada DEPOIS do refresh dos objs', () => {
   assert.ok(pm2Catch > 0 && objBuild > 0 && rethrow > 0);
   assert.ok(pm2Catch < objBuild, 'o erro do pm2 precisa ser capturado antes do obj build');
   assert.ok(objBuild < rethrow, 'o rethrow precisa vir depois do obj build');
+});
+
+function gitRepo(dir, commands) {
+  mkdirSync(dir, { recursive: true });
+  const git = (...args) => spawnSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  for (const run of commands) run(git, dir);
+  return git;
+}
+
+const commitAll = (message) => (git) => { git('add', '-A'); git('commit', '-q', '-m', message); };
+const writeIn = (rel, text) => (_git, dir) => {
+  mkdirSync(dirname(join(dir, rel)), { recursive: true });
+  writeFileSync(join(dir, rel), text);
+};
+
+test('compiledZipStaleReason: zip ausente, do commit certo, de outro commit e VM-gerado', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt172-s5-'));
+  try {
+    const repo = join(root, 'mls-900001');
+    assert.equal(compiledZipStaleReason(root, '900001'), 'missing');
+    const git = gitRepo(repo, [writeIn('l2/a.ts', 'a1'), writeIn('obj/compiled.zip', 'z1'), commitAll('source + zip')]);
+    assert.equal(compiledZipStaleReason(root, '900001'), null, 'zip do commit em dia');
+    // a commit that only touches obj/ keeps it current
+    writeIn('obj/compiled.zip', 'z2')(git, repo);
+    commitAll('Compile TypeScript files')(git);
+    assert.equal(compiledZipStaleReason(root, '900001'), null);
+    // a source commit after the zip commit: stale (this is the Action that did not run)
+    writeIn('l2/a.ts', 'a2')(git, repo);
+    commitAll('source only')(git);
+    assert.match(compiledZipStaleReason(root, '900001'), /^sources changed since the zip commit [0-9a-f]{7}$/);
+    // touching mtimes (what a git pull does) must not hide it
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(join(repo, 'obj', 'compiled.zip'), future, future);
+    assert.match(compiledZipStaleReason(root, '900001'), /^sources changed/);
+    // a revert to the same tree is current again
+    writeIn('l2/a.ts', 'a1')(git, repo);
+    commitAll('revert')(git);
+    assert.equal(compiledZipStaleReason(root, '900001'), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('compiledZipStaleReason: zip não rastreado ou regerado na VM compara com o commit do HEAD', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt172-s5b-'));
+  try {
+    const repo = join(root, 'mls-900002');
+    const git = gitRepo(repo, [writeIn('l2/a.ts', 'a1'), commitAll('source')]);
+    writeIn('obj/compiled.zip', 'z')(git, repo);
+    const past = new Date(Date.now() - 3_600_000);
+    utimesSync(join(repo, 'obj', 'compiled.zip'), past, past);
+    assert.equal(compiledZipStaleReason(root, '900002'), 'zip is older than the HEAD commit');
+    const now = new Date(Date.now() + 5_000);
+    utimesSync(join(repo, 'obj', 'compiled.zip'), now, now);
+    assert.equal(compiledZipStaleReason(root, '900002'), null);
+    writeIn('l2/a.ts', 'dirty')(git, repo);
+    assert.equal(compiledZipStaleReason(root, '900002'), 'sources have uncommitted changes');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ensureFechoCompiledZips gera só o que falta ou não corresponde, uma linha de log por projeto', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt172-s5c-'));
+  try {
+    gitRepo(join(root, 'mls-900001'), [writeIn('l2/a.ts', 'a'), writeIn('obj/compiled.zip', 'z'), commitAll('ok')]);
+    mkdirSync(join(root, 'mls-900002', 'l2'), { recursive: true });
+    const stale = gitRepo(join(root, 'mls-900003'), [writeIn('l2/a.ts', 'a'), writeIn('obj/compiled.zip', 'z'), commitAll('ok')]);
+    writeIn('l2/a.ts', 'b')(stale, join(root, 'mls-900003'));
+    commitAll('source only')(stale);
+    const built = [];
+    const logs = [];
+    const result = ensureFechoCompiledZips(root, ['900001', '900002', '900003'], { build: (_root, ids) => built.push(ids), log: (line) => logs.push(line) });
+    assert.deepEqual(built, [['900002', '900003']]);
+    assert.deepEqual(result.map((entry) => entry.id), ['900002', '900003']);
+    assert.equal(logs[0], 'generated obj mls-900002: missing');
+    assert.match(logs[1], /^generated obj mls-900003: sources changed since the zip commit/);
+    const none = ensureFechoCompiledZips(root, ['900001'], { build: () => assert.fail('não devia gerar'), log: () => {} });
+    assert.deepEqual(none, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

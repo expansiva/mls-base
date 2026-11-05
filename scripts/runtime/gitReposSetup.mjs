@@ -443,6 +443,8 @@ function originDefaultBranch(dir) {
  * O nome da opção `--reset-from-origin` fica: quem chama é o collab-sites.
  * Não é chamado pelo build.
  */
+const REGENERATED_OBJ_PATHS = ['obj/compiled.zip', 'obj/source.zip'];
+
 export function resetFromOrigin(dir) {
   if (!isRepo(dir)) return { status: 'skipped-not-a-repo' };
   if (!remotes(dir).includes('origin')) return { status: 'skipped-no-origin' };
@@ -450,7 +452,11 @@ export function resetFromOrigin(dir) {
 
   gitOrThrow(dir, ['fetch', 'origin']);
   const branch = originDefaultBranch(dir);
-  const porcelain = gitOrThrow(dir, ['status', '--short']);
+  // The obj zips the release regenerates on this machine (addNewVersion.ensureFechoCompiledZips) are not
+  // someone's work: they only count as dirt when the project also has other changes.
+  const porcelainLines = gitOrThrow(dir, ['status', '--short']).split('\n').filter(Boolean);
+  const regeneratedObj = porcelainLines.filter((line) => REGENERATED_OBJ_PATHS.includes(line.replace(/^\s*\S+\s+/u, '')));
+  const porcelain = porcelainLines.filter((line) => !regeneratedObj.includes(line)).join('\n');
   if (porcelain) {
     throw new Error(`resetFromOrigin: dirty worktree in ${dir}\n${porcelain}`);
   }
@@ -479,6 +485,8 @@ export function resetFromOrigin(dir) {
   const head = gitOrThrow(dir, ['rev-parse', 'HEAD']);
   const originHead = gitOrThrow(dir, ['rev-parse', `origin/${branch}`]);
   if (head === originHead) return { status: 'unchanged', branch, head, originHead };
+  // Going to a newer commit: the origin's zips (the Action's) replace the ones generated here.
+  if (regeneratedObj.length) gitOrThrow(dir, ['checkout', '-q', '--', ...regeneratedObj.map((line) => line.replace(/^\s*\S+\s+/u, ''))]);
   gitOrThrow(dir, ['merge', '--ff-only', `origin/${branch}`]);
   return {
     status: 'fast-forward',

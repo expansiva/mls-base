@@ -373,3 +373,34 @@ test('vmGitOrigin invalido nao vira remote — recusa como antes', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('zips de obj regerados na VM não travam o avanço; outra sujeira continua travando', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-obj-'));
+  try {
+    const dest = makeCloneWithOrigin(root);
+    const upstream = join(root, 'upstream');
+    armClonedDep(dest);
+    pushHeadToOrigin(dest);
+    const publishZip = (text, message) => {
+      mkdirSync(join(upstream, 'obj'), { recursive: true });
+      writeFileSync(join(upstream, 'obj', 'compiled.zip'), text);
+      git(upstream, 'add', '-f', 'obj/compiled.zip');
+      git(upstream, 'commit', '-q', '-m', message);
+    };
+    publishZip('action v1', 'zip v1');
+    assert.equal(resetFromOrigin(dest).status, 'fast-forward');
+    writeFileSync(join(dest, 'obj', 'compiled.zip'), 'generated on the VM');
+    // origin equal: the generated zip stays
+    assert.equal(resetFromOrigin(dest).status, 'unchanged');
+    assert.equal(readFileSync(join(dest, 'obj', 'compiled.zip'), 'utf8'), 'generated on the VM');
+    // origin ahead: the Action's zip replaces it
+    publishZip('action v2', 'zip v2');
+    assert.equal(resetFromOrigin(dest).status, 'fast-forward');
+    assert.equal(readFileSync(join(dest, 'obj', 'compiled.zip'), 'utf8'), 'action v2');
+    // other dirt still blocks
+    writeFileSync(join(dest, 'readme.md'), 'someone work\n');
+    assert.throws(() => resetFromOrigin(dest), /dirty worktree/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
