@@ -87,6 +87,14 @@ export function uncommittedDrafts(sourceRoot, projectId) {
   return dirty;
 }
 
+function isLinkedWorktree(dir) {
+  try {
+    return lstatSync(join(dir, '.git')).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function git(repo, args) {
   const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
   if ((result.status ?? 1) !== 0) {
@@ -121,7 +129,8 @@ export function discardDrafts(sourceRoot, projectId, { stopDrafts } = {}) {
   if (stopped.length) lines.push(`stopped draft children (${stopped.join(', ')})`);
   const repo = join(sourceRoot, `mls-${projectId}`);
   for (const row of rows) {
-    if (hasGit(repo)) git(repo, ['worktree', 'remove', '--force', row.work]);
+    // A linked worktree has a .git FILE; a standalone clone (older drafts, or another project's copy) has a .git DIR.
+    if (isLinkedWorktree(row.work) && hasGit(repo)) git(repo, ['worktree', 'remove', '--force', row.work]);
     else rmSync(row.work, { recursive: true, force: true });
     const slugDir = dirname(row.work);
     const others = readdirSync(slugDir).filter((name) => MLS_DIR.test(name));

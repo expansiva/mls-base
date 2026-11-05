@@ -159,6 +159,9 @@ test('refuses a dirty draft before writing, including dry-run', async () => {
 
 test('--discard-drafts removes dirty drafts and their branches, keeps main, then migrates', async () => {
   const { source, app, slug } = withDraft(true);
+  // a draft folder that holds a standalone clone (.git is a directory), as the lima had: no worktree to remove
+  mkdirSync(join(source, 'drafts', 'team-other'), { recursive: true });
+  execFileSync('git', ['clone', '-q', app, join(source, 'drafts', 'team-other', 'mls-102056')]);
   const args = parseArgs(['102056', '--root', source, '--discard-drafts', '--store', join(source, '..', 'pnpm-store')]);
   assert.equal(args.discardDrafts, true);
   const dry = await migrateToProjectTree({ ...args, dryRun: true });
@@ -174,6 +177,7 @@ test('--discard-drafts removes dirty drafts and their branches, keeps main, then
   assert.match(result.lines.join('\n'), /deleted branch team\/7/);
   assert.match(result.lines.join('\n'), /deleted branch user\/ab/);
   assert.equal(existsSync(join(source, 'drafts', slug)), false);
+  assert.equal(existsSync(join(source, 'drafts', 'team-other')), false);
   const names = (repo) => heads(repo).trim().split('\n').map((l) => l.split(' ')[0]).join(',');
   assert.equal(names(app), 'main');
   assert.equal(names(join(args.destRoot, 'mls-102056')), 'main');
