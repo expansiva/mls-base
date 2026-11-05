@@ -6,7 +6,7 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync,
+  cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { appNameOf, projectIdToPort } from './projectPorts.mjs';
@@ -673,6 +673,7 @@ export function executePlan(plan, {
       }
       state.oldCwd = before[0] ? instanceCwd(before[0]) : '';
       state.switched = step.appName;
+      restoreRevertedConfig(destRoot, step.appName);
       ensureProjectApp({
         root: destRoot, projectId, remoteBase: destRoot,
         inheritFrom: join(sourceRoot, 'pm2.apps.d', `${step.appName}.config.js`),
@@ -754,7 +755,33 @@ export async function migrateToProjectTree(options) {
   }
 }
 
-/** Point app<port> at the old tree's pm2 config. The new folder stays. */
+const REVERTED_SUFFIX = '.revertido';
+
+function appConfigIn(root, appName) {
+  return join(root, 'pm2.apps.d', `${appName}.config.js`);
+}
+
+/**
+ * The boot aggregator (collab-runtime pm2.apps.config.js) prefers the new tree, so a revert takes the new tree's
+ * app config out of its reach: app<port>.config.js -> app<port>.config.js.revertido. Returns true when it renamed.
+ */
+function hideReverted(destRoot, appName) {
+  const file = appConfigIn(destRoot, appName);
+  if (!existsSync(file)) return false;
+  renameSync(file, `${file}${REVERTED_SUFFIX}`);
+  return true;
+}
+
+/** A repeated migration gives the hidden config back, so the boot sees the project's own tree again. */
+function restoreRevertedConfig(destRoot, appName) {
+  const file = appConfigIn(destRoot, appName);
+  const hidden = `${file}${REVERTED_SUFFIX}`;
+  if (!existsSync(hidden)) return;
+  if (existsSync(file)) rmSync(hidden, { force: true });
+  else renameSync(hidden, file);
+}
+
+/** Point app<port> at the old tree's pm2 config. The new folder stays; its boot config is hidden (.revertido). */
 export async function revertProjectTree(options) {
   const port = projectIdToPort(options.projectId);
   const appName = appNameOf(port);
@@ -770,14 +797,18 @@ export async function revertProjectTree(options) {
   const before = readAppInstances(appName, commands);
   const already = before.length > 0 && before.every((row) => instanceCwd(row) === wanted);
   const healthUrl = `http://127.0.0.1:${port}/health`;
+  const hideLine = `${appConfigIn(options.destRoot, appName)} -> ${appName}.config.js${REVERTED_SUFFIX}`;
   if (options.dryRun) {
+    const hide = existsSync(appConfigIn(options.destRoot, appName)) ? [`would rename ${hideLine}`] : [];
     return {
       lines: already
-        ? [`skip pm2 ${appName} → ${wanted}`, `skip GET ${healthUrl}`]
-        : [`would pm2 delete ${appName}; start ${configPath}; save`, `would GET ${healthUrl}`],
+        ? [`skip pm2 ${appName} → ${wanted}`, `skip GET ${healthUrl}`, ...hide]
+        : [`would pm2 delete ${appName}; start ${configPath}; save`, `would GET ${healthUrl}`, ...hide],
     };
   }
-  if (already) return { lines: [`skip pm2 ${appName} → ${wanted}`] };
+  if (already) {
+    return { lines: [`skip pm2 ${appName} → ${wanted}`, ...(hideReverted(options.destRoot, appName) ? [`renamed ${hideLine}`] : [])] };
+  }
   const actions = pm2Actions(commands);
   actions.deleteApp(appName);
   actions.start(configPath);
@@ -789,7 +820,8 @@ export async function revertProjectTree(options) {
     options.healthStepMs ?? HEALTH_STEP_MS,
   ));
   await health(healthUrl);
-  return { lines: [`pm2 ${appName} → ${wanted}`, `GET ${healthUrl}`] };
+  const hidden = hideReverted(options.destRoot, appName);
+  return { lines: [`pm2 ${appName} → ${wanted}`, `GET ${healthUrl}`, ...(hidden ? [`renamed ${hideLine}`] : [])] };
 }
 
 function main() {

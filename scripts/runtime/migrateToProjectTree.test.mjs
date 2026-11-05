@@ -523,6 +523,33 @@ test('revert points the app at the old cwd and leaves the new folder', async () 
   assert.equal(readFileSync(join(dest, 'keep.txt'), 'utf8'), 'keep\n');
 });
 
+test('revert hides the new tree boot config (.revertido) and a repeated migration gives it back', async () => {
+  const { source, box } = fixture();
+  const args = parseArgs(['102056', '--root', source]);
+  const dest = args.destRoot;
+  await migrateToProjectTree({ ...args, commands: commands(dest) });
+  const bootConfig = join(dest, 'pm2.apps.d', 'app2056.config.js');
+  assert.equal(existsSync(bootConfig), true);
+  const original = readFileSync(bootConfig, 'utf8');
+  const oldCwd = join(source, 'current-102056');
+  oldConfig(source, oldCwd);
+  const dry = await revertProjectTree({ ...parseArgs(['102056', '--root', source, '--revert', '--dry-run']), commands: fakePm2(join(dest, 'current'), oldCwd) });
+  assert.match(dry.lines.join('\n'), /would rename .*app2056\.config\.js -> app2056\.config\.js\.revertido/);
+  assert.equal(existsSync(bootConfig), true);
+  const pm2 = fakePm2(join(dest, 'current'), oldCwd);
+  const result = await revertProjectTree({ ...parseArgs(['102056', '--root', source, '--revert']), commands: { ...pm2, health() {} } });
+  assert.match(result.lines.join('\n'), /renamed .*app2056\.config\.js\.revertido/);
+  assert.equal(existsSync(bootConfig), false);
+  assert.equal(readFileSync(`${bootConfig}.revertido`, 'utf8'), original);
+  // revert again: already on the old tree, still ends hidden and does not fail
+  const again = await revertProjectTree({ ...parseArgs(['102056', '--root', source, '--revert']), commands: { ...fakePm2(oldCwd, oldCwd), health() { throw new Error('no health'); } } });
+  assert.match(again.lines.join('\n'), /skip pm2 app2056/);
+  await migrateToProjectTree({ ...args, commands: commands(dest) });
+  assert.equal(readFileSync(bootConfig, 'utf8'), original);
+  assert.equal(existsSync(`${bootConfig}.revertido`), false);
+  assert.equal(existsSync(join(box, 'app102056')), true);
+});
+
 test('revert skips when the cwd is already the old tree', async () => {
   const { source } = fixture();
   const oldCwd = join(source, 'current-102056');
