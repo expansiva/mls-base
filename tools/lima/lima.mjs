@@ -211,6 +211,8 @@ function buildReceipt({ parsed, profile, sources, bench }) {
     runtimeTopology: bench.runtimeTopology,
     healthOk: bench.healthOk,
   };
+  // Another queue's repository with uncommitted work was left out (prepared from HEAD): say so in the receipt.
+  if (Array.isArray(evidence.warnings) && evidence.warnings.length) receipt.warnings = evidence.warnings;
   const topology = receipt.runtimeTopology;
   const topologyOk = topology !== null && typeof topology === 'object' && !Array.isArray(topology)
     && topology.expectedWorkers === 2 && topology.onlineWorkers === 2;
@@ -376,7 +378,7 @@ export async function runPrepare(parsed, profile, env = process.env) {
   ref = { ...ref, operationId: started.operationId };
   saveOwnerRef(profile, ref);
 
-  const fail = async (code, message, uncertain = true, detail) => {
+  const fail = async (code, message, uncertain = true, detail, blocked) => {
     await vm(profile, {
       op: 'finishOperation', ownerId: ref.ownerId, operationId: ref.operationId, uncertain: true,
     }, env);
@@ -385,6 +387,7 @@ export async function runPrepare(parsed, profile, env = process.env) {
       ok: false, ready: false, session: parsed.session, phase: 'failed', at: new Date().toISOString(), code, message, uncertain,
     };
     if (detail) diagnosis.detail = detail;
+    if (Array.isArray(blocked) && blocked.length) diagnosis.blocked = blocked;
     publishDiagnosis(env, parsed.session, diagnosis);
     const error = new Error(message);
     error.code = code;
@@ -392,6 +395,7 @@ export async function runPrepare(parsed, profile, env = process.env) {
     error.uncertain = true;
     error.result = { ok: false, ready: false, phase: 'failed', code };
     if (detail) error.result.detail = detail;
+    if (Array.isArray(blocked) && blocked.length) error.result.blocked = blocked;
     throw error;
   };
 
@@ -411,7 +415,7 @@ export async function runPrepare(parsed, profile, env = process.env) {
     await fail(error.code || 'sources', error.message);
   }
   if (!sources?.ok) {
-    await fail(sources?.code || 'sources', sources?.message || 'source prepare failed', sources?.uncertain !== false, sources?.detail);
+    await fail(sources?.code || 'sources', sources?.message || 'source prepare failed', sources?.uncertain !== false, sources?.detail, sources?.blocked);
   }
 
   const bench = await prepareBenchOnVm(profile, env, {

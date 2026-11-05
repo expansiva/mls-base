@@ -434,12 +434,14 @@ export async function prepareSources(input) {
   if (process.env.LIMA_FAIL === 'sources') return { ok: false, code: 'dirty', uncertain: false, sent: false };
   if (process.env.LIMA_FAIL === 'sources-sent') return { ok: false, code: 'build', uncertain: true, sent: true };
   if (process.env.LIMA_FAIL === 'sources-detail') return { ok: false, code: 'build', uncertain: true, sent: true, detail: 'tail of the build' };
+  if (process.env.LIMA_FAIL === 'sources-blocked') return { ok: false, code: 'dirty', uncertain: false, sent: false, blocked: ['mls-102047'] };
   return {
     ok: true,
     evidence: {
       initialRootSha: 'root', initialAppSha: 'app', finalAppSha: 'app',
       depTrees: { '102034': 'tree' },
       release: ${JSON.stringify(RELEASE)},
+      ...(process.env.LIMA_WARN === '1' ? { warnings: ['mls-102025: uncommitted changes left out, prepared from HEAD 4c1cb96'] } : {}),
     },
   };
 }
@@ -673,4 +675,19 @@ test('a stale local reference of another project does not make the session busy;
   await beginSession(other.profile, 'publish', '102047', other.options);
   await assert.rejects(() => beginSession(other.profile, 'publish', '102056', other.options), /session busy: publish/u);
   assert.equal(loadOwnerRef(other.profile, 'publish').projectId, '102047');
+});
+
+test('the ready receipt carries the warnings of the dependencies left out, and a dirty refusal carries the blocked list', async () => {
+  const box = bench();
+  const warned = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], withStages(box, { LIMA_WARN: '1' }));
+  assert.equal(warned.code, 0, warned.stderr);
+  assert.deepEqual(JSON.parse(warned.stdout).warnings, ['mls-102025: uncommitted changes left out, prepared from HEAD 4c1cb96']);
+  const clean = bench();
+  const quiet = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], withStages(clean));
+  assert.equal(quiet.code, 0, quiet.stderr);
+  assert.equal('warnings' in JSON.parse(quiet.stdout), false, 'no warning, no field');
+  const blocked = bench();
+  const refused = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], withStages(blocked, { LIMA_FAIL: 'sources-blocked' }));
+  assert.notEqual(refused.code, 0);
+  assert.deepEqual(JSON.parse(refused.stderr.trim().split('\n')[0]).blocked, ['mls-102047']);
 });
