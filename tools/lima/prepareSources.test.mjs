@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { beginSession, withLimaOperation } from './session.mjs';
-import { planLocalSources, prepareSources, publishCommand, PROJECT_ID } from './prepareSources.mjs';
+import { planLocalSources, prepareSources, publishCommand, sourcesMismatch, PROJECT_ID } from './prepareSources.mjs';
 import { snapshotTree } from '../../scripts/publishGitDeps.mjs';
 
 // The expected lib version is resolved from the environment (the brake), never from a file in the repo.
@@ -985,4 +985,21 @@ test('a dependency lock still blocks even when its changes are only a warning', 
   writeFileSync(join(locked.mac, 'mls-102034', '.collab-msg.lock'), 'agent');
   const plan = await planLocalSources(locked.mac, PROJECT_ID, locked.env);
   assert.ok(plan.blocked.includes('mls-102034:.collab-msg.lock'));
+});
+
+test('sourcesMismatch names the first check that fails, and is null when the VM holds what was sent', () => {
+  const plan = { projectId: '102047', rootSha: 'a'.repeat(40), pin: { libs: '1', monaco: '2' }, deps: [{ id: '102034', tree: 't1' }] };
+  const vm = {
+    stamp: { id: 'R1', client: '102047', platformCommit: plan.rootSha, versionRef: 'b'.repeat(40), libs: '1', monaco: '2', deps: { 102034: 't1' } },
+    alias: '/data/mls-base/releases/R1',
+    workers: [{ name: 'app2047', cwd: '/data/mls-base/current-102047' }],
+    depTrees: { 102034: 't1' },
+  };
+  const appSha = 'b'.repeat(40);
+  assert.equal(sourcesMismatch(plan, vm, appSha, {}), null);
+  assert.match(sourcesMismatch(plan, { ...vm, stamp: { ...vm.stamp, libs: 'unknown' } }, appSha, {}), /^libs pin: release unknown:2, plan 1:2$/u);
+  assert.match(sourcesMismatch(plan, { ...vm, depTrees: { 102034: 't9' } }, appSha, {}), /^dep 102034: VM tree t9, sent t1$/u);
+  assert.match(sourcesMismatch(plan, { ...vm, stamp: { ...vm.stamp, deps: { 102034: 't0' } } }, appSha, {}), /^dep 102034: release built from tree t0, sent t1$/u);
+  assert.match(sourcesMismatch(plan, { ...vm, workers: [{ name: 'app2047', cwd: '/data/app102047/mls-base/current' }] }, appSha, {}), /cwd \/data\/app102047\/mls-base\/current is not under current-102047$/u);
+  assert.match(sourcesMismatch(plan, { ...vm, stamp: null }, appSha, {}), /unreadable/u);
 });

@@ -367,28 +367,33 @@ async function readVm(profile, plan, options) {
   };
 }
 
-function sourcesMatch(plan, vm, appSha, env) {
+/** Why the VM does not hold exactly what the plan sent, or null when it does. The text goes into the failure detail. */
+export function sourcesMismatch(plan, vm, appSha, env) {
   const stamp = vm.stamp;
-  if (!stamp) return false;
-  if (stamp.platformCommit !== plan.rootSha) return false;
-  if (stamp.versionRef !== appSha) return false;
-  if (stamp.libs !== plan.pin.libs || stamp.monaco !== plan.pin.monaco) return false;
-  if (String(stamp.client || '') !== plan.projectId) return false;
-  if (!String(vm.alias || '').includes(String(stamp.id || ''))) return false;
+  if (!stamp) return 'release stamp unreadable (release.json of the active alias)';
+  if (stamp.platformCommit !== plan.rootSha) return `platform: release built from ${String(stamp.platformCommit).slice(0, 7)}, sent ${String(plan.rootSha).slice(0, 7)}`;
+  if (stamp.versionRef !== appSha) return `app: release built from ${String(stamp.versionRef).slice(0, 7)}, sent ${String(appSha).slice(0, 7)}`;
+  if (stamp.libs !== plan.pin.libs || stamp.monaco !== plan.pin.monaco) return `libs pin: release ${stamp.libs}:${stamp.monaco}, plan ${plan.pin.libs}:${plan.pin.monaco}`;
+  if (String(stamp.client || '') !== plan.projectId) return `client: release ${stamp.client}, plan ${plan.projectId}`;
+  if (!String(vm.alias || '').includes(String(stamp.id || ''))) return `alias ${vm.alias} does not point at the stamped release ${stamp.id}`;
   const app = (vm.workers || []).find((item) => item.name === projectApp(plan.projectId));
-  if (!app) return false;
+  if (!app) return `pm2 has no ${projectApp(plan.projectId)}`;
   const releaseAlias = projectTreeMode(env) ? `${projectMlsBase(plan.projectId, env)}/current` : `current-${plan.projectId}`;
-  if (!app.cwd.includes(releaseAlias)) return false;
+  if (!app.cwd.includes(releaseAlias)) return `pm2 ${app.name} cwd ${app.cwd} is not under ${releaseAlias}`;
   // The active release must have been built from these dependency trees, not only the
   // repos on the VM: another project's prepare can move them without rebuilding this one.
   // A stamp without deps (older release) cannot prove it, so it is not coherent.
   const built = stamp.deps;
-  if (!built || typeof built !== 'object') return false;
+  if (!built || typeof built !== 'object') return 'release stamp has no deps';
   for (const dep of plan.deps) {
-    if (vm.depTrees[dep.id] !== dep.tree) return false;
-    if (built[dep.id] !== dep.tree) return false;
+    if (vm.depTrees[dep.id] !== dep.tree) return `dep ${dep.id}: VM tree ${String(vm.depTrees[dep.id]).slice(0, 7)}, sent ${String(dep.tree).slice(0, 7)}`;
+    if (built[dep.id] !== dep.tree) return `dep ${dep.id}: release built from tree ${String(built[dep.id]).slice(0, 7)}, sent ${String(dep.tree).slice(0, 7)}`;
   }
-  return true;
+  return null;
+}
+
+function sourcesMatch(plan, vm, appSha, env) {
+  return sourcesMismatch(plan, vm, appSha, env) === null;
 }
 
 const SECRET_LINE = /cookieKey|postgres:\/\/|PGPASSWORD|secretAccess|DATABASE_URL|token|cookie/iu;
@@ -511,7 +516,7 @@ export async function prepareSources({
   const coherent = sourcesMatch(plan, observed, after.appSha, env);
   if (!coherent) {
     if (appPushed && publishMarker.kind === 'ok') {
-      return failed('failed', { code: 'release', sent: true, detail: failureDetail(buildText) });
+      return failed('failed', { code: 'release', sent: true, detail: failureDetail(`${buildText}\nmismatch: ${sourcesMismatch(plan, observed, after.appSha, env)}`) });
     }
     // The build compiles the closure and may generate obj zips (release s5): minutes, not the 120 s of a read.
     const built = await ssh(profile,
@@ -529,7 +534,10 @@ export async function prepareSources({
     if (observed.uncertain) return failed('failed', { code: 'ssh', sent: true, uncertain: true, detail: failureDetail('') });
   }
   if (markerOf(buildText, projectId).kind === 'error') return failed('failed', { code: 'build', sent, detail: failureDetail(buildText) });
-  if (!sourcesMatch(plan, observed, after.appSha, env)) return failed('failed', { code: 'release', sent, detail: failureDetail(buildText) });
+  {
+    const mismatch = sourcesMismatch(plan, observed, after.appSha, env);
+    if (mismatch) return failed('failed', { code: 'release', sent, detail: failureDetail(`${buildText}\nmismatch: ${mismatch}`) });
+  }
   return {
     ok: true,
     ready: false,
