@@ -28,6 +28,7 @@ import {
   validateClientConfigFile,
 } from '../validateClientConfig.mjs';
 import { VM_TSCONFIG, writeVmTsconfig } from './addNewVersion.mjs';
+import { appendLateStep, recordsDir } from './releaseRecord.mjs';
 import { ensureProjectApp, hostedProjectIds } from './vmApps.mjs';
 import { appNameOf, isProjectTree, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 import { homedir } from 'node:os';
@@ -844,6 +845,17 @@ export async function reloadPm2Now(root, {
     await run('pm2', ['save'], { cwd: root, env });
   } catch {
     /* non-fatal */
+  }
+
+  // This reload runs after addNewVersion closed the release record: put its result in that record.
+  try {
+    appendLateStep(recordsDir(root, 'app'), 'pm2', {
+      ok: last.code === 0,
+      message: last.code === 0 ? '' : `pm2 startOrReload exited ${last.code}`,
+      durationMs: now() - reloadStartedAt,
+    });
+  } catch (error) {
+    write(`gitPostReceive: release record not updated: ${error instanceof Error ? error.message : String(error)}\n`);
   }
 }
 

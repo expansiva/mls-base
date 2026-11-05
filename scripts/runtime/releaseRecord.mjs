@@ -251,9 +251,54 @@ export function closeStaleRecords(dir, { now = Date.now, olderThanMs = STALE_AFT
     record.fim = nowIso(now);
     record.duracaoMs = now() - started;
     writeRecordFile(dir, match[1], record);
+    addNoticeSafely(dir, match[1], 'release.finished');
     closed.push(match[1]);
   }
   return closed;
+}
+
+/**
+ * The notices the sites has not confirmed yet, in `<releaseId>.aviso-pendente` next to the record (`{ codes: [...] }`).
+ * The release script never talks to the sites (it must not read the agent's secret): the agent sends them and
+ * removes a code only after the sites confirms it. Writing a notice is idempotent.
+ */
+export function pendingNoticeFile(dir, releaseId) {
+  return join(dir, `${releaseId}.aviso-pendente`);
+}
+
+export function readPendingNotice(dir, releaseId) {
+  try {
+    const parsed = JSON.parse(readFileSync(pendingNoticeFile(dir, releaseId), 'utf8'));
+    return Array.isArray(parsed?.codes) ? parsed.codes.filter((code) => typeof code === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function addPendingNotice(dir, releaseId, code) {
+  const codes = readPendingNotice(dir, releaseId);
+  if (codes.includes(code)) return codes;
+  codes.push(code);
+  mkdirSync(dir, { recursive: true });
+  const target = pendingNoticeFile(dir, releaseId);
+  const tmp = `${target}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify({ codes }, null, 2)}\n`);
+  renameSync(tmp, target);
+  return codes;
+}
+
+/** Remove one confirmed code; the file goes away with its last code. */
+export function confirmPendingNotice(dir, releaseId, code) {
+  const codes = readPendingNotice(dir, releaseId).filter((item) => item !== code);
+  const target = pendingNoticeFile(dir, releaseId);
+  if (codes.length === 0) {
+    rmSync(target, { force: true });
+    return [];
+  }
+  const tmp = `${target}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify({ codes }, null, 2)}\n`);
+  renameSync(tmp, target);
+  return codes;
 }
 
 /** An open (andamento) record asked by this request id, if one was left by an earlier step of the request. */
@@ -266,6 +311,14 @@ export function findOpenRequest(dir, requestId) {
     if (record && record.pedidoId === requestId && record.resultado === 'andamento') return record;
   }
   return null;
+}
+
+function addNoticeSafely(dir, releaseId, code) {
+  try {
+    addPendingNotice(dir, releaseId, code);
+  } catch (error) {
+    process.stderr.write(`releaseRecord: notice ${code} not written: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 }
 
 function nowIso(now) {
@@ -318,6 +371,8 @@ export function openRelease({
     }
   };
   persist();
+  // A release the sites did not ask for (push, Studio) has no record there yet: tell it when it starts.
+  if (!continued && !requestId) addNoticeSafely(dir, id, 'release.started');
 
   const handle = {
     releaseId: id,
@@ -366,6 +421,7 @@ export function openRelease({
         record.fim = nowIso(now);
         record.duracaoMs = now() - started;
         persist();
+        addNoticeSafely(dir, id, 'release.finished');
         pruneRecords(dir, { fila: record.fila, projetoId: record.projetoId });
       } catch (closeError) {
         process.stderr.write(`releaseRecord: could not close ${id}: ${closeError instanceof Error ? closeError.message : String(closeError)}\n`);
@@ -402,6 +458,32 @@ export function newReleaseId(date = new Date()) {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
+/**
+ * A step that runs after the release script has closed its record (the hook reloads pm2 on its own, outside
+ * `addNewVersion`): add it to the newest recently closed record that does not have it yet. A failure turns the
+ * record `falhou` at that step; a new `release.finished` notice carries the final record to the sites.
+ */
+export function appendLateStep(dir, name, { ok = true, message = '', durationMs = 0, windowMs = 10 * 60 * 1000, now = Date.now } = {}) {
+  if (!existsSync(dir)) return null;
+  for (const file of readdirSync(dir).sort().reverse()) {
+    const match = /^(\d{14})\.json$/u.exec(file);
+    if (!match) continue;
+    const record = readRecordFile(dir, match[1]);
+    if (!record || record.resultado === 'andamento' || !record.fim) continue;
+    if (now() - Date.parse(record.fim) > windowMs) return null; // the newest closed one is too old: nothing to attach to
+    if ((record.passos ?? []).some((item) => item.nome === name)) return null;
+    record.passos = [...(record.passos ?? []), { nome: name, inicio: nowIso(() => now() - durationMs), duracaoMs: durationMs, resultado: ok ? 'ok' : 'falhou' }];
+    if (!ok) {
+      record.resultado = 'falhou';
+      record.falha = record.falha ?? { passo: name, mensagem: scrubMessage(message || `${name} failed`) };
+    }
+    writeRecordFile(dir, match[1], record);
+    addNoticeSafely(dir, match[1], 'release.finished');
+    return record;
+  }
+  return null;
+}
+
 /** `releaseRecord.mjs close --pedido <id> [--falha <passo>] [--mensagem <texto>] [--root <raiz>]`: the sites closes a request that stopped. */
 export function closeRequest({ dir, requestId, step = 'platform', message = 'step failed', now = Date.now }) {
   const record = findOpenRequest(dir, requestId);
@@ -414,6 +496,7 @@ export function closeRequest({ dir, requestId, step = 'platform', message = 'ste
   record.fim = nowIso(now);
   record.duracaoMs = Number.isFinite(started) ? now() - started : null;
   writeRecordFile(dir, record.releaseId, record);
+  addNoticeSafely(dir, record.releaseId, 'release.finished');
   return record;
 }
 

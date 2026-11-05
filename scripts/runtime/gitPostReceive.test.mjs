@@ -1131,3 +1131,25 @@ test('refreshServiceWorker troca o arquivo por rename (o inode muda), nunca grav
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('o reload do pm2 do hook entra como passo pm2 no registro da release já fechado', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pm2-record-'));
+  try {
+    const { openRelease: open, recordsDir: dirOf, readRecordFile: readRecord } = await import('./releaseRecord.mjs');
+    const dir = dirOf(root, 'app');
+    open({ root, dir, releaseId: '20261105100000', projectId: '102047', requestId: 'req_x' }).close({});
+    await reloadPm2Now(root, { run: async () => ({ code: 0, out: '' }), write: () => {} });
+    const done = readRecord(dir, '20261105100000');
+    assert.equal(done.passos.at(-1).nome, 'pm2');
+    assert.equal(done.passos.at(-1).resultado, 'ok');
+    assert.equal(done.resultado, 'ok');
+
+    open({ root, dir, releaseId: '20261105100100', projectId: '102047', requestId: 'req_y' }).close({});
+    await reloadPm2Now(root, { run: async () => ({ code: 1, out: 'boom' }), write: () => {} });
+    const failed = readRecord(dir, '20261105100100');
+    assert.equal(failed.resultado, 'falhou');
+    assert.equal(failed.falha.passo, 'pm2');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  activeReleaseId, buildPieces, cleanRepoUrl, closeRequest, closeStaleRecords, commitsBetween, decideQueue, findOpenRequest, openRelease, pruneRecords,
+  activeReleaseId, addPendingNotice, appendLateStep, buildPieces, confirmPendingNotice, readPendingNotice, cleanRepoUrl, closeRequest, closeStaleRecords, commitsBetween, decideQueue, findOpenRequest, openRelease, pruneRecords,
   readRecordFile, readSharedVersions, readVmId, recordsDir, requestedByFor, scrubMessage,
 } from './releaseRecord.mjs';
 
@@ -278,5 +278,64 @@ test('the sites can close a request that stopped (the cli command)', () => {
     assert.equal(closeRequest({ dir, requestId: 'req_none' }), null);
     const out = execFileSync(process.execPath, [join(import.meta.dirname, 'releaseRecord.mjs'), 'close', '--pedido', 'req_none', '--root', root], { encoding: 'utf8' });
     assert.match(out, /no open record/u);
+  });
+});
+
+test('a release the sites did not ask for leaves started and finished notices; a sites request leaves only finished', () => {
+  withRoot((root) => {
+    const dir = recordsDir(root, 'app');
+    const push = openRelease({ root, dir, releaseId: '20261105140000', projectId: '102047', now: clock() });
+    assert.deepEqual(readPendingNotice(dir, '20261105140000'), ['release.started']);
+    push.close({});
+    assert.deepEqual(readPendingNotice(dir, '20261105140000'), ['release.started', 'release.finished']);
+    const asked = openRelease({ root, dir, releaseId: '20261105150000', projectId: '102047', requestId: 'req_n', now: clock() });
+    assert.deepEqual(readPendingNotice(dir, '20261105150000'), []);
+    asked.close({ error: new Error('boom') });
+    assert.deepEqual(readPendingNotice(dir, '20261105150000'), ['release.finished'], 'also on failure');
+  });
+});
+
+test('notices are idempotent, confirmed one by one, and the file goes away with the last one', () => {
+  withRoot((root) => {
+    const dir = recordsDir(root, 'app');
+    addPendingNotice(dir, '20261105140000', 'release.finished');
+    addPendingNotice(dir, '20261105140000', 'release.finished');
+    assert.deepEqual(readPendingNotice(dir, '20261105140000'), ['release.finished']);
+    addPendingNotice(dir, '20261105140000', 'release.started');
+    assert.deepEqual(confirmPendingNotice(dir, '20261105140000', 'release.started'), ['release.finished']);
+    assert.deepEqual(confirmPendingNotice(dir, '20261105140000', 'release.finished'), []);
+    assert.equal(existsSync(join(dir, '20261105140000.aviso-pendente')), false);
+    assert.deepEqual(readPendingNotice(dir, 'nonexistent'), []);
+  });
+});
+
+test('pruning a record also removes its pending notice', () => {
+  withRoot((root) => {
+    const dir = recordsDir(root, 'app');
+    for (let i = 0; i < 11; i += 1) {
+      openRelease({ root, dir, releaseId: `2026110514${String(i).padStart(4, '0')}`, projectId: '102047', now: clock() }).close({});
+    }
+    assert.equal(existsSync(join(dir, '20261105140000.json')), false);
+    assert.equal(existsSync(join(dir, '20261105140000.aviso-pendente')), false);
+    assert.equal(existsSync(join(dir, '20261105140010.aviso-pendente')), true);
+  });
+});
+
+test('the pm2 reload that runs after the release script is added to the closed record; a failure makes it falhou', () => {
+  withRoot((root) => {
+    const dir = recordsDir(root, 'app');
+    const t0 = Date.parse('2026-11-05T10:00:00Z');
+    openRelease({ root, dir, releaseId: '20261105100000', projectId: '102047', requestId: 'req_a', now: () => t0 }).close({});
+    const ok = appendLateStep(dir, 'pm2', { ok: true, durationMs: 4000, now: () => t0 + 30_000 });
+    assert.deepEqual(ok.passos.at(-1).nome, 'pm2');
+    assert.equal(ok.passos.at(-1).resultado, 'ok');
+    assert.equal(ok.resultado, 'ok');
+    assert.equal(appendLateStep(dir, 'pm2', { ok: true, now: () => t0 + 40_000 }), null, 'once only');
+    openRelease({ root, dir, releaseId: '20261105110000', projectId: '102047', requestId: 'req_b', now: () => t0 + 3_600_000 }).close({});
+    const bad = appendLateStep(dir, 'pm2', { ok: false, message: 'reload failed https://u:pw@h/x', now: () => t0 + 3_630_000 });
+    assert.equal(bad.resultado, 'falhou');
+    assert.deepEqual(bad.falha, { passo: 'pm2', mensagem: 'reload failed https://***@h/x' });
+    assert.deepEqual(readPendingNotice(dir, '20261105110000'), ['release.finished']);
+    assert.equal(appendLateStep(dir, 'pm2', { ok: true, now: () => t0 + 3_600_000 + 30 * 60_000 }), null, 'too old to attach');
   });
 });
