@@ -226,6 +226,8 @@ async function allowedAfterPublish(before, after, root, projectId, env) {
   return portraitMatches(repo, before, after, env);
 }
 
+const BUILD_TIMEOUT_MS = 30 * 60 * 1000;
+
 function ssh(profile, command, options) {
   const sshBin = options.sshBin || process.env.LIMA_SSH_BIN || 'ssh';
   const timeoutMs = options.timeoutMs ?? 120000;
@@ -420,10 +422,11 @@ export async function prepareSources({
   env = process.env,
   sshBin,
   timeoutMs,
+  buildTimeoutMs,
   lockPath,
   spawnPublish,
 } = {}) {
-  const options = { env, sshBin, timeoutMs, spawnPublish };
+  const options = { env, sshBin, timeoutMs, buildTimeoutMs, spawnPublish };
   const sessionOptions = { sshBin, env, timeoutMs, lockPath: lockPath || process.env.LIMA_LOCK_PATH };
   if (!SUPPORTED_PROJECTS.includes(String(projectId))) return failed('preparing', { code: 'project', sent: false });
   const ref = loadOwnerRef(profile, session);
@@ -507,9 +510,10 @@ export async function prepareSources({
     if (appPushed && publishMarker.kind === 'ok') {
       return failed('failed', { code: 'release', sent: true, detail: failureDetail(buildText) });
     }
+    // The build compiles the closure and may generate obj zips (release s5): minutes, not the 120 s of a read.
     const built = await ssh(profile,
       `flock ${projectBuildLock(projectId, env)} node ${vmRoot}/scripts/runtime/gitPostReceive.mjs --root ${vmRoot} --project ${projectId}`,
-      options);
+      { ...options, timeoutMs: options.buildTimeoutMs ?? BUILD_TIMEOUT_MS });
     forcedBuild = true;
     sent = true;
     const builtText = `${built.stdout}\n${built.stderr}`;

@@ -98,6 +98,7 @@ if (remote.startsWith('node --input-type=module')) {
   if (process.env.PREPARE_BUILD === 'empty') {
     process.exit(1);
   }
+  if (process.env.PREPARE_BUILD === 'slow') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
   const rootSha = spawnSync('git', ['-C', vm, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
   const appSha = spawnSync('git', ['-C', join(vm, 'mls-102047'), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
   const pin = JSON.parse(readFileSync(process.env.PREPARE_PIN, 'utf8'));
@@ -941,4 +942,19 @@ test('the pre-s1 prepare rejects the same official obj cleanup as concurrent', {
     assert.equal(result.ready, false);
   });
   rmSync(priorDir, { recursive: true, force: true });
+});
+
+test('a forced build slower than the read timeout is not cut as a disconnect', async () => {
+  const slow = bench({ build: 'slow' });
+  commitFile(slow.mac, 'again.txt', 'root\n', 'root again');
+  await held(slow, async () => {
+    const result = await prepareSources({
+      root: slow.mac, profile: slow.profile, session: 'codex-s5', env: slow.env, sshBin: slow.options.sshBin,
+      lockPath: slow.options.lockPath, timeoutMs: 400,
+      spawnPublish: () => ({ code: 0, text: 'Nothing to publish\n', uncertain: false }),
+    });
+    assert.notEqual(result.code, 'build-disconnect');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.forcedBuild, true);
+  });
 });
