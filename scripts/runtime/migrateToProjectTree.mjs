@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { appNameOf, projectIdToPort } from './projectPorts.mjs';
-import { pruneDraftDatabases } from './draftDatabases.mjs';
+import { draftDatabaseOwner, pruneDraftDatabases } from './draftDatabases.mjs';
 import { ensureProjectApp } from './vmApps.mjs';
 
 const MLS_DIR = /^mls-\d+$/u;
@@ -447,7 +447,9 @@ export function oldDraftChildren(sourceRoot, projectId, { readCommand = defaultR
       continue;
     }
     if (!Number.isInteger(info?.pid) || info.pid <= 0) continue;
-    if (!String(info.database ?? '').startsWith(`collab_app_draft_${projectId}_`)) continue;
+    // The two real forms (draftDatabaseName in mls-102034): `collab_app_draft_<id>_u<12 hex>` for a person and
+    // `collab_app_draft_team_<id>` for the team. The team form was missed by a prefix test (rt185: two children kept ports).
+    if (draftDatabaseOwner(String(info.database ?? ''))?.projectId !== String(projectId)) continue;
     if (!/(^|[\\/\s])deno(\s|$)/u.test(readCommand(info.pid))) continue;
     found.push({ slug, pid: info.pid, port: info.port ?? null, file });
   }

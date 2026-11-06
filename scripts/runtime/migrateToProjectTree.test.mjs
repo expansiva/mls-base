@@ -651,15 +651,18 @@ test('the draft children of the old tree for this project are found, and only li
     mkdirSync(join(source, 'drafts', slug), { recursive: true });
     writeFileSync(join(source, 'drafts', slug, 'dev.json'), JSON.stringify(info));
   };
-  write('team-102056', { pid: 111, port: 4100, database: 'collab_app_draft_102056_team' });
-  write('user-ab', { pid: 222, port: 4101, database: 'collab_app_draft_102056_uab' });
-  write('user-cd', { pid: 333, port: 4102, database: 'collab_app_draft_102047_ucd' });
-  write('user-ef', { pid: 444, port: 4103, database: 'collab_app_draft_102056_uef' });
+  // the database names are the real ones: person = `_u<12 hex>`, team = `collab_app_draft_team_<id>`
+  write('team-102056', { pid: 111, port: 4100, database: 'collab_app_draft_team_102056' });
+  write('user-ab', { pid: 222, port: 4101, database: 'collab_app_draft_102056_u48b2698f03c6' });
+  write('user-cd', { pid: 333, port: 4102, database: 'collab_app_draft_102047_u040e29b82e87' });
+  write('user-ef', { pid: 444, port: 4103, database: 'collab_app_draft_102056_u679068f3c1ff' });
+  write('team-102047', { pid: 555, port: 4105, database: 'collab_app_draft_team_102047' });
+  write('odd', { pid: 666, port: 4106, database: 'collab_app_draft_102056_team' });
   write('broken', { port: 4104 });
-  const commandOf = (pid) => ({ 111: '/usr/bin/deno run --allow-net=127.0.0.1:4100', 222: 'node something.js', 333: 'deno run', 444: '' })[pid] ?? '';
+  const commandOf = (pid) => ({ 111: '/usr/bin/deno run --allow-net=127.0.0.1:4100', 222: 'node something.js', 333: 'deno run', 444: '', 555: 'deno run --allow-read', 666: 'deno run' })[pid] ?? '';
   const found = oldDraftChildren(source, '102056', { readCommand: commandOf });
-  assert.deepEqual(found.map((child) => [child.slug, child.pid, child.port]), [['team-102056', 111, 4100]]);
-  assert.deepEqual(oldDraftChildren(source, '102047', { readCommand: commandOf }).map((child) => child.slug), ['user-cd']);
+  assert.deepEqual(found.map((child) => [child.slug, child.pid, child.port]), [['team-102056', 111, 4100]], 'the team child of the project is found; a person with a non-deno pid, an empty command, another project and a name that is no real form are not');
+  assert.deepEqual(oldDraftChildren(source, '102047', { readCommand: commandOf }).map((child) => child.slug).sort(), ['team-102047', 'user-cd']);
 });
 
 test('a failing prune is said and does not undo the migration', async () => {
