@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -425,6 +425,26 @@ test('snapshotClientFiles: compositor altera os dois e a etapa seguinte lança �
   restore();
   restore();
   assert.deepEqual(readFileSync(config), configBytes);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('snapshotClientFiles: restaura os bytes e o mtime (o app não fica "velho" para o buildProjectsObj)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt192-'));
+  const config = join(root, 'l5', 'config.json');
+  const dep = join(root, 'mlsDep.json');
+  mkdirSync(dirname(config), { recursive: true });
+  writeFileSync(config, '{"a":1}\n');
+  writeFileSync(dep, '{"b":1}\n');
+  const past = new Date('2026-11-01T10:00:00Z');
+  utimesSync(config, past, past);
+  utimesSync(dep, past, past);
+  await captureBuildLog(() => withClientFilesRestored(root, CLIENT_FILES, async () => {
+    writeFileSync(config, '{"composed":true}\n');
+    writeFileSync(dep, '{"composed":true}\n');
+  }));
+  assert.equal(readFileSync(config, 'utf8'), '{"a":1}\n');
+  assert.equal(statSync(config).mtimeMs, past.getTime());
+  assert.equal(statSync(dep).mtimeMs, past.getTime());
   rmSync(root, { recursive: true, force: true });
 });
 

@@ -20,7 +20,7 @@
 //                                             # publish: compile without recomposing config
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -49,6 +49,7 @@ import {
   writeCheckEntry,
   writeEmitEntry,
 } from './buildCache.mjs';
+import { planVerification } from './releaseVerification.mjs';
 import { readTypeCheckPolicy } from './typeCheckPolicy.mjs';
 import { formatTypeCheckTsconfigLog, typeCheckProject } from './typeCheckRun.mjs';
 
@@ -133,7 +134,9 @@ function throwIfTypeCheckBlocked(blocked) {
   ].filter(Boolean).join('\n'));
 }
 
-async function runTsc(_tsconfigPath, ids, compilerOptions, clientId) {
+// `release`: libs are not verified (only emitted); the app is verified here only when
+// it is `strict` — a `permissive` app is verified after activation (rt192).
+async function runTsc(_tsconfigPath, ids, compilerOptions, clientId, { release = false } = {}) {
   if (process.env.COLLAB_RUN_TSC_TYPECHECK === '0') {
     log('COLLAB_RUN_TSC_TYPECHECK=0 is ignored: typecheck always runs; the verdict is l5/project.json typeCheck.status');
   }
@@ -164,7 +167,18 @@ async function runTsc(_tsconfigPath, ids, compilerOptions, clientId) {
     return { head: gitHead(dir), porcelain: gitPorcelain(dir) };
   };
   console.log(formatTypeCheckTsconfigLog(ROOT));
+  const verification = release
+    ? planVerification({
+      ids,
+      clientId,
+      statusOf: (id) => readTypeCheckPolicy(projectDir(id)).status,
+    })
+    : null;
   for (const id of ids) {
+    if (verification && !verification.now.includes(String(id))) {
+      log(`typeCheck mls-${id} skipped: ${verification.deferred.includes(String(id)) ? 'deferred until after activation (permissive)' : 'library, release does not verify it'}`);
+      continue;
+    }
     const plan = planById.get(String(id));
     if (plan?.eligible) {
       const loaded = await loadCheck(cacheRoot, id, plan.checkBase, depNow);
@@ -316,7 +330,8 @@ export function snapshotClientFiles(clientRoot, relPaths) {
   const snaps = relPaths.map((rel) => {
     const abs = join(clientRoot, rel);
     if (!existsSync(abs)) return { rel, abs, absent: true };
-    return { rel, abs, absent: false, bytes: readFileSync(abs) };
+    const st = statSync(abs);
+    return { rel, abs, absent: false, bytes: readFileSync(abs), atime: st.atime, mtime: st.mtime };
   });
   return function restore() {
     const changed = [];
@@ -333,6 +348,9 @@ export function snapshotClientFiles(clientRoot, relPaths) {
       if (nowAbsent || !now.equals(snap.bytes)) {
         mkdirSync(dirname(snap.abs), { recursive: true });
         writeFileSync(snap.abs, snap.bytes);
+        // Same bytes, same mtime: a new mtime makes buildProjectsObj.isStale see the
+        // app as always "old" and rebuild it on every release (rt192).
+        utimesSync(snap.abs, snap.atime, snap.mtime);
         changed.push(snap.rel);
       }
     }
@@ -621,7 +639,7 @@ export async function rewriteLocalDistAbsoluteImports(localDist = LOCAL_DIST) {
 }
 
 // ── server build (dist/local) ────────────────────────────────────────────────
-async function buildServer(ids, clientId) {
+async function buildServer(ids, clientId, { release = false } = {}) {
   log(`server build -> dist/local (${ids.map((i) => 'mls-' + i).join(' ')})`);
   await rm(LOCAL_DIST, { recursive: true, force: true });
 
@@ -663,7 +681,7 @@ async function buildServer(ids, clientId) {
   const tmp = resolve(ROOT, 'tsconfig.build.json');
   await writeFile(tmp, `${JSON.stringify(tsconfig, null, 2)}\n`, 'utf8');
   log('tsconfig written: tsconfig.build.json');
-  const { cacheRoot, freshCheck, freshEmit } = await runTsc('tsconfig.build.json', ids, compilerOptions, clientId);
+  const { cacheRoot, freshCheck, freshEmit } = await runTsc('tsconfig.build.json', ids, compilerOptions, clientId, { release });
 
   // rename dist/local/mls-<id> -> dist/local/_<id>_
   if (existsSync(LOCAL_DIST)) {
@@ -852,11 +870,12 @@ function detectClientId(explicit) {
 }
 
 function parseArgs(argv) {
-  const args = { only: '', client: '', useExistingConfig: false };
+  const args = { only: '', client: '', useExistingConfig: false, release: false };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--only') args.only = argv[++i] ?? '';
     else if (argv[i] === '--client') args.client = argv[++i] ?? '';
     else if (argv[i] === '--use-existing-config') args.useExistingConfig = true;
+    else if (argv[i] === '--release') args.release = true;
   }
   return args;
 }
@@ -898,7 +917,7 @@ async function main() {
       log(`client=${clientId} projects=${projectIds.join(' ')}`);
 
       if (args.only !== 'web') {
-        await buildServer(projectIds, clientId);
+        await buildServer(projectIds, clientId, { release: args.release });
         // post-compile: compile each project's .less and inject into the per-file JS
         // (same mls-ci routine the GitHub Action uses; requires the /// <mls header,
         // so it applies to dist/local only)

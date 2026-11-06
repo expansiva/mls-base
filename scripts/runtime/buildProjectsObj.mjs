@@ -30,6 +30,9 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'obj', 'dist']);
 
 const argv = process.argv.slice(2);
 const force = argv.includes('--force');
+// The type check is opt-in (rt192): the release verifies nothing here. The app is
+// verified by build.mjs (strict, before activation) or after activation (permissive).
+const withTypeCheck = argv.includes('--typecheck');
 const onlyFlag = argv.indexOf('--only');
 const only = onlyFlag >= 0
   ? new Set(String(argv[onlyFlag + 1] ?? '').split(',').map((s) => s.replace(/^mls-/u, '').trim()).filter(Boolean))
@@ -114,11 +117,13 @@ for (const id of ids) {
     }
   }
 
-  // Gate path (`--only`, gitPostReceive): always type-check, including a
-  // cache-hot skip — that skip is what made lima and AWS disagree (gb74).
-  // A full-disk obj rebuild (no --only) is the cbe zip pass; build.mjs
-  // already type-checked the release set.
-  if (only) {
+  // Gate path (`--only`, gitPostReceive): with `--typecheck` always type-check,
+  // including a cache-hot skip — that skip is what made lima and AWS disagree
+  // (gb74). Without it the marker says the check was deferred (rt192): the
+  // release treats each repo as correct and verifies only the app, elsewhere.
+  if (only && !withTypeCheck) {
+    console.log(`##typeCheck deferred project=${id} reason=release##`);
+  } else if (only) {
     const report = typeCheckProject({ root: ROOT, projectId: id });
     if (report.overrideLog) console.log(`[buildProjectsObj] ${report.overrideLog}`);
     console.log(`[buildProjectsObj] typeCheck ${report.reportLine}`);

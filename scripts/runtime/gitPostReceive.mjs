@@ -165,6 +165,22 @@ export function evaluateBuild(code, out) {
   const declErrors = parsePassErrors(text, 'declarations') ?? 0;
   const typeCheck = typeCheckFromMarkers(text);
 
+  // rt192: the release does not verify in the gate. The marker says so; only the
+  // exit code of the build decides (an emit/config failure still exits != 0).
+  if (!typeCheck && /##typeCheck deferred /u.test(text)) {
+    if (code !== 0) {
+      return { ok: false, gate: 'exit', declWarn: declErrors, excerptText: text };
+    }
+    return {
+      ok: true,
+      gate: 'typeCheck',
+      declWarn: declErrors,
+      typeWarn: 0,
+      typeCheckStatus: 'deferred',
+      excerptText: '',
+    };
+  }
+
   if (typeCheck) {
     if (!typeCheck.ok) {
       return { ...typeCheck, declWarn: declErrors };
@@ -776,6 +792,25 @@ export function scheduleDetachedPm2Reload(root, { spawnFn = spawn, delaySec = 2,
   return { pm2Config, delaySec, appName, logPath };
 }
 
+/**
+ * rt192: a `permissive` app is verified after activation, outside the hook tree
+ * (the hook must return as soon as the release is live). The child writes the
+ * report to the release record (`verificacao`); see verifyApp.mjs.
+ */
+export function scheduleDetachedVerification(root, { projectId, releaseId = '', spawnFn = spawn } = {}) {
+  mkdirSync(join(root, 'logs'), { recursive: true });
+  const logPath = join(root, 'logs', 'verifyApp.log');
+  const script = join(dirname(fileURLToPath(import.meta.url)), 'verifyApp.mjs');
+  const args = [script, '--root', root, '--project', String(projectId)];
+  if (releaseId) args.push('--release', releaseId);
+  const fd = openSync(logPath, 'a');
+  const child = spawnFn(process.execPath, args, { cwd: root, detached: true, stdio: ['ignore', fd, fd] });
+  try { closeSync(fd); } catch { /* inherited */ }
+  if (typeof child?.unref === 'function') child.unref();
+  process.stderr.write(`gitPostReceive: verifying mls-${projectId} after activation (${logPath})\n`);
+  return { logPath };
+}
+
 export async function reloadPm2Now(root, {
   appName = '',
   run = runLive,
@@ -1114,6 +1149,9 @@ async function main() {
     scheduleDetachedPm2Reload(root, { appName });
   } else {
     await reloadPm2Now(root, { appName });
+  }
+  if (verdict.typeCheckStatus === 'deferred' && clientId) {
+    scheduleDetachedVerification(root, { projectId: clientId, releaseId: ts });
   }
 }
 

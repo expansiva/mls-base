@@ -375,7 +375,7 @@ function runRelease(argv, rec, state) {
   console.log(`--- compile${clientId ? ` (client ${clientId})` : ''}`);
   // Call the compiler directly (NOT `pnpm build`, which now points to this file) to
   // avoid infinite recursion.
-  rec.step('compile', () => run(`node scripts/build.mjs${clientArg}`));
+  rec.step('compile', () => run(`node scripts/build.mjs --release${clientArg}`));
 
   // ── assemble release and activate it via the "current" symlink ──────────────
   // A release holds only the runtime output (frontend + backend), no sources.
