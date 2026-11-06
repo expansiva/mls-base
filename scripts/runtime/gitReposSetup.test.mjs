@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { planSnapshot, sendSnapshot } from '../publishGitDeps.mjs';
 import { armClonedDep, resetArmedDepsFromOrigin, resetFromOrigin, setupRepo, VM_ROOT } from './gitReposSetup.mjs';
+import { openRelease, readPendingNotice, recordsDir } from './releaseRecord.mjs';
 
 const GIT_ENV = {
   ...process.env,
@@ -406,7 +407,7 @@ test('zips de obj regerados na VM não travam o avanço; outra sujeira continua 
   }
 });
 
-test('um pedido do sites abre o registro no passo deps e o fecha com falha quando um repo não atualiza', () => {
+test('um pedido do sites com release em seguida abre o registro no passo deps e o fecha com falha quando um repo não atualiza', () => {
   const root = mkdtempSync(join(tmpdir(), 'setup-rec-'));
   try {
     const dest = makeCloneWithOrigin(root);
@@ -424,7 +425,7 @@ test('um pedido do sites abre o registro no passo deps e o fecha com falha quand
     mkdirSync(mlsRoot, { recursive: true });
     execFileSync('mv', [dest, join(mlsRoot, 'mls-100555')]);
     const result = spawnSync(process.execPath, [script, '--root', mlsRoot, '--reset-from-origin', '100555'], {
-      encoding: 'utf8', env: { ...process.env, COLLAB_RELEASE_REQUEST_ID: 'req_77', COLLAB_RELEASE_REQUESTED_BY: 'user-1', COLLAB_VM_ID: 'vm-t' },
+      encoding: 'utf8', env: { ...process.env, COLLAB_RELEASE_REQUEST_ID: 'req_77', COLLAB_RELEASE_FOLLOWS: '1', COLLAB_RELEASE_REQUESTED_BY: 'user-1', COLLAB_VM_ID: 'vm-t' },
     });
     assert.equal(result.status, 1);
     const dir = join(mlsRoot, 'releases', 'registro');
@@ -436,6 +437,95 @@ test('um pedido do sites abre o registro no passo deps e o fecha com falha quand
     assert.equal(record.pedidoId, 'req_77');
     assert.equal(record.pedidoPor, 'user-1');
     assert.equal(record.vmId, 'vm-t');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** A VM tree with one armed lib that is already at origin: the reset has nothing to do and succeeds. */
+function treeWithUpToDateLib() {
+  const root = mkdtempSync(join(tmpdir(), 'setup-rec-'));
+  const dest = makeCloneWithOrigin(root);
+  armClonedDep(dest);
+  pushHeadToOrigin(dest);
+  const mlsRoot = join(root, 'tree');
+  mkdirSync(mlsRoot, { recursive: true });
+  execFileSync('mv', [dest, join(mlsRoot, 'mls-100555')]);
+  return { root, mlsRoot };
+}
+
+function runReset(mlsRoot, env) {
+  const script = join(dirname(fileURLToPath(import.meta.url)), 'gitReposSetup.mjs');
+  return spawnSync(process.execPath, [script, '--root', mlsRoot, '--reset-from-origin', '100555'], {
+    encoding: 'utf8',
+    env: { ...process.env, COLLAB_RELEASE_REQUESTED_BY: 'user-1', COLLAB_VM_ID: 'vm-t', ...env },
+  });
+}
+
+const recordFiles = (mlsRoot) => {
+  const dir = join(mlsRoot, 'releases', 'registro');
+  try {
+    return readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')));
+  } catch {
+    return [];
+  }
+};
+
+test('rt190: o reset das libs SOZINHO (com pedido, sem release em seguida) não deixa registro, nem no sucesso nem na falha', () => {
+  const { root, mlsRoot } = treeWithUpToDateLib();
+  try {
+    const ok = runReset(mlsRoot, { COLLAB_RELEASE_REQUEST_ID: 'req_90' });
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.deepEqual(recordFiles(mlsRoot), [], 'success: no record');
+    // a failing lone reset: the exit code says it, no record
+    writeFileSync(join(mlsRoot, 'mls-100555', 'readme.md'), 'local only\n');
+    git(join(mlsRoot, 'mls-100555'), 'add', '-A');
+    git(join(mlsRoot, 'mls-100555'), 'commit', '-q', '-m', 'local work');
+    const failed = runReset(mlsRoot, { COLLAB_RELEASE_REQUEST_ID: 'req_91' });
+    assert.equal(failed.status, 1);
+    assert.deepEqual(recordFiles(mlsRoot), [], 'failure: no record either; the exit code is the answer');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt190: com release em seguida (COLLAB_RELEASE_FOLLOWS=1) o registro do deps é continuado pela release: UM registro, na fila pedida, com o projeto, fechado e avisado', () => {
+  const { root, mlsRoot } = treeWithUpToDateLib();
+  try {
+    const reset = runReset(mlsRoot, {
+      COLLAB_RELEASE_REQUEST_ID: 'req_92', COLLAB_RELEASE_FOLLOWS: '1', COLLAB_RELEASE_QUEUE: 'libs', COLLAB_RELEASE_PROJECT_ID: '102047',
+    });
+    assert.equal(reset.status, 0, reset.stderr);
+    const [open] = recordFiles(mlsRoot);
+    assert.equal(recordFiles(mlsRoot).length, 1);
+    assert.deepEqual([open.resultado, open.fila, open.projetoId, open.pedidoId], ['andamento', 'libs', 102047, 'req_92']);
+    assert.deepEqual(open.passos.map((step) => [step.nome, step.resultado]), [['deps', 'ok']]);
+    // what addNewVersion does next, with the same request id: it continues the open record and closes it
+    const handle = openRelease({
+      root: mlsRoot, dir: recordsDir(mlsRoot, 'app'), releaseId: '20261106180000', queue: 'app', projectId: '102047', vmId: 'vm-t', requestId: 'req_92',
+    });
+    assert.equal(handle.releaseId, open.releaseId, 'the release continues the record the deps step opened');
+    handle.step('release', () => {});
+    handle.close({ queue: 'libs' });
+    const after = recordFiles(mlsRoot);
+    assert.equal(after.length, 1, 'one request, one record');
+    assert.deepEqual([after[0].resultado, after[0].fila, after[0].projetoId], ['ok', 'libs', 102047]);
+    assert.deepEqual(after[0].passos.map((step) => step.nome), ['deps', 'release']);
+    assert.deepEqual(readPendingNotice(recordsDir(mlsRoot, 'app'), after[0].releaseId), ['release.finished']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt190: com release em seguida e sem COLLAB_RELEASE_QUEUE/PROJECT_ID o registro abre como app sem projeto (o update-and-release de hoje); a release preenche o projeto', () => {
+  const { root, mlsRoot } = treeWithUpToDateLib();
+  try {
+    assert.equal(runReset(mlsRoot, { COLLAB_RELEASE_REQUEST_ID: 'req_93', COLLAB_RELEASE_FOLLOWS: '1' }).status, 0);
+    const [open] = recordFiles(mlsRoot);
+    assert.deepEqual([open.fila, open.projetoId], ['app', null]);
+    const handle = openRelease({ root: mlsRoot, dir: recordsDir(mlsRoot, 'app'), releaseId: '20261106180100', queue: 'app', projectId: '102056', vmId: 'vm-t', requestId: 'req_93' });
+    handle.close({ queue: 'app' });
+    assert.deepEqual(recordFiles(mlsRoot).map((record) => [record.fila, record.projetoId, record.resultado]), [['app', 102056, 'ok']]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

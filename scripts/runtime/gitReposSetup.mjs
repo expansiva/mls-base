@@ -568,12 +568,26 @@ function main() {
       `gitReposSetup --reset-from-origin root=${ROOT}`
       + (ids.length ? ` ids=${ids.join(',')}` : ` projects=${projects.length}`),
     );
-    // A release asked by the sites starts here (deps): the record opens now so a failure in this step is not lost.
+    // ONE request = ONE record (rt190). This step opens the record only when a release follows it in the same command
+    // (COLLAB_RELEASE_FOLLOWS=1, set by the sites in the chains that end with a release): the release then CONTINUES
+    // this record (same request id), so `deps` is one step of it and a failure here is not lost. Without the variable
+    // the reset stands alone and leaves no record: before, it left an open `app` record with no project that nothing
+    // closed on success and that the sweeper turned into a false `falhou` two hours later. A failure of a lone reset
+    // comes back as the exit code of the command (the sites reads it when the command ends).
     const requestId = String(process.env.COLLAB_RELEASE_REQUEST_ID ?? '').trim();
-    const rec = requestId
+    const releaseFollows = String(process.env.COLLAB_RELEASE_FOLLOWS ?? '').trim() === '1';
+    const requestedQueue = String(process.env.COLLAB_RELEASE_QUEUE ?? '').trim();
+    const requestedProject = String(process.env.COLLAB_RELEASE_PROJECT_ID ?? '').trim();
+    const rec = requestId && releaseFollows
       ? openRelease({
-        root: ROOT, dir: recordsDir(ROOT, 'app'), releaseId: newReleaseId(), queue: 'app', projectId: null,
-        vmId: readVmId(), requestId, requestedBy: requestedByFor(),
+        root: ROOT,
+        dir: recordsDir(ROOT, 'app'),
+        releaseId: newReleaseId(),
+        queue: ['base', 'libs', 'shared', 'app'].includes(requestedQueue) ? requestedQueue : 'app',
+        projectId: /^\d+$/u.test(requestedProject) ? requestedProject : null,
+        vmId: readVmId(),
+        requestId,
+        requestedBy: requestedByFor(),
       })
       : null;
     let rows;
