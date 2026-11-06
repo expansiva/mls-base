@@ -190,6 +190,12 @@ test('buildPieces reads commits, repo links and what changed against the previou
     assert.equal(pieces.app.commits.length, 1);
     assert.deepEqual(pieces.libStudio, { libs: '1', monaco: '2', libsAnterior: '1', monacoAnterior: '2' });
     assert.deepEqual(pieces.serviceWorker, { versao: '1.4.41', versaoAnterior: '1.4.40' });
+    const noSw = buildPieces({ root, clientId: '102047', stamp: { ...stamp, swVersion: undefined }, previous });
+    assert.equal('serviceWorker' in noSw, false, 'no service worker version: the piece is left out (the contract takes text)');
+    const noStudio = buildPieces({ root, clientId: '102047', stamp: { ...stamp, libs: undefined, monaco: undefined }, previous });
+    assert.equal('libStudio' in noStudio, false, 'no Studio lib stamp: the piece is left out');
+    assert.equal(typeof decideQueue(noSw), 'string');
+    assert.equal(typeof decideQueue(noStudio), 'string');
     const withCm = buildPieces({ root, clientId: '102047', stamp: { ...stamp, sharedApps: { cm: '20261105-1' } }, previous: { ...previous, sharedApps: { cm: '20261102-1' } } });
     assert.deepEqual(withCm.shared, [{ nome: 'cm', versao: '20261105-1', versaoAnterior: '20261102-1', repo: null }]);
     assert.deepEqual(pieces.shared, []);

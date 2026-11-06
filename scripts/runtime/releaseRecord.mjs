@@ -148,13 +148,21 @@ export function buildPieces({ root, clientId, stamp, previous }) {
   return {
     base: { ...base, commits: baseLog.commits, ...(baseLog.truncado ? { truncado: true } : {}) },
     libs,
-    libStudio: {
-      libs: stamp.libs ?? null,
-      monaco: stamp.monaco ?? null,
-      libsAnterior: previous?.libs ?? null,
-      monacoAnterior: previous?.monaco ?? null,
-    },
-    serviceWorker: { versao: stamp.swVersion ?? null, versaoAnterior: previous?.swVersion ?? null },
+    ...(typeof stamp.libs === 'string' && stamp.libs !== '' && typeof stamp.monaco === 'string' && stamp.monaco !== ''
+      ? {
+        libStudio: {
+          libs: stamp.libs,
+          monaco: stamp.monaco,
+          libsAnterior: previous?.libs ?? null,
+          monacoAnterior: previous?.monaco ?? null,
+        },
+      }
+      : {}),
+    // The contract takes `versao` as text: a release with no service worker version (a fresh tree made by the migration)
+    // leaves the piece out; the sites answered 400 to `versao: null`.
+    ...(typeof stamp.swVersion === 'string' && stamp.swVersion !== ''
+      ? { serviceWorker: { versao: stamp.swVersion, versaoAnterior: previous?.swVersion ?? null } }
+      : {}),
     shared: Object.entries(stamp.sharedApps ?? {}).map(([nome, versao]) => ({
       nome, versao, versaoAnterior: previous?.sharedApps?.[nome] ?? null, repo: null,
     })),
@@ -178,9 +186,9 @@ export function decideQueue({ requested, hasRequest, pieces }) {
   if (!hasRequest || !pieces) return 'app';
   const { base, libs, libStudio, serviceWorker, shared = [] } = pieces;
   if (base.commitAnterior && base.commit !== base.commitAnterior) return 'base';
-  const studioChanged = (libStudio.libsAnterior && libStudio.libs !== libStudio.libsAnterior)
-    || (libStudio.monacoAnterior && libStudio.monaco !== libStudio.monacoAnterior);
-  const swChanged = serviceWorker.versaoAnterior && serviceWorker.versao !== serviceWorker.versaoAnterior;
+  const studioChanged = (libStudio?.libsAnterior && libStudio.libs !== libStudio.libsAnterior)
+    || (libStudio?.monacoAnterior && libStudio.monaco !== libStudio.monacoAnterior);
+  const swChanged = serviceWorker?.versaoAnterior && serviceWorker.versao !== serviceWorker.versaoAnterior;
   if (libs.some((lib) => lib.mudou) || studioChanged || swChanged) return 'libs';
   if (shared.some((item) => item.versaoAnterior && item.versao !== item.versaoAnterior)) return 'shared';
   return 'app';
