@@ -94,3 +94,52 @@ test('unreadable previous zip stamps a new lastModified and warns', async () => 
     rmSync(targetDir, { recursive: true, force: true });
   }
 });
+
+function gitProject() {
+  const targetDir = project();
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@example.com', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@example.com' };
+  const git = (...args) => execFileSync('git', args, { cwd: targetDir, env, encoding: 'utf8' }).trim();
+  git('init', '-q', '-b', 'main');
+  writeFileSync(join(targetDir, 'l2', 'b.ts'), 'bee\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'one', '--date', '2026-01-01T10:00:00Z');
+  return { targetDir, git, env };
+}
+
+test('rt193: arquivo com o mesmo blob do inventário anterior reaproveita o update_at; o alterado pergunta ao git', async () => {
+  const { targetDir, git, env } = gitProject();
+  try {
+    const first = await createFileInfo({ targetDir, levels: LEVELS, log: () => {} });
+    const sentinel = '2001-01-01T00:00:00.000Z';
+    writePreviousZip(targetDir, {
+      lastModified: KEPT,
+      files: first.result.files.map((file) => ({ ...file, update_at: sentinel })),
+    });
+    // b.ts muda e é commitado: o blob difere do inventário anterior.
+    writeFileSync(join(targetDir, 'l2', 'b.ts'), 'bee two\n');
+    execFileSync('git', ['add', '-A'], { cwd: targetDir, env });
+    execFileSync('git', ['commit', '-q', '-m', 'two', '--date', '2026-02-02T10:00:00Z'], { cwd: targetDir, env: { ...env, GIT_AUTHOR_DATE: '2026-02-02T10:00:00Z' } });
+    const { lines, log } = logsOf();
+    const { result } = await createFileInfo({ targetDir, levels: LEVELS, log });
+    const byPath = Object.fromEntries(result.files.map((file) => [file.shortPath, file]));
+    assert.equal(byPath['l2/a.ts'].update_at, sentinel);
+    assert.equal(byPath['l2/b.ts'].update_at, new Date(git('log', '-1', '--format=%aI', '--', 'l2/b.ts')).toISOString());
+    assert.notEqual(byPath['l2/b.ts'].update_at, sentinel);
+    assert.ok(lines.includes('update_at reused from the previous inventory for 1/2 files'));
+  } finally {
+    rmSync(targetDir, { recursive: true, force: true });
+  }
+});
+
+test('rt193: sem inventário anterior, todo update_at vem do git, na ordem dos arquivos', async () => {
+  const { targetDir, git } = gitProject();
+  try {
+    const { result } = await createFileInfo({ targetDir, levels: LEVELS, log: () => {} });
+    assert.deepEqual(result.files.map((file) => file.shortPath), ['l2/a.ts', 'l2/b.ts']);
+    for (const file of result.files) {
+      assert.equal(file.update_at, new Date(git('log', '-1', '--format=%aI', '--', file.shortPath)).toISOString());
+    }
+  } finally {
+    rmSync(targetDir, { recursive: true, force: true });
+  }
+});

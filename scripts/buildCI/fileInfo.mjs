@@ -38,6 +38,23 @@ async function gitBlobOids(targetDir) {
   return oids;
 }
 
+const GIT_LOG_CONCURRENCY = 8;
+
+// Results keep the order of `items`; at most `limit` callbacks run at once.
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next;
+      next += 1;
+      results[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 async function gitLastCommitDate(targetDir, relPath) {
   try {
     const out = await git(targetDir, ['log', '-1', '--format=%aI', '--', relPath]);
@@ -85,23 +102,35 @@ export async function createFileInfo({ targetDir, levels, log }) {
   const isGitCheckout = existsSync(join(targetDir, '.git'));
   const oids = isGitCheckout ? await gitBlobOids(targetDir) : new Map();
   if (!isGitCheckout) log('fileinfo', 'no .git — versionRef falls back to content sha1, update_at to file mtime');
-  const fileInfos = [];
-  for (const { shortPath, dataPath } of files) {
+  // rt193: `git log -1 -- <file>` per file is one process each (2.7k files in
+  // 102047 = 30 s on a Mac, worse on the VM). A file whose blob is the same as in
+  // the previous inventory keeps its previous update_at; only the others ask git,
+  // a few at a time. A bulk `git log --name-only` is NOT equivalent: it sees side
+  // branches that a merge discarded and the per-file log does not (measured).
+  const previous = await readPreviousFileInfos(targetDir, log);
+  const previousByPath = new Map((previous?.files ?? []).map((file) => [file.shortPath, file]));
+  let reused = 0;
+  const fileInfos = await mapLimit(files, GIT_LOG_CONCURRENCY, async ({ shortPath, dataPath }) => {
     const absPath = join(targetDir, dataPath);
     const { size, mtime } = await stat(absPath);
     let versionRef = oids.get(dataPath);
     if (!versionRef) {
       versionRef = createHash('sha1').update(await readFile(absPath)).digest('hex');
     }
-    fileInfos.push({
-      shortPath,
-      versionRef,
-      Length: size,
-      update_at: isGitCheckout ? await gitLastCommitDate(targetDir, dataPath) : mtime.toISOString(),
-    });
-  }
+    let updateAt = mtime.toISOString();
+    if (isGitCheckout) {
+      const before = previousByPath.get(shortPath);
+      if (before && before.versionRef === versionRef && typeof before.update_at === 'string' && before.update_at) {
+        updateAt = before.update_at;
+        reused += 1;
+      } else {
+        updateAt = await gitLastCommitDate(targetDir, dataPath);
+      }
+    }
+    return { shortPath, versionRef, Length: size, update_at: updateAt };
+  });
+  if (isGitCheckout) log('fileinfo', `update_at reused from the previous inventory for ${reused}/${fileInfos.length} files`);
 
-  const previous = await readPreviousFileInfos(targetDir, log);
   const differ = previous ? diffCount(previous.files, fileInfos) : fileInfos.length;
   const unchanged = differ === 0 && typeof previous?.lastModified === 'string' && previous.lastModified.length > 0;
   const lastModify = unchanged ? previous.lastModified : new Date().toISOString();
