@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { VM_CM_ROOT, vmBenchScript } from './prepareBench.mjs';
-import { planLocalSources, prepareSources } from './prepareSources.mjs';
+import { detectProjectTree, planLocalSources, prepareSources } from './prepareSources.mjs';
 import {
   LONG_TIMEOUT_MS,
   assertProjectId,
@@ -36,7 +36,7 @@ export function usage() {
     '  end --session <name>',
     'help and status do not start prepare or a browser.',
     'prepare keeps the reservation; --dry-run only reports occupation and the plan.',
-    '--tree project (or LIMA_PROJECT_TREE=1) uses /data/app<id>/mls-base and current. The default is /data/mls-base and current-<id>.',
+    '--tree project (or LIMA_PROJECT_TREE=1) forces the project tree; without it the prepare asks the bench where the app runs. It uses /data/app<id>/mls-base and current. The default is /data/mls-base and current-<id>.',
   ].join('\n');
 }
 
@@ -449,14 +449,25 @@ function printView(view) {
   process.stdout.write(`${JSON.stringify(publicView(view))}\n`);
 }
 
+/**
+ * The tree is a fact of the bench (rt186), not a choice of whoever asks for the test: without --tree and without
+ * LIMA_PROJECT_TREE (any value, `0` included, forces), ask the bench where the app runs and use that tree.
+ */
+export async function resolveTreeEnv(parsed, profile, env, detect = detectProjectTree) {
+  if (parsed.tree || env.LIMA_PROJECT_TREE !== undefined) return env;
+  const found = await detect(profile, parsed.projectId, { sshBin: env.LIMA_SSH_BIN, env });
+  return found === 'project' ? { ...env, LIMA_PROJECT_TREE: '1' } : env;
+}
+
 export async function main(argv = process.argv.slice(2), env = process.env) {
   const parsed = parseCli(argv);
   if (parsed.command === 'help') {
     process.stdout.write(`${usage()}\n`);
     return 0;
   }
-  const runEnv = parsed.tree === 'project' ? { ...env, LIMA_PROJECT_TREE: '1' } : env;
+  let runEnv = parsed.tree === 'project' ? { ...env, LIMA_PROJECT_TREE: '1' } : env;
   const profile = resolveLocalProfile(undefined, runEnv);
+  if (parsed.command === 'prepare') runEnv = await resolveTreeEnv(parsed, profile, runEnv);
   if (parsed.command === 'prepare') return runPrepare(parsed, profile, runEnv);
   if (parsed.command === 'begin') {
     const begun = await beginSession(profile, parsed.session, parsed.projectId);

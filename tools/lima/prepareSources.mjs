@@ -327,6 +327,29 @@ function markerOf(text, projectId) {
   return { kind: 'absent' };
 }
 
+/**
+ * Which tree the app of this project runs from on the bench: `project` (/data/app<id>/mls-base), `shared`
+ * (/data/mls-base) or `null` when the bench does not say. The tree is a fact of the machine, not a choice of whoever
+ * asks for the test: the pm2 cwd of the app decides; with no app in pm2, the existence of the project tree's
+ * `current` does. An explicit --tree / LIMA_PROJECT_TREE still wins (the caller does not ask when it is set).
+ */
+export async function detectProjectTree(profile, projectId, options = {}) {
+  const id = String(projectId);
+  const listed = await ssh(profile, 'pm2 jlist', options);
+  if (!listed.uncertain && listed.code === 0) {
+    try {
+      const list = JSON.parse(listed.stdout || '[]');
+      const row = (Array.isArray(list) ? list : []).find((item) => item.name === projectApp(id));
+      const cwd = row?.pm2_env?.pm_cwd || '';
+      if (cwd.startsWith(`/data/app${id}/mls-base/`) || cwd === `/data/app${id}/mls-base`) return 'project';
+      if (cwd.startsWith('/data/mls-base/') || cwd === '/data/mls-base') return 'shared';
+    } catch { /* no usable pm2 list: fall through to the folder check */ }
+  }
+  const folder = await ssh(profile, `test -e /data/app${id}/mls-base/current && echo project || echo shared`, options);
+  if (folder.uncertain || folder.code !== 0) return null;
+  return folder.stdout === 'project' ? 'project' : folder.stdout === 'shared' ? 'shared' : null;
+}
+
 async function readVm(profile, plan, options) {
   const projectId = plan.projectId;
   const vmRoot = projectMlsBase(projectId, options.env);
