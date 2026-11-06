@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { migrateToProjectTree, oldDraftChildren, parseArgs, revertProjectTree } from './migrateToProjectTree.mjs';
 
@@ -168,11 +168,15 @@ test('--discard-drafts removes dirty drafts and their branches, keeps main, then
   assert.match(dry.lines.join('\n'), new RegExp(`would discard draft ${slug}`));
   assert.equal(existsSync(join(source, 'drafts', slug)), true);
   const stopped = [];
+  const pruned = [];
   const result = await migrateToProjectTree({
     ...args,
-    commands: { ...commands(args.destRoot), stopDrafts: (_s, id) => { stopped.push(id); return []; } },
+    commands: { ...commands(args.destRoot), stopDrafts: (_s, id) => { stopped.push(id); return []; }, pruneDraftDatabases: (id, data) => { pruned.push([id, data]); return ['dropped collab_app_draft_team_102056 (14 MB)', 'keep collab_app_draft_102047_u1 (active: folder x)']; } },
   });
   assert.deepEqual(stopped, ['102056']);
+  assert.deepEqual(pruned, [['102056', dirname(source)]]);
+  assert.match(result.lines.join('\n'), /draft databases: dropped collab_app_draft_team_102056 \(14 MB\)/);
+  assert.equal(result.lines.join('\n').includes('keep collab_app_draft'), false, 'kept databases are not noise in the migration output');
   assert.match(result.lines.join('\n'), new RegExp(`discarded draft ${slug}`));
   assert.match(result.lines.join('\n'), /deleted branch team\/7/);
   assert.match(result.lines.join('\n'), /deleted branch user\/ab/);
@@ -656,4 +660,25 @@ test('the draft children of the old tree for this project are found, and only li
   const found = oldDraftChildren(source, '102056', { readCommand: commandOf });
   assert.deepEqual(found.map((child) => [child.slug, child.pid, child.port]), [['team-102056', 111, 4100]]);
   assert.deepEqual(oldDraftChildren(source, '102047', { readCommand: commandOf }).map((child) => child.slug), ['user-cd']);
+});
+
+test('a failing prune is said and does not undo the migration', async () => {
+  const { source } = withDraft(false);
+  const args = parseArgs(['102056', '--root', source, '--discard-drafts', '--store', join(source, '..', 'pnpm-store')]);
+  const result = await migrateToProjectTree({
+    ...args,
+    commands: { ...commands(args.destRoot), pruneDraftDatabases() { throw new Error('sudo: a password is required'); } },
+  });
+  assert.match(result.lines.join('\n'), /draft databases: prune skipped \(sudo: a password is required\)/);
+  assert.equal(existsSync(join(args.destRoot, 'mls-102056')), true);
+});
+
+test('a migration without --discard-drafts never touches the draft databases', async () => {
+  const { source } = withDraft(false);
+  const args = parseArgs(['102056', '--root', source, '--store', join(source, '..', 'pnpm-store')]);
+  const result = await migrateToProjectTree({
+    ...args,
+    commands: { ...commands(args.destRoot), pruneDraftDatabases() { throw new Error('must not be called'); } },
+  });
+  assert.equal(result.lines.join('\n').includes('draft databases'), false);
 });

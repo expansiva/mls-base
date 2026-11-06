@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { appNameOf, projectIdToPort } from './projectPorts.mjs';
+import { pruneDraftDatabases } from './draftDatabases.mjs';
 import { ensureProjectApp } from './vmApps.mjs';
 
 const MLS_DIR = /^mls-\d+$/u;
@@ -696,6 +697,23 @@ export function executePlan(plan, {
   return { lines: done, health: null };
 }
 
+/**
+ * --discard-drafts leaves the draft databases without a draft: each one costs a TimescaleDB scheduler and gigabytes
+ * (rt185). After the migration, drop the ORPHANS of this project (no folder, no branch, in any tree). A failure is
+ * said, not swallowed, and does not undo a migration that already worked.
+ */
+function pruneOrphanDatabases(options) {
+  if (!options.discardDrafts) return [];
+  const prune = options.commands?.pruneDraftDatabases
+    ?? ((projectId, dataRoot) => pruneDraftDatabases({ projectId, dataRoot }));
+  try {
+    const lines = prune(options.projectId, dirname(options.sourceRoot));
+    return lines.filter((line) => !line.startsWith('keep ')).map((line) => `draft databases: ${line}`);
+  } catch (error) {
+    return [`draft databases: prune skipped (${error instanceof Error ? error.message.split('\n')[0] : String(error)})`];
+  }
+}
+
 export async function migrateToProjectTree(options) {
   const discarded = [];
   if (options.discardDrafts && !options.dryRun) {
@@ -715,7 +733,10 @@ export async function migrateToProjectTree(options) {
   const plan = buildPlan(options);
   if (options.dryRun) {
     const head = options.discardDrafts
-      ? draftWorktrees(options.sourceRoot, options.projectId).map((row) => `would discard draft ${row.slug}`)
+      ? [
+        ...draftWorktrees(options.sourceRoot, options.projectId).map((row) => `would discard draft ${row.slug}`),
+        `would prune the orphan draft databases of ${options.projectId} (draftDatabases.mjs prune --project ${options.projectId})`,
+      ]
       : [];
     return { lines: [...head, ...plan.map((step) => `${step.skip ? 'skip' : 'would'} ${step.text}`)] };
   }
@@ -728,7 +749,7 @@ export async function migrateToProjectTree(options) {
       await result.health(`http://127.0.0.1:${healthStep.port}/health`);
     }
     if (!existed) rmSync(join(options.destRoot, '.migrando'), { force: true });
-    return { lines: [...discarded, ...result.lines] };
+    return { lines: [...discarded, ...result.lines, ...pruneOrphanDatabases(options)] };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     // The app already runs from the new tree: put it back on the old one before the folder goes away.
