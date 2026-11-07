@@ -50,7 +50,25 @@ async function readOrgName(targetDir) {
   return { orgName: info.orgName ?? '', projectType: info.projectType };
 }
 
+// rt193: where the time goes, in one line at the end (`[buildCI:time] deps=0.4s code=…`).
+function startTimer() {
+  const marks = [];
+  const startedAt = Date.now();
+  let last = startedAt;
+  return {
+    mark(label) {
+      const now = Date.now();
+      marks.push(`${label}=${((now - last) / 1000).toFixed(1)}s`);
+      last = now;
+    },
+    summary() {
+      return `${marks.join(' ')} total=${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+    },
+  };
+}
+
 async function main() {
+  const timer = startTimer();
   const id = parseTargetId(process.argv[2]);
   const targetDir = resolve(ROOT, `mls-${id}`);
   if (!existsSync(targetDir)) {
@@ -67,6 +85,7 @@ async function main() {
   const { resolveDeps } = await import('./resolveDeps.mjs');
   const projects = await resolveDeps({ root: ROOT, targetId: id, orgName, levels: COMPILE_LEVELS, log });
   log('deps', `closure: ${[...projects.keys()].map((p) => `mls-${p}`).join(' ')}`);
+  timer.mark('deps');
   // Step 3 — types/ (mls.d.ts, monaco.d.ts). Offline mode (BUILDCI_OFFLINE=1,
   // used by the VM's buildProjectsObj) trusts the types/ already on disk
   // (the resolved lib version, downloaded by runInstallLibs) — the VM build must
@@ -78,27 +97,35 @@ async function main() {
     const { downloadTypes } = await import('./downloadTypes.mjs');
     await downloadTypes({ root: ROOT, log });
   }
+  timer.mark('types');
   // Step 4 — staging .generated/<id>/project/
   const { stage } = await import('./stage.mjs');
   const stageRoot = await stage({ root: ROOT, targetId: id, projects, levels: COMPILE_LEVELS, log });
+  timer.mark('stage');
   // Step 5 — generated tsconfigs
   const { createTsconfigs } = await import('./createTsconfig.mjs');
   const { codePath, declPath } = await createTsconfigs({ stageRoot, targetId: id, projects, log });
   // Step 6 — tsc + enhancement + declarations
   const { compileCode, compileDeclarations } = await import('./compile.mjs');
   const { runEnhancement } = await import('./enhancement.mjs');
+  timer.mark('tsconfig');
   await compileCode({ root: ROOT, codePath, log });
+  timer.mark('tscCode');
   await runEnhancement({ stageRoot, targetId: id, log });
+  timer.mark('enhancement');
   await compileDeclarations({ root: ROOT, stageRoot, declPath, log });
+  timer.mark('tscDecl');
   // Step 7 — fileinfos.json + importsMap.json
   const { writeFileInfo } = await import('./fileInfo.mjs');
   const { writeImportsMap } = await import('./importsMap.mjs');
   const lastModify = await writeFileInfo({ stageRoot, targetDir, levels: COMPILE_LEVELS, log });
   await writeImportsMap({ stageRoot, targetDir, log });
+  timer.mark('fileinfo');
   // Step 8 — compiled.zip + source.zip -> mls-<id>/obj/
   const { pack } = await import('./pack.mjs');
   await pack({ stageRoot, targetDir, targetId: id, shipLevels, levels: COMPILE_LEVELS, log });
 
+  timer.mark('pack');
   // Step 9 — callWork: DISABLED during the testing phase (decision #13 of
   // taskNewBuildCI.md). Only uncomment in Step 11 (production).
   const { runCallWork } = await import('./callWork.mjs');
@@ -106,6 +133,8 @@ async function main() {
   //log('callWork', 'backend notification DISABLED (testing phase — decision #13)');
   void lastModify; // used by callWork once reactivated
 
+  timer.mark('callWork');
+  log('time', `mls-${id} ${timer.summary()}`);
   log('done', `build of mls-${id} finished`);
 }
 
