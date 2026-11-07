@@ -29,6 +29,7 @@ import {
 } from './releaseRecord.mjs';
 import { databaseUrlTestFor, declaredTestMode } from './vmApps.mjs';
 import { isProjectTree } from './projectPorts.mjs';
+import { readZipStamp, sourceTreeHash, writeZipStamp, ZIP_SOURCE_LEVELS } from './zipSourceTree.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const run = (cmd, cwd = ROOT, env) => {
@@ -169,7 +170,6 @@ export function assertFechoCompiledZips(root, ids) {
   throw new Error(`release aborted: obj/compiled.zip missing for ${list}`);
 }
 
-const ZIP_SOURCE_LEVELS = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
 
 function gitText(repo, args) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -182,8 +182,10 @@ function gitText(repo, args) {
  * - zip tracked at HEAD (the GitHub Action's commit): it is current when the source levels l1..l7 are the same
  *   tree at HEAD as at the last commit that touched the zip. A tree comparison, not mtimes: a `git pull` rewrites
  *   every file mtime, which is how a stale zip looked fresh (mls-102035, 04/11).
- * - zip not tracked, or already regenerated here (modified in the worktree): it is current when it is newer than
- *   HEAD's commit time and the source levels have no uncommitted change.
+ * - zip not tracked, or already regenerated here (modified in the worktree): it is current when the source levels
+ *   have no uncommitted change and their git tree is the one recorded when this zip was built (zipSourceTree.mjs,
+ *   rt194); a local snapshot commit does not change that tree. A zip with no stamp (built before rt194) falls back
+ *   to "newer than HEAD's commit time", once: the rebuild writes the stamp.
  */
 export function compiledZipStaleReason(root, id) {
   const repo = join(root, `mls-${id}`);
@@ -208,6 +210,11 @@ export function compiledZipStaleReason(root, id) {
     }
   }
   if (gitText(repo, ['status', '--porcelain', '--', ...ZIP_SOURCE_LEVELS]) !== '') return 'sources have uncommitted changes';
+  const stamped = readZipStamp(repo, zip);
+  if (stamped !== null) {
+    const tree = sourceTreeHash(repo);
+    return tree === null || tree === stamped ? null : 'sources changed since the zip was built';
+  }
   const headTime = Number(gitText(repo, ['log', '-1', '--format=%ct'])) * 1000;
   return statSync(zip).mtimeMs >= headTime ? null : 'zip is older than the HEAD commit';
 }

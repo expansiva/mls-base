@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { trackedDirtyPaths } from './gitPostReceive.mjs';
 import { collectReleaseStamp, writeReleaseStamp } from './releaseStamp.mjs';
+import { writeZipStamp } from './zipSourceTree.mjs';
 import { APPS_DIR, PM2_CONFIG, databaseUrlTestFor, ensureProjectApp } from './vmApps.mjs';
 import {
   VM_TSCONFIG,
@@ -492,4 +493,76 @@ test('compiledZipStaleReason: zip que já foi rastreado, saiu da árvore do HEAD
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// rt194: o zip regerado na VM compara a árvore das camadas, não a hora do commit.
+function zipRepo(id) {
+  const root = mkdtempSync(join(tmpdir(), 'rt194-'));
+  const repo = join(root, `mls-${id}`);
+  const git = gitRepo(repo, [writeIn('l2/a.ts', 'a1'), writeIn('README.md', 'r1'), commitAll('source')]);
+  writeIn('obj/compiled.zip', 'zip-v1')(git, repo);
+  // obj/ fica fora do git na VM (regerado localmente)
+  writeIn('.git/info/exclude', 'obj/\n')(git, repo);
+  return { root, repo, git, zip: join(repo, 'obj', 'compiled.zip') };
+}
+
+test('rt194: commit de snapshot sem mudar l1..l7 não deixa o zip velho; mudança em l2 deixa', () => {
+  const { root, repo, git, zip } = zipRepo('900011');
+  try {
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(zip, old, old);
+    assert.equal(writeZipStamp(repo, zip), true);
+    // snapshot local: commit novo (mais recente que o zip), mesmas camadas
+    writeIn('README.md', 'r2')(git, repo);
+    commitAll('snapshot')(git);
+    assert.equal(compiledZipStaleReason(root, '900011'), null);
+    // commit vazio também
+    git('commit', '-q', '--allow-empty', '-m', 'empty');
+    assert.equal(compiledZipStaleReason(root, '900011'), null);
+    // mudança real numa camada
+    writeIn('l2/a.ts', 'a2')(git, repo);
+    commitAll('real change')(git);
+    assert.equal(compiledZipStaleReason(root, '900011'), 'sources changed since the zip was built');
+    // voltar à mesma árvore: em dia de novo
+    writeIn('l2/a.ts', 'a1')(git, repo);
+    commitAll('revert')(git);
+    assert.equal(compiledZipStaleReason(root, '900011'), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt194: zip sem carimbo usa a hora uma vez; depois de carimbado vale a árvore', () => {
+  const { root, repo, git, zip } = zipRepo('900012');
+  try {
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(zip, old, old);
+    assert.equal(compiledZipStaleReason(root, '900012'), 'zip is older than the HEAD commit');
+    // a reconstrução grava o carimbo (buildProjectsObj)
+    assert.equal(writeZipStamp(repo, zip), true);
+    assert.equal(compiledZipStaleReason(root, '900012'), null);
+    // o carimbo é deste zip: outro zip no lugar (tamanho diferente) não herda o carimbo
+    writeIn('obj/compiled.zip', 'another zip, other bytes')(git, repo);
+    utimesSync(zip, old, old);
+    assert.equal(compiledZipStaleReason(root, '900012'), 'zip is older than the HEAD commit');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt194: com mudança não commitada nas camadas o carimbo não é gravado', () => {
+  const { root, repo, git, zip } = zipRepo('900013');
+  try {
+    writeIn('l2/a.ts', 'dirty')(git, repo);
+    assert.equal(writeZipStamp(repo, zip), false);
+    assert.equal(compiledZipStaleReason(root, '900013'), 'sources have uncommitted changes');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt194: o buildProjectsObj carimba o zip depois de copiá-lo para obj/', () => {
+  const src = readFileSync(join(HERE, 'buildProjectsObj.mjs'), 'utf8');
+  assert.match(src, /writeZipStamp\(join\(ROOT, `mls-\$\{id\}`\), join\(objDir, 'compiled\.zip'\)\);/u);
+  assert.ok(src.indexOf('copyFileSync(staged') < src.indexOf('writeZipStamp('));
 });

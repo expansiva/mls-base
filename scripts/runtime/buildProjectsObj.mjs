@@ -23,6 +23,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { formatTypeCheckTsconfigLog, typeCheckProject } from '../typeCheckRun.mjs';
+import { writeZipStamp } from './zipSourceTree.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SOURCE_LEVELS = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
@@ -109,6 +110,8 @@ for (const id of ids) {
         const staged = join(ROOT, '.generated', id, 'obj', zipName);
         if (existsSync(staged)) copyFileSync(staged, join(objDir, zipName));
       }
+      // rt194: which source tree this zip came from, for the activation guard (not the commit time).
+      writeZipStamp(join(ROOT, `mls-${id}`), join(objDir, 'compiled.zip'));
       results.built.push(id);
       console.log(`[buildProjectsObj] mls-${id} done in ${Math.round((Date.now() - startedAt) / 1000)}s`);
     } catch (error) {
