@@ -224,7 +224,15 @@ export function ensureFechoCompiledZips(root, ids, { build = defaultBuildObjs, l
   const stale = [];
   for (const id of ids) {
     const reason = compiledZipStaleReason(root, id);
-    if (reason) stale.push({ id, reason });
+    if (reason) {
+      stale.push({ id, reason });
+    } else {
+      // rt194: a zip judged current gets its source-tree stamp too, so the next local snapshot commit
+      // (same sources, newer commit time) does not look like a stale zip. No-op when it already has one.
+      const repo = join(root, `mls-${id}`);
+      const zip = join(repo, 'obj', 'compiled.zip');
+      if (existsSync(zip) && readZipStamp(repo, zip) === null) writeZipStamp(repo, zip);
+    }
   }
   if (stale.length === 0) return [];
   for (const { id, reason } of stale) log(`generated obj mls-${id}: ${reason}`);

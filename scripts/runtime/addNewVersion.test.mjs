@@ -566,3 +566,35 @@ test('rt194: o buildProjectsObj carimba o zip depois de copiá-lo para obj/', ()
   assert.match(src, /writeZipStamp\(join\(ROOT, `mls-\$\{id\}`\), join\(objDir, 'compiled\.zip'\)\);/u);
   assert.ok(src.indexOf('copyFileSync(staged') < src.indexOf('writeZipStamp('));
 });
+
+test('rt194: o zip em dia pela hora, sem carimbo, ganha o carimbo no ativar; um snapshot depois não o deixa velho', () => {
+  const { root, repo, git, zip } = zipRepo('900014');
+  try {
+    const later = new Date(Date.now() + 5_000);
+    utimesSync(zip, later, later);
+    assert.equal(compiledZipStaleReason(root, '900014'), null);
+    assert.deepEqual(ensureFechoCompiledZips(root, ['900014'], { build: () => assert.fail('não devia gerar'), log: () => {} }), []);
+    // snapshot local: commit novo, mesmas camadas, zip agora "mais velho" que o HEAD
+    writeIn('README.md', 'r2')(git, repo);
+    commitAll('snapshot')(git);
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(zip, old, old);
+    assert.equal(compiledZipStaleReason(root, '900014'), 'zip is older than the HEAD commit', 'o mtime mudou: o carimbo não vale mais');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt194: carimbado no ativar, o snapshot sem mudança de camadas não refaz', () => {
+  const { root, repo, git, zip } = zipRepo('900015');
+  try {
+    const later = new Date(Date.now() + 5_000);
+    utimesSync(zip, later, later);
+    ensureFechoCompiledZips(root, ['900015'], { build: () => assert.fail('não devia gerar'), log: () => {} });
+    writeIn('README.md', 'r2')(git, repo);
+    commitAll('snapshot')(git);
+    assert.deepEqual(ensureFechoCompiledZips(root, ['900015'], { build: () => assert.fail('refez a lib por um snapshot'), log: () => {} }), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
