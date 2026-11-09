@@ -7,6 +7,11 @@
 //
 // Where it lives: the project queues (base, libs, shared, app) under <root>/releases/registro/<releaseId>.json;
 // the vm queue (the management, collab-runtime) under <etc>/releases/<releaseId>.json.
+//
+// Read only, for the sites over SSM (rt203; see releaseHistory.mjs):
+//   releaseRecord.mjs list --fila <base|libs|shared|app|vm> [--projeto <id>] [--limite 10]
+//   releaseRecord.mjs show <releaseId> [--projeto <id>]
+// each prints ONE json line, last; `show` stays under 20,000 characters (cut marked, the libs that changed never cut).
 
 import { chownSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -14,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { hostname } from 'node:os';
 import { mainProjectOf, readSharedVersions } from './sharedApps.mjs';
+import { HistoryError, listRecords, showRecord } from './releaseHistory.mjs';
 
 export { readSharedVersions };
 
@@ -577,7 +583,25 @@ function standaloneFromArgs(argv, env = process.env) {
   };
 }
 
+/** `list` and `show` (rt203): read-only, one json line LAST on stdout, an error is a message on stderr and a code != 0. */
+function historyCli(argv) {
+  const dataRoot = flag(argv, '--data-root') ?? '/data';
+  const etcDir = flag(argv, '--etc');
+  try {
+    const result = argv[0] === 'list'
+      ? listRecords({ fila: flag(argv, '--fila'), projeto: flag(argv, '--projeto'), limite: flag(argv, '--limite'), dataRoot, etcDir })
+      : showRecord({ releaseId: argv[1], projeto: flag(argv, '--projeto'), dataRoot, etcDir });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return 0;
+  } catch (error) {
+    if (!(error instanceof HistoryError)) throw error;
+    process.stderr.write(`releaseRecord ${argv[0]}: ${error.message}\n`);
+    return error.code;
+  }
+}
+
 function cli(argv) {
+  if (argv[0] === 'list' || argv[0] === 'show') return historyCli(argv);
   if (argv[0] === 'vm') {
     // releaseRecord.mjs vm --antes <sha> --depois <sha> [--repo-dir <pasta>] [--etc <pasta>] [--passos a,b] [--resultado ok|falhou] [--falha <passo>] [--mensagem <t>] [--inicio <iso>]
     const base = standaloneFromArgs(argv);
@@ -615,7 +639,7 @@ function cli(argv) {
     return 0;
   }
   if (argv[0] !== 'close') {
-    process.stderr.write('usage: releaseRecord.mjs close|vm|shared ... (see the header of the file)\n');
+    process.stderr.write('usage: releaseRecord.mjs close|vm|shared|list|show ... (see the header of the file)\n');
     return 2;
   }
   const root = resolve(flag(argv, '--root') ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));
