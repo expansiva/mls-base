@@ -817,7 +817,8 @@ test('the pre-s1 prepare rejects the same official obj cleanup as concurrent', {
   mkdirSync(join(priorDir, 'scripts'), { recursive: true });
   symlinkSync(join(dirname(fileURLToPath(import.meta.url)), 'session.mjs'), join(priorDir, 'tools', 'lima', 'session.mjs'));
   symlinkSync(join(MLS_SCRIPTS, 'publishGitDeps.mjs'), join(priorDir, 'scripts', 'publishGitDeps.mjs'));
-  const intro = git(HERE, ['log', '-S', 'async function allowedAfterPublish', '-1', '--format=%H', '--', 'tools/lima/prepareSources.mjs']);
+  // The commit that ADDED the function (the oldest one that touches it): the newest also matches the one that removed it (rt215).
+  const intro = git(HERE, ['log', '-S', 'async function allowedAfterPublish', '--reverse', '--format=%H', '--', 'tools/lima/prepareSources.mjs']).split('\n')[0];
   const shown = spawnSync('git', ['-C', HERE, 'show', `${intro}^:tools/lima/prepareSources.mjs`], { encoding: 'utf8' });
   if (shown.status !== 0) throw new Error(shown.stderr || shown.stdout);
   const priorPath = join(priorDir, 'tools', 'lima', 'prepareSources.mjs');
