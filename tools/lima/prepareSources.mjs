@@ -70,22 +70,24 @@ export async function planLocalSources(root, projectId = PROJECT_ID, env = proce
       throw Object.assign(new Error(`libs version not resolved: ${error.message}`), { code: 'pin', sent: false });
     }
   }
-  const platform = await captureRepo(root, env);
+  // The root, the app and the dependencies are all prepared from their HEAD (rt214): uncommitted work is a warning.
+  const platform = await captureRepo(root, env, { fromHead: true });
   const appRepo = join(root, `mls-${projectId}`);
-  const app = await captureRepo(appRepo, env);
-  const declared = readDepIds(appRepo, projectId);
+  const app = await captureRepo(appRepo, env, { fromHead: true });
+  const declared = readDepIds(appRepo, projectId, { fromHead: true, env });
   if (declared.includes('102056') && !projectTreeMode(env)) {
     throw Object.assign(new Error('refusing project 102056'), { code: 'project', sent: false });
   }
   const depIds = declared.filter((id) => existsSync(join(root, `mls-${id}`, '.git')));
   const deps = [];
-  // A dependency is prepared from its HEAD: uncommitted work in another queue's repo is a warning, not a block.
+  // Uncommitted work in another queue's repo is a warning, not a block. Only an in-progress generation
+  // (.collab-msg.lock) blocks: its commits may land mid-way and HEAD could be a partial state.
   for (const id of depIds) deps.push({ id, ...(await captureRepo(join(root, `mls-${id}`), env, { fromHead: true })) });
   const blocked = [];
   const warnings = [];
-  if (platform.dirty) blocked.push('mls-base');
+  if (platform.dirty) warnings.push(`mls-base: uncommitted changes left out, prepared from HEAD ${String(platform.sha).slice(0, 7)}`);
   if (platform.lock) blocked.push('mls-base:.collab-msg.lock');
-  if (app.dirty) blocked.push(`mls-${projectId}`);
+  if (app.dirty) warnings.push(`mls-${projectId}: uncommitted changes left out, prepared from HEAD ${String(app.sha).slice(0, 7)}`);
   if (app.lock) blocked.push(`mls-${projectId}:.collab-msg.lock`);
   for (const dep of deps) {
     if (dep.dirty) warnings.push(`mls-${dep.id}: uncommitted changes left out, prepared from HEAD ${String(dep.sha).slice(0, 7)}`);

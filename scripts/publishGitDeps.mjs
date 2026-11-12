@@ -32,6 +32,18 @@ function readWorkspaceDeps(path) {
   }
 }
 
+/** Same as readWorkspaceDeps, but from the last commit (`git show HEAD:<file>`): uncommitted edits do not count. */
+function readWorkspaceDepsFromHead(repo, relativePath, env) {
+  const shown = spawnSync('git', ['show', `HEAD:${relativePath}`], { cwd: repo, encoding: 'utf8', env });
+  if (shown.status !== 0) return null;
+  try {
+    const parsed = JSON.parse(shown.stdout);
+    return Array.isArray(parsed?.workspaceDependencies) ? parsed.workspaceDependencies : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Ids de que o cliente depende, sem o próprio cliente, na ordem declarada.
  *
@@ -43,11 +55,14 @@ function readWorkspaceDeps(path) {
  *
  * O mlsDep.json continua valendo como fallback: um projeto que só o tenha (ou cujo
  * l5/config.json não declare o bloco) segue publicando como antes.
+ *
+ * `fromHead` (rt214): lê os dois arquivos do último commit, não do disco, para que um
+ * l5/config.json em edição não mude a lista de um preparo que sai do HEAD.
  */
-export function readDepIds(clientRepo, clientId) {
-  const list = readWorkspaceDeps(join(clientRepo, 'l5', 'config.json'))
-    ?? readWorkspaceDeps(join(clientRepo, 'mlsDep.json'))
-    ?? [];
+export function readDepIds(clientRepo, clientId, { fromHead = false, env = process.env } = {}) {
+  const list = fromHead
+    ? readWorkspaceDepsFromHead(clientRepo, 'l5/config.json', env) ?? readWorkspaceDepsFromHead(clientRepo, 'mlsDep.json', env) ?? []
+    : readWorkspaceDeps(join(clientRepo, 'l5', 'config.json')) ?? readWorkspaceDeps(join(clientRepo, 'mlsDep.json')) ?? [];
   return [...new Set(list.map(String).filter((id) => /^\d+$/u.test(id) && id !== String(clientId)))];
 }
 

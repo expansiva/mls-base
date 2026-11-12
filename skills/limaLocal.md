@@ -24,7 +24,7 @@ O nome da sessão não é prova de posse. A posse fica na lima, em `/etc/collab/
 
 `status` mostra quem está usando: sessão, projeto, fase (`reserved|preparing|ready|testing|failed`), início, operações e browsers. Não mostra `ownerId`, cookie, token, chave nem URL de banco. Outra sessão recebe exit 73, sem espera longa. Lock incompleto ou corrompido, operação de fim incerto e browser que não fechou ficam retidos. A recuperação é só do supervisor, com o `ownerId` esperado e a prova de que não há hook, operação nem browser em execução.
 
-Há um único lock de campanha. O lock do publish no Mac (rt73) e o `.gitbuild.lock` do build continuam, e a reserva da lima vem antes deles. O `.collab-msg.lock` da geração é outra coisa: o prepare recusa repo sujo ou esse arquivo antes de enviar fonte.
+Há um único lock de campanha. O lock do publish no Mac (rt73) e o `.gitbuild.lock` do build continuam, e a reserva da lima vem antes deles. O `.collab-msg.lock` da geração é outra coisa: o prepare recusa esse arquivo (na raiz, no app ou numa dependência) antes de enviar fonte; repo sujo só avisa.
 
 ## Comandos
 
@@ -106,14 +106,16 @@ node tools/lima/lima.mjs prepare 102047 --session tester-<rodada> --db migrate
 Depois abre as jars com `--lima-session tester-<rodada>` e dá o `end` ao terminar. Próxima rodada, campanha nova.
 
 **O que o `prepare` faz:**
-- Publica o que está no HEAD de cada repo do Mac, inclusive commits de outras sessões, e recusa repo sujo.
+- Publica o **HEAD** de cada repo do Mac (raiz `mls-base`, 102047 e dependências), inclusive commits de outras sessões. O que está sujo (arquivo editado, novo ou já preparado com `git add`) **fica de fora**, não é tocado e aparece como aviso no recibo (`warnings`: `mls-<id>: uncommitted changes left out, prepared from HEAD <sha7>`). Só o `.collab-msg.lock` (geração em andamento) recusa.
+- No 102047, a lista de dependências e a árvore enviada são as do HEAD. O marcador de rebuild é um commit vazio feito sem o índice, então o que outra sessão deixou preparado não entra. Um `obj/` rastreado no HEAD do app é recusado: commitar a remoção antes.
 - Roda o migrate no banco de teste. Não há reset.
 - Reinicia o app2047. O app2043 e o app2052 também reiniciam quando a release da plataforma muda.
 - Leva poucos minutos.
 
 **Antes de rodar:**
 - `status` com `held:false`. Se outra campanha estiver ativa, esperar o dono; não apagar lock.
-- Os repos que entram no publish (raiz `mls-base`, 102047 e dependências) sem arquivo sujo. Arquivo sujo de outra sessão não é do tester: não commitar nem guardar. Esperar o dono ou chamar o supervisor.
+- Repo sujo de outra sessão não impede o prepare. Vai o último commit; conferir no recibo o sha de cada repo e os avisos. Se precisar do trabalho em andamento, peça o commit a quem está mexendo; não commitar nem guardar o que é de outra sessão.
+- Risco aceito: o prepare roda as ferramentas (`tools/lima`, `scripts/`) a partir do **disco** da raiz. Uma edição em andamento nesses arquivos roda junto, mas não vai para a lima.
 
 **Quando chamar o supervisor do runtime** (arquivo `fromTester_*` no pool do runtime, com a saída bruta):
 - `prepare` sai com código diferente de zero ou sem `ready:true`;

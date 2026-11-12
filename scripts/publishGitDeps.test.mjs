@@ -59,6 +59,33 @@ test('readDepIds tira o próprio cliente e aceita só ids', () => {
   }
 });
 
+test('readDepIds com fromHead lê os dois arquivos do último commit, não do disco', () => {
+  const root = mkdtempSync(join(tmpdir(), 'deps-'));
+  try {
+    const repo = makeRepo(root, 'mls-102047', {
+      'l5/config.json': JSON.stringify({ workspaceDependencies: ['102034'] }),
+      'mlsDep.json': JSON.stringify({ workspaceDependencies: ['102020'] }),
+    });
+    writeFileSync(join(repo, 'l5', 'config.json'), JSON.stringify({ workspaceDependencies: ['102034', '102035'] }));
+    assert.deepEqual(readDepIds(repo, '102047'), ['102034', '102035'], 'sem fromHead vale o disco, como antes');
+    assert.deepEqual(readDepIds(repo, '102047', { fromHead: true, env: GIT_ENV }), ['102034'], 'o config.json editado não conta');
+    // config.json sem o bloco no HEAD: o mlsDep.json do HEAD vale, não o do disco
+    git(repo, 'checkout', '-q', '--', 'l5/config.json');
+    writeFileSync(join(repo, 'l5', 'config.json'), '{}');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'config sem bloco');
+    writeFileSync(join(repo, 'mlsDep.json'), JSON.stringify({ workspaceDependencies: ['999999'] }));
+    assert.deepEqual(readDepIds(repo, '102047', { fromHead: true, env: GIT_ENV }), ['102020']);
+    // sem nenhum dos dois no HEAD: lista vazia
+    const bare = makeRepo(root, 'mls-102048', { 'README': 'x' });
+    mkdirSync(join(bare, 'l5'), { recursive: true });
+    writeFileSync(join(bare, 'l5', 'config.json'), JSON.stringify({ workspaceDependencies: ['102034'] }));
+    assert.deepEqual(readDepIds(bare, '102048', { fromHead: true, env: GIT_ENV }), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('readDepIds prefere o l5/config.json ao mlsDep.json', () => {
   // O mlsDep.json é o fecho de agentes do host — mais estreito, sem o studio.
   // Publicar o cliente tem de levar o workspace que o projeto declara.

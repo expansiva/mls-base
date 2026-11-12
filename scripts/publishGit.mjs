@@ -486,8 +486,22 @@ export function autocommitDirty(repo) {
   return true;
 }
 
-/** Local obj/ is never the build the VM consumes. Drop it from disk + git and commit. */
-function removeLocalObj(repo) {
+/**
+ * Local obj/ is never the build the VM consumes. Drop it from disk + git and commit.
+ * `headMode` (rt214, --deps-head): the index, .gitignore and history are left alone. An obj/ tracked in HEAD is refused
+ * (it would be pushed); an obj/ that is only a folder on disk is deleted, as before.
+ */
+export function removeLocalObj(repo, { headMode = false } = {}) {
+  if (headMode) {
+    const inHead = gitSync(repo, ['ls-tree', '--name-only', 'HEAD', '--', 'obj']).stdout.trim();
+    if (inHead) {
+      fail('obj/ is tracked in HEAD and would be published: commit its removal (git rm -r --cached obj) before preparing from HEAD.');
+    }
+    if (!existsSync(join(repo, 'obj'))) return false;
+    process.stderr.write('[publishGit] removing local obj/ from disk (disposable; the build happens on the VM).\n');
+    rmSync(join(repo, 'obj'), { recursive: true, force: true });
+    return false;
+  }
   const tracked = gitSync(repo, ['ls-files', '--', 'obj']).stdout.trim();
   const onDisk = existsSync(join(repo, 'obj'));
   if (!tracked && !onDisk) return false;
@@ -894,7 +908,7 @@ function explainDirtyVm(out) {
  * o próximo publish envia o retrato.
  */
 async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, profile, depsHead = false }) {
-  const declared = readDepIds(clientRepo, clientId);
+  const declared = readDepIds(clientRepo, clientId, { fromHead: depsHead });
   const onDesktop = declared.filter((depId) => existsSync(join(root, `mls-${depId}`, '.git')));
   if (!onDesktop.length) return { changed: [], missing: [] };
 
@@ -958,9 +972,21 @@ export function needsRebuildCommit(relation, changedDeps, missingDeps = []) {
   return changed || missing;
 }
 
-export function makeRebuildCommit(repo, changedDeps) {
+/**
+ * Marker commit. `headMode` (rt214): built without the index (`commit-tree` on HEAD's own tree + `update-ref`), so what
+ * another session left staged is not swept in; the tree is the same as HEAD's and the index and disk stay as they were.
+ */
+export function makeRebuildCommit(repo, changedDeps, { headMode = false } = {}) {
   const message = rebuildCommitMessage(changedDeps);
-  gitOut(repo, ['commit', '--allow-empty', '-m', message]);
+  if (headMode) {
+    const head = gitOut(repo, ['rev-parse', 'HEAD']);
+    const marker = gitOut(repo, ['commit-tree', 'HEAD^{tree}', '-p', head, '-m', message]);
+    if (!head || !marker) fail('could not create the marker commit (commit-tree).');
+    const moved = gitSync(repo, ['update-ref', 'refs/heads/main', marker, head]);
+    if (moved.code !== 0) fail(`could not move main to the marker commit:\n${moved.out.trim()}`);
+  } else {
+    gitOut(repo, ['commit', '--allow-empty', '-m', message]);
+  }
   process.stderr.write(`[publishGit] ${message}\n`);
   return message;
 }
@@ -1027,12 +1053,19 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
   if (branch !== 'main') {
     fail(`publish from main (current branch: ${branch}).`);
   }
-  removeLocalObj(repo);
+  // rt214: --deps-head (what the lima prepare passes) publishes the HEAD; uncommitted work is a warning, not a refusal,
+  // and nothing here touches the index or the worktree of whoever is editing. --autocommit keeps its old meaning.
+  const headMode = depsHead && !autocommit;
+  removeLocalObj(repo, { headMode });
   warnClientConfig(ROOT, id);
   if (isDirty(repo)) {
-    if (!autocommit) fail(DIRTY_LOCAL_MSG);
-    autocommitDirty(repo);
-    if (isDirty(repo)) fail('local worktree still dirty after --autocommit.');
+    if (headMode) {
+      process.stderr.write(`[publishGit] ${projectName}: uncommitted changes left out, prepared from HEAD ${gitOut(repo, ['rev-parse', '--short=7', 'HEAD'])}\n`);
+    } else {
+      if (!autocommit) fail(DIRTY_LOCAL_MSG);
+      autocommitDirty(repo);
+      if (isDirty(repo)) fail('local worktree still dirty after --autocommit.');
+    }
   }
 
   const remote = ensureProfileRemote(repo, url, profile);
@@ -1076,7 +1109,7 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
     process.stderr.write(
       `[publishGit] app unchanged; deps changed: ${rebuildIds.join(' ')} — marker commit on the project to cut the release.\n`,
     );
-    makeRebuildCommit(repo, rebuildIds);
+    makeRebuildCommit(repo, rebuildIds, { headMode });
     originSha = selectPublishedSha(gitOut(repo, ['rev-parse', 'HEAD']));
   }
 

@@ -485,7 +485,7 @@ test('retrato de dep nunca dispara a build — a release é do projeto publicado
   assert.match(source, /pushOptions: \['skip-build'\]/);
   assert.doesNotMatch(source, /triggers \? \[`deps=/);
   assert.doesNotMatch(source, /a build foi disparada pelo último retrato/);
-  assert.match(source, /makeRebuildCommit\(repo, rebuildIds\)/);
+  assert.match(source, /makeRebuildCommit\(repo, rebuildIds, \{ headMode \}\)/);
 });
 
 test('dep ausente na VM não derruba o publish: aviso, não fail', () => {
