@@ -68,14 +68,23 @@ if (remote.startsWith('node --input-type=module')) {
   const raw = quoted ? quoted[1] : (remote.trim().split(/\\s+/).pop() || '');
   const name = raw.replaceAll('\\\\', '/').split('/').pop();
   const target = name && /^mls-\\d+$/.test(name) ? join(vm, name) : vm;
-  if (service === 'receive-pack' && name === 'mls-102047' && process.env.PREPARE_TOUCH === 'source-race') {
+  const touch = process.env.PREPARE_TOUCH;
+  const raceHere = (touch === 'source-race' && service === 'receive-pack' && name === 'mls-102047')
+    || (['app-before', 'root-before', 'lock-before'].includes(touch) && service === 'upload-pack' && name === 'mls-102047')
+    || (touch === 'dep-before' && service === 'upload-pack' && name === 'mls-102034');
+  if (raceHere) {
     const flag = process.env.PREPARE_RACE_FILE;
     if (!flag || !readFileSync(flag, 'utf8')) {
-      const app = join(mac, 'mls-102047');
-      writeFileSync(join(app, 'l5', 'raced.json'), '{"raced":true}\\n');
       const raceEnv = { ...process.env, GIT_AUTHOR_NAME: 'bench', GIT_AUTHOR_EMAIL: 'bench@collab.local', GIT_COMMITTER_NAME: 'bench', GIT_COMMITTER_EMAIL: 'bench@collab.local' };
-      spawnSync('git', ['-C', app, 'add', '--', 'l5/raced.json'], { encoding: 'utf8', env: raceEnv });
-      spawnSync('git', ['-C', app, 'commit', '-m', 'raced source'], { encoding: 'utf8', env: raceEnv });
+      const commitIn = (repo, file, message) => {
+        writeFileSync(join(repo, file), '{"raced":true}\\n');
+        spawnSync('git', ['-C', repo, 'add', '--', file], { encoding: 'utf8', env: raceEnv });
+        spawnSync('git', ['-C', repo, 'commit', '-m', message], { encoding: 'utf8', env: raceEnv });
+      };
+      if (touch === 'root-before') commitIn(mac, 'root-raced.json', 'raced root');
+      else if (touch === 'dep-before') commitIn(join(mac, 'mls-102034'), 'raced.json', 'raced dep');
+      else if (touch === 'lock-before') writeFileSync(join(mac, 'mls-102047', '.collab-msg.lock'), 'agent');
+      else commitIn(join(mac, 'mls-102047'), 'l5/raced.json', 'raced source');
       if (flag) writeFileSync(flag, 'done');
     }
   }
@@ -462,7 +471,6 @@ test('an uncommitted edit that appears mid-prepare does not abort, and a refused
   assert.equal(readFileSync(join(lease.mac, '.git', 'HEAD'), 'utf8').length > 0, true);
 });
 
-const OBJ_SUBJECT = 'chore: remove obj/ (build happens on the VM)';
 const REBUILD_SUBJECT = 'publish: rebuild after deps 102034';
 
 function appOf(box) {
@@ -496,259 +504,6 @@ function trackObj(repo, gitignore) {
   git(repo, ['commit', '-m', 'ci obj']);
   return git(repo, ['rev-parse', 'HEAD']);
 }
-
-function removeTrackedObj(repo, gitignore) {
-  if (gitignore !== undefined) writeFileSync(join(repo, '.gitignore'), gitignore);
-  const args = ['add', '--'];
-  if (gitignore !== undefined) args.push('.gitignore');
-  git(repo, args.length > 2 ? args : ['add', '--', '.gitignore']);
-  git(repo, ['rm', '-r', '--cached', '--ignore-unmatch', '--', 'obj']);
-  rmSync(join(repo, 'obj'), { recursive: true, force: true });
-  git(repo, ['commit', '-m', OBJ_SUBJECT, '--', 'obj', '.gitignore']);
-  return git(repo, ['rev-parse', 'HEAD']);
-}
-
-async function duringPublish(box, mutate) {
-  let finalSha = '';
-  await held(box, async () => {
-    const result = await prepareSources({
-      root: box.mac,
-      profile: box.profile,
-      session: 'codex-s5',
-      env: box.env,
-      sshBin: box.options.sshBin,
-      lockPath: box.options.lockPath,
-      spawnPublish: () => {
-        finalSha = mutate(box) || git(appOf(box), ['rev-parse', 'HEAD']);
-        return publishResult(box, finalSha);
-      },
-    });
-    box.result = result;
-  });
-  return { result: box.result, finalSha };
-}
-
-test('publisher obj cleanup and empty rebuild keep the captured sources', async () => {
-  const tracked = bench();
-  const initial = trackObj(appOf(tracked));
-  const beforePlan = await planLocalSources(tracked.mac, PROJECT_ID, tracked.env);
-  const trackedRun = await duringPublish(tracked, () => removeTrackedObj(appOf(tracked)));
-  assert.equal(trackedRun.result.ok, true);
-  assert.equal(trackedRun.result.ready, false);
-  assert.equal(trackedRun.result.evidence.initialAppSha, initial);
-  assert.equal(trackedRun.result.evidence.finalAppSha, trackedRun.finalSha);
-  assert.notEqual(trackedRun.result.evidence.finalAppSha, initial);
-  assert.equal(trackedRun.result.evidence.release.versionRef, trackedRun.finalSha);
-  const sameTree = await planLocalSources(tracked.mac, PROJECT_ID, tracked.env);
-  assert.equal(sameTree.appSha, trackedRun.finalSha);
-  assert.equal(sameTree.appTree, beforePlan.appTree);
-
-  const created = bench();
-  trackObj(appOf(created), null);
-  const createdRun = await duringPublish(created, () => removeTrackedObj(appOf(created), '/obj/\n'));
-  assert.equal(createdRun.result.ok, true);
-  assert.equal(readFileSync(join(appOf(created), '.gitignore'), 'utf8'), '/obj/\n');
-  assert.equal(createdRun.result.evidence.release.versionRef, createdRun.finalSha);
-
-  const glued = bench();
-  trackObj(appOf(glued), 'dist');
-  const gluedRun = await duringPublish(glued, () => removeTrackedObj(appOf(glued), 'dist\n/obj/\n'));
-  assert.equal(gluedRun.result.ok, true);
-  assert.equal(readFileSync(join(appOf(glued), '.gitignore'), 'utf8'), 'dist\n/obj/\n');
-
-  const disk = bench();
-  writeFileSync(join(appOf(disk), '.gitignore'), '*.zip\n');
-  git(appOf(disk), ['add', '--', '.gitignore']);
-  git(appOf(disk), ['commit', '-m', 'ignore zip']);
-  mkdirSync(join(appOf(disk), 'obj'), { recursive: true });
-  writeFileSync(join(appOf(disk), 'obj', 'compiled.zip'), 'local');
-  const diskInitial = git(appOf(disk), ['rev-parse', 'HEAD']);
-  const diskRun = await duringPublish(disk, () => {
-    writeFileSync(join(appOf(disk), '.gitignore'), '*.zip\n/obj/\n');
-    git(appOf(disk), ['add', '--', '.gitignore']);
-    rmSync(join(appOf(disk), 'obj'), { recursive: true, force: true });
-    git(appOf(disk), ['commit', '-m', OBJ_SUBJECT, '--', '.gitignore']);
-    return git(appOf(disk), ['rev-parse', 'HEAD']);
-  });
-  assert.equal(diskRun.result.ok, true);
-  assert.equal(diskRun.result.evidence.initialAppSha, diskInitial);
-  assert.notEqual(diskRun.result.evidence.finalAppSha, diskInitial);
-
-  const rebuilt = bench();
-  const rebuildRun = await duringPublish(rebuilt, () => {
-    git(appOf(rebuilt), ['commit', '--allow-empty', '-m', REBUILD_SUBJECT]);
-    return git(appOf(rebuilt), ['rev-parse', 'HEAD']);
-  });
-  assert.equal(rebuildRun.result.ok, true);
-  assert.equal(rebuildRun.result.evidence.initialAppSha, rebuilt.appSha);
-  assert.equal(rebuildRun.result.evidence.release.versionRef, rebuildRun.finalSha);
-
-  const both = bench();
-  const bothInitial = trackObj(appOf(both));
-  const bothRun = await duringPublish(both, () => {
-    removeTrackedObj(appOf(both));
-    git(appOf(both), ['commit', '--allow-empty', '-m', REBUILD_SUBJECT]);
-    return git(appOf(both), ['rev-parse', 'HEAD']);
-  });
-  assert.equal(bothRun.result.ok, true);
-  assert.equal(bothRun.result.evidence.initialAppSha, bothInitial);
-  assert.equal(bothRun.result.evidence.finalAppSha, bothRun.finalSha);
-
-  const quiet = bench();
-  const before = git(appOf(quiet), ['rev-parse', 'HEAD']);
-  await held(quiet, async () => {
-    const result = await prepareSources({
-      root: quiet.mac, profile: quiet.profile, session: 'codex-s5', env: quiet.env, sshBin: quiet.options.sshBin,
-      lockPath: quiet.options.lockPath,
-      spawnPublish: () => ({ code: 0, text: '[publishGit] Nothing to publish\n', uncertain: false }),
-    });
-    assert.equal(result.ok, true);
-    assert.equal(result.evidence.initialAppSha, before);
-    assert.equal(result.evidence.finalAppSha, before);
-  });
-  assert.equal(git(appOf(quiet), ['rev-parse', 'HEAD']), before);
-});
-
-test('prepare refuses commits outside the publisher sequence', async () => {
-  async function refused(mutate) {
-    const box = bench();
-    trackObj(appOf(box));
-    const run = await duringPublish(box, () => {
-      mutate(box);
-      return git(appOf(box), ['rev-parse', 'HEAD']);
-    });
-    assert.equal(run.result.ok, false);
-    assert.equal(run.result.code, 'concurrent');
-    assert.equal(run.result.uncertain, true);
-    assert.equal(run.result.sent, true);
-    assert.equal(run.result.ready, false);
-  }
-
-  await refused((box) => {
-    const repo = appOf(box);
-    writeFileSync(join(repo, 'l5', 'config.json'), '{"changed":true}\n');
-    git(repo, ['add', '--', 'l5/config.json']);
-    git(repo, ['rm', '-r', '--cached', '--', 'obj']);
-    rmSync(join(repo, 'obj'), { recursive: true, force: true });
-    git(repo, ['commit', '-m', OBJ_SUBJECT]);
-  });
-
-  await refused((box) => {
-    const repo = appOf(box);
-    writeFileSync(join(repo, '.gitignore'), '*\n');
-    git(repo, ['add', '--', '.gitignore']);
-    git(repo, ['rm', '-r', '--cached', '--', 'obj']);
-    rmSync(join(repo, 'obj'), { recursive: true, force: true });
-    git(repo, ['commit', '-m', OBJ_SUBJECT, '--', 'obj', '.gitignore']);
-  });
-
-  await refused((box) => {
-    const repo = appOf(box);
-    git(repo, ['rm', '--', '.gitignore']);
-    git(repo, ['commit', '-m', OBJ_SUBJECT]);
-  });
-
-  await refused((box) => {
-    const repo = appOf(box);
-    writeFileSync(join(repo, 'obj', 'compiled.zip'), 'changed');
-    git(repo, ['add', '-f', '--', 'obj/compiled.zip']);
-    git(repo, ['commit', '-m', OBJ_SUBJECT]);
-  });
-
-  await refused((box) => {
-    const repo = appOf(box);
-    writeFileSync(join(repo, 'obj', 'extra.zip'), 'extra');
-    git(repo, ['add', '-f', '--', 'obj/extra.zip']);
-    git(repo, ['commit', '-m', OBJ_SUBJECT]);
-  });
-
-  await refused((box) => {
-    const repo = appOf(box);
-    git(repo, ['checkout', '-b', 'side']);
-    writeFileSync(join(repo, 'side.txt'), 's');
-    git(repo, ['add', '--', 'side.txt']);
-    git(repo, ['commit', '-m', 'side']);
-    git(repo, ['checkout', 'main']);
-    writeFileSync(join(repo, 'main.txt'), 'm');
-    git(repo, ['add', '--', 'main.txt']);
-    git(repo, ['commit', '-m', 'main']);
-    git(repo, ['merge', '--no-ff', '-m', OBJ_SUBJECT, 'side']);
-  });
-
-  await refused((box) => {
-    const repo = appOf(box);
-    const tree = git(repo, ['rev-parse', 'HEAD^{tree}']);
-    const parent = git(repo, ['rev-parse', 'HEAD^']);
-    const next = git(repo, ['commit-tree', tree, '-p', parent, '-m', OBJ_SUBJECT]);
-    git(repo, ['reset', '--soft', next]);
-  });
-
-  await refused((box) => {
-    const repo = appOf(box);
-    git(repo, ['commit', '--amend', '-m', OBJ_SUBJECT]);
-  });
-
-  await refused((box) => {
-    const repo = appOf(box);
-    writeFileSync(join(repo, 'l5', 'config.json'), '{"noise":true}\n');
-    git(repo, ['add', '--', 'l5/config.json']);
-    git(repo, ['commit', '-m', 'noise']);
-    git(repo, ['revert', '--no-edit', 'HEAD']);
-    git(repo, ['commit', '--amend', '-m', REBUILD_SUBJECT]);
-  });
-
-  await refused((box) => {
-    const repo = appOf(box);
-    writeFileSync(join(repo, 'l5', 'config.json'), '{"built":true}\n');
-    git(repo, ['add', '--', 'l5/config.json']);
-    git(repo, ['commit', '-m', REBUILD_SUBJECT]);
-  });
-
-  const rooted = bench();
-  await duringPublish(rooted, (box) => {
-    writeFileSync(join(box.mac, 'root-moved.txt'), 'x');
-    git(box.mac, ['add', '--', 'root-moved.txt']);
-    git(box.mac, ['commit', '-m', 'root moved']);
-  });
-  assert.equal(rooted.result.code, 'concurrent');
-  assert.equal(rooted.result.uncertain, true);
-
-  // A lib published in the middle of the prepare does NOT fail it: the version is resolved once, in the plan,
-  // and the release stamp is compared with the plan's version. The new lib enters the next prepare.
-  const libPublished = bench();
-  await duringPublish(libPublished, (box) => {
-    box.env.COLLAB_LIBS_PIN = `20261030999999:${PIN.monaco}`;
-  });
-  assert.notEqual(libPublished.result.code, 'concurrent');
-  assert.deepEqual(libPublished.result.evidence?.pin ?? { ...PIN, source: 'pin-env' }, { ...PIN, source: 'pin-env' });
-
-  const dep = bench();
-  await duringPublish(dep, (box) => {
-    writeFileSync(join(box.mac, 'mls-102034', 'README'), 'dep moved\n');
-    git(join(box.mac, 'mls-102034'), ['add', '--', 'README']);
-    git(join(box.mac, 'mls-102034'), ['commit', '-m', 'dep']);
-  });
-  assert.equal(dep.result.code, 'concurrent');
-
-  const locked = bench();
-  await duringPublish(locked, (box) => {
-    writeFileSync(join(appOf(box), '.collab-msg.lock'), 'agent');
-  });
-  assert.equal(locked.result.code, 'concurrent');
-  assert.equal(locked.result.uncertain, true);
-
-  const missing = bench();
-  const parent = git(appOf(missing), ['rev-parse', 'HEAD']);
-  await duringPublish(missing, (box) => {
-    const repo = appOf(box);
-    git(repo, ['commit', '--allow-empty', '-m', REBUILD_SUBJECT]);
-    const loose = join(repo, '.git', 'objects', parent.slice(0, 2), parent.slice(2));
-    unlinkSync(loose);
-  });
-  assert.equal(missing.result.ok, false);
-  assert.equal(missing.result.code, 'concurrent');
-  assert.equal(missing.result.uncertain, true);
-});
 
 const HERE = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MLS_SCRIPTS = join(HERE, 'scripts');
@@ -855,6 +610,7 @@ test('a dep rebuild is cut with an empty marker commit', { timeout: 60000 }, asy
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.notEqual(result.evidence.finalAppSha, initial);
     assert.equal(result.evidence.release.versionRef, result.evidence.finalAppSha);
+    assert.deepEqual(result.evidence.warnings, [], 'the marker this prepare cuts is not a commit of another session');
     assert.equal(git(appOf(rebuilt), ['log', '-1', '--format=%s']), 'publish: rebuild after deps 102034');
     assert.equal(git(appOf(rebuilt), ['rev-parse', 'HEAD^{tree}']), git(appOf(rebuilt), ['rev-parse', 'HEAD~1^{tree}']));
     assert.equal(result.ready, false);
@@ -862,29 +618,199 @@ test('a dep rebuild is cut with an empty marker commit', { timeout: 60000 }, asy
   });
 });
 
-test('a source commit during the official publish stays concurrent and uncertain', { timeout: 60000 }, async () => {
-  const box = bench({ touch: 'source-race' });
+function raceBench(touch) {
+  const box = bench({ touch });
   armPublisher(box);
-  const raceFlag = join(box.root, 'race-done');
-  writeFileSync(raceFlag, '');
-  box.env.PREPARE_RACE_FILE = raceFlag;
-  const initial = git(appOf(box), ['rev-parse', 'HEAD']);
+  const flag = join(box.root, 'race-done');
+  writeFileSync(flag, '');
+  box.env.PREPARE_RACE_FILE = flag;
+  return box;
+}
+
+const NEW_COMMIT = /^mls-(?:base|102047|102034): new commit [0-9a-f]{7} after the plan, left out of this prepare$/u;
+
+test('a commit in a dependency between the plan and the publish is a warning, and the lima gets the planned tree', { timeout: 60000 }, async () => {
+  const box = raceBench('dep-before');
   moveDep(box);
-  await held(box, async ({ operationId }) => {
+  const dep = join(box.mac, 'mls-102034');
+  const planned = git(dep, ['rev-parse', 'HEAD']);
+  const plannedTree = git(dep, ['rev-parse', 'HEAD^{tree}']);
+  await held(box, async () => {
     const result = await callPrepare(box);
-    assert.equal(result.ok, false);
-    assert.equal(result.code, 'concurrent');
-    assert.equal(result.sent, true);
-    assert.equal(result.uncertain, true);
-    assert.equal(result.ready, false);
-    assert.equal(result.phase, 'failed');
-    assert.equal(git(appOf(box), ['log', '-1', '--format=%s']), 'raced source');
-    assert.equal(git(appOf(box), ['log', '-1', '--skip=1', '--format=%s']), REBUILD_SUBJECT);
-    assert.notEqual(result.finalAppSha, initial);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.notEqual(git(dep, ['rev-parse', 'HEAD']), planned, 'the other queue did commit during the prepare');
+    assert.equal(git(join(box.vm, 'mls-102034'), ['rev-parse', 'HEAD^{tree}']), plannedTree, 'the lima holds the planned dependency tree');
+    assert.equal(result.evidence.depTrees['102034'], plannedTree);
+    const drift = result.evidence.warnings.filter((line) => NEW_COMMIT.test(line));
+    assert.equal(drift.length, 1, JSON.stringify(result.evidence.warnings));
+    assert.match(drift[0], /^mls-102034: /u);
+  });
+});
+
+test('a commit in the root between the plan and the publish is a warning, and the lima keeps the planned root', { timeout: 60000 }, async () => {
+  const box = raceBench('root-before');
+  commitFile(box.mac, 'again.txt', 'root\n', 'root again');
+  const planned = git(box.mac, ['rev-parse', 'HEAD']);
+  await held(box, async () => {
+    const result = await callPrepare(box);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.notEqual(git(box.mac, ['rev-parse', 'HEAD']), planned);
+    assert.equal(git(box.vm, ['rev-parse', 'HEAD']), planned, 'the lima holds the planned root commit');
+    assert.equal(result.evidence.initialRootSha, planned);
+    assert.ok(result.evidence.warnings.some((line) => /^mls-base: new commit /u.test(line) && NEW_COMMIT.test(line)), JSON.stringify(result.evidence.warnings));
+  });
+});
+
+test('a commit in the app after the marker is cut keeps main on the other session and the lima on the marker', { timeout: 60000 }, async () => {
+  const box = raceBench('source-race');
+  moveDep(box);
+  const app = appOf(box);
+  const planned = git(app, ['rev-parse', 'HEAD']);
+  await held(box, async () => {
+    const result = await callPrepare(box);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const vmApp = git(join(box.vm, 'mls-102047'), ['rev-parse', 'HEAD']);
+    assert.equal(git(app, ['log', '-1', '--format=%s']), 'raced source', 'main keeps the commit of the other session');
+    assert.equal(git(app, ['rev-parse', 'HEAD~1']), vmApp, 'the marker is under the raced commit');
+    assert.equal(git(app, ['log', '-1', '--format=%s', vmApp]), REBUILD_SUBJECT);
+    assert.equal(git(app, ['rev-parse', `${vmApp}^`]), planned);
+    assert.equal(result.evidence.initialAppSha, planned);
+    assert.equal(result.evidence.finalAppSha, vmApp);
+    assert.equal(result.evidence.release.versionRef, vmApp);
+    assert.ok(result.evidence.warnings.some((line) => /^mls-102047: new commit /u.test(line)), JSON.stringify(result.evidence.warnings));
+  });
+});
+
+test('a commit in the app before the marker leaves main alone, the marker goes only to the lima, and the next prepare aligns by itself', { timeout: 90000 }, async () => {
+  const box = raceBench('app-before');
+  moveDep(box);
+  const app = appOf(box);
+  const planned = git(app, ['rev-parse', 'HEAD']);
+  await held(box, async ({ operationId }) => {
+    const first = await callPrepare(box);
+    assert.equal(first.ok, true, JSON.stringify(first));
+    const raced = git(app, ['rev-parse', 'HEAD']);
+    assert.equal(git(app, ['log', '-1', '--format=%s']), 'raced source');
+    assert.equal(git(app, ['rev-parse', 'HEAD~1']), planned, 'main was not moved onto the marker');
+    const marker = git(join(box.vm, 'mls-102047'), ['rev-parse', 'HEAD']);
+    assert.notEqual(marker, raced);
+    assert.equal(git(app, ['rev-parse', `${marker}^`]), planned);
+    assert.equal(git(app, ['log', '-1', '--format=%s', marker]), REBUILD_SUBJECT);
+    assert.equal(first.evidence.finalAppSha, marker);
+    assert.ok(first.evidence.warnings.some((line) => /^mls-102047: new commit /u.test(line)));
+    reservationHeld(box, operationId);
+
+    // the lima and main now diverge: the local profile aligns with --force-with-lease, with no question
+    const second = await callPrepare(box);
+    assert.equal(second.ok, true, JSON.stringify(second));
+    assert.equal(second.evidence.initialAppSha, raced);
+    assert.equal(git(join(box.vm, 'mls-102047'), ['rev-parse', 'HEAD']), raced, 'the lima now holds the commit of the other session');
+    assert.equal(second.evidence.release.versionRef, raced);
+    assert.match(logText(box.sshLog), /simulated-hook/);
     reservationHeld(box, operationId);
   });
 });
 
+test('a generation lock that appears during the publish still stops the prepare', { timeout: 60000 }, async () => {
+  const box = raceBench('lock-before');
+  await held(box, async () => {
+    const result = await callPrepare(box);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'dirty');
+    assert.ok(result.blocked.some((item) => item.endsWith('.collab-msg.lock')), JSON.stringify(result));
+  });
+});
+
+function vmTakes(box, sha) {
+  const vmApp = join(box.vm, 'mls-102047');
+  git(vmApp, ['fetch', appOf(box), sha]);
+  git(vmApp, ['reset', '--hard', sha]);
+  rememberRelease(box, sha);
+}
+
+test('the publish step is given the commits of the plan, and the lima must hold exactly them or an empty marker on the app', { timeout: 60000 }, async () => {
+  const run = async (sender) => {
+    const box = bench();
+    const plan = await planLocalSources(box.mac, PROJECT_ID, box.env);
+    let given = null;
+    let outcome;
+    await held(box, async () => {
+      outcome = await prepareSources({
+        root: box.mac, profile: box.profile, session: 'codex-s5', env: box.env, sshBin: box.options.sshBin,
+        lockPath: box.options.lockPath,
+        spawnPublish: (args) => {
+          given = args.pinned;
+          return sender(box, plan);
+        },
+      });
+    });
+    return { box, plan, given, outcome };
+  };
+  const ok = ({ box }, sha) => {
+    vmTakes(box, sha);
+    return publishResult(box, sha);
+  };
+  const marker = (box, plan, subject = REBUILD_SUBJECT, tree = `${plan.appSha}^{tree}`) => {
+    const sha = git(appOf(box), ['commit-tree', tree, '-p', plan.appSha, '-m', subject]);
+    return sha;
+  };
+
+  const quiet = await run((box) => ({ code: 0, text: '[publishGit] Nothing to publish\n', uncertain: false }));
+  assert.equal(quiet.outcome.ok, true, JSON.stringify(quiet.outcome));
+  assert.deepEqual(quiet.given, { appSha: quiet.plan.appSha, deps: { 102034: quiet.plan.deps[0].sha } });
+
+  const good = await run((box, plan) => ok({ box }, marker(box, plan)));
+  assert.equal(good.outcome.ok, true, JSON.stringify(good.outcome));
+  assert.equal(good.outcome.evidence.initialAppSha, good.plan.appSha);
+  assert.notEqual(good.outcome.evidence.finalAppSha, good.plan.appSha);
+
+  const refusals = {
+    'a commit of another session that came after the plan': (box) => ok({ box }, commitFile(appOf(box), 'l5/other.json', '{}\n', 'other session')),
+    'a marker with another subject': (box, plan) => ok({ box }, marker(box, plan, 'publish: something else')),
+    'a marker that changes the tree': (box, plan) => {
+      writeFileSync(join(appOf(box), 'l5', 'changed.json'), '{}\n');
+      git(appOf(box), ['add', '--', 'l5/changed.json']);
+      const tree = git(appOf(box), ['write-tree']);
+      git(appOf(box), ['reset', '-q', '--', 'l5/changed.json']);
+      return ok({ box }, marker(box, plan, REBUILD_SUBJECT, tree));
+    },
+    'two commits on top of the plan': (box, plan) => {
+      const first = marker(box, plan);
+      const second = git(appOf(box), ['commit-tree', `${plan.appSha}^{tree}`, '-p', first, '-m', REBUILD_SUBJECT]);
+      return ok({ box }, second);
+    },
+  };
+  for (const [name, sender] of Object.entries(refusals)) {
+    const refused = await run(sender);
+    assert.equal(refused.outcome.ok, false, name);
+    assert.equal(refused.outcome.code, 'app-sha', name);
+    assert.equal(refused.outcome.uncertain, true, name);
+  }
+});
+
+test('--pinned only works with --deps-head, and reads a file with all the commits', { timeout: 60000 }, async () => {
+  const box = bench();
+  armPublisher(box);
+  const file = join(box.root, 'pinned.json');
+  const sha = 'a'.repeat(40);
+  const run = (args) => spawnSync(process.execPath, [join(box.mac, 'scripts', 'publishGit.mjs'), '102047', 'local', ...args], {
+    cwd: box.mac, env: box.env, encoding: 'utf8',
+  });
+  writeFileSync(file, JSON.stringify({ appSha: sha, deps: { 102034: sha } }));
+  const lone = run(['--pinned', file]);
+  assert.notEqual(lone.status, 0);
+  assert.match(lone.stderr, /--pinned only works with --deps-head/u);
+  await held(box, async () => {
+    writeFileSync(file, JSON.stringify({ appSha: 'nope', deps: {} }));
+    const bad = run(['--deps-head', '--pinned', file]);
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, /--pinned file must be/u);
+    writeFileSync(file, JSON.stringify({ appSha: sha, deps: { 102034: sha } }));
+    const unknown = run(['--deps-head', '--pinned', file]);
+    assert.notEqual(unknown.status, 0);
+    assert.match(unknown.stderr, /is not a commit of mls-102047/u);
+  });
+});
 test('the pre-s1 prepare rejects the same official obj cleanup as concurrent', { timeout: 60000 }, async () => {
   const priorDir = mkdtempSync(join(tmpdir(), 'rt99-prior-'));
   mkdirSync(join(priorDir, 'tools', 'lima'), { recursive: true });

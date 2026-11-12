@@ -107,7 +107,8 @@ Depois abre as jars com `--lima-session tester-<rodada>` e dá o `end` ao termin
 
 **O que o `prepare` faz:**
 - Publica o **HEAD** de cada repo do Mac (raiz `mls-base`, 102047 e dependências), inclusive commits de outras sessões. O que está sujo (arquivo editado, novo ou já preparado com `git add`) **fica de fora**, não é tocado e aparece como aviso no recibo (`warnings`: `mls-<id>: uncommitted changes left out, prepared from HEAD <sha7>`). Só o `.collab-msg.lock` (geração em andamento) recusa.
-- No 102047, a lista de dependências e a árvore enviada são as do HEAD. O marcador de rebuild é um commit vazio feito sem o índice, então o que outra sessão deixou preparado não entra. Um `obj/` rastreado no HEAD do app é recusado: commitar a remoção antes.
+- **Os commits enviados são os do primeiro plano** (rt215): raiz, app e cada dependência saem pelo sha planejado. Um commit de outra fila durante o preparo (raiz, app ou dependência) **não derruba mais**: vai o que estava no plano e o commit novo aparece como aviso (`mls-<id>: new commit <sha7> after the plan, left out of this prepare`). Para incluí-lo, rodar o prepare de novo; a `main` do app e a da lima podem divergir só por um marcador, e o perfil local alinha sozinho (`--force-with-lease`). Só um `.collab-msg.lock` que apareça no meio ainda recusa.
+- No 102047, a lista de dependências e a árvore enviada são as do plano. O marcador de rebuild é um commit vazio feito sem o índice, então o que outra sessão deixou preparado não entra. Um `obj/` rastreado no HEAD do app é recusado: commitar a remoção antes.
 - Roda o migrate no banco de teste. Não há reset.
 - Reinicia o app2047. O app2043 e o app2052 também reiniciam quando a release da plataforma muda.
 - Leva poucos minutos.

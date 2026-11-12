@@ -117,6 +117,8 @@ function usage() {
     '  clone  — git clone from the VM; existing folder: connect remote `vm` and report state, never force',
     '  --align — local: alignment is automatic (flag kept for compatibility). remote unrelated: --force-with-lease after a diff + confirm',
     '  --autocommit — dirty worktree: git add -A and commit `publish: <area> (n files), …` before push',
+    '  --deps-head — publish the HEAD of the app and of each dependency; uncommitted work is a warning (lima prepare)',
+    '  --pinned <file.json> — with --deps-head: publish exactly { appSha, deps: { <id>: <sha> } }, not whatever HEAD became',
     '  obj/ is disposable locally (the VM hook rebuilds it); publishGit deletes it from disk and git before push',
   ].join('\n');
 }
@@ -237,10 +239,16 @@ export function parseArgs(argv) {
   let autocommit = false;
   let noDeps = false;
   let depsHead = false;
+  let pinned = '';
   let installHelper = false;
   let paste = false;
-  for (const arg of argv) {
-    if (arg === '--align') {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--pinned') {
+      pinned = argv[index + 1] || '';
+      index += 1;
+      if (!pinned || pinned.startsWith('-')) fail(`--pinned needs a file\n${usage()}`);
+    } else if (arg === '--align') {
       align = true;
     } else if (arg === '--no-deps') {
       noDeps = true;
@@ -270,7 +278,7 @@ export function parseArgs(argv) {
   // `login` não tem projeto nem perfil: é a identidade da PESSOA, e vale para todas as VMs.
   if (positional[0] === 'login') {
     if (positional.length !== 1) fail(usage());
-    return { command: 'login', installHelper, paste, id: '', profile: '', align, autocommit, noDeps, depsHead, flagConf };
+    return { command: 'login', installHelper, paste, id: '', profile: '', align, autocommit, noDeps, depsHead, pinned, flagConf };
   }
   const projectRaw = positional[0] || '';
   const second = positional[1] || '';
@@ -287,7 +295,8 @@ export function parseArgs(argv) {
   if (!idMatch || (profile !== 'local' && profile !== 'remote')) {
     fail(usage());
   }
-  return { id: idMatch[1], profile, command, align, autocommit, noDeps, depsHead, installHelper, paste, flagConf };
+  if (pinned && (!depsHead || autocommit || noDeps)) fail(`--pinned only works with --deps-head, and without --autocommit or --no-deps\n${usage()}`);
+  return { id: idMatch[1], profile, command, align, autocommit, noDeps, depsHead, pinned, installHelper, paste, flagConf };
 }
 
 function gitSync(cwd, args, env = process.env) {
@@ -491,9 +500,9 @@ export function autocommitDirty(repo) {
  * `headMode` (rt214, --deps-head): the index, .gitignore and history are left alone. An obj/ tracked in HEAD is refused
  * (it would be pushed); an obj/ that is only a folder on disk is deleted, as before.
  */
-export function removeLocalObj(repo, { headMode = false } = {}) {
+export function removeLocalObj(repo, { headMode = false, ref = 'HEAD' } = {}) {
   if (headMode) {
-    const inHead = gitSync(repo, ['ls-tree', '--name-only', 'HEAD', '--', 'obj']).stdout.trim();
+    const inHead = gitSync(repo, ['ls-tree', '--name-only', ref, '--', 'obj']).stdout.trim();
     if (inHead) {
       fail('obj/ is tracked in HEAD and would be published: commit its removal (git rm -r --cached obj) before preparing from HEAD.');
     }
@@ -907,8 +916,8 @@ function explainDirtyVm(out) {
  * na VM: aviso, não erro — o push do cliente dispara o hook, o build clona, e
  * o próximo publish envia o retrato.
  */
-async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, profile, depsHead = false }) {
-  const declared = readDepIds(clientRepo, clientId, { fromHead: depsHead });
+async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, profile, depsHead = false, pinned = null }) {
+  const declared = readDepIds(clientRepo, clientId, { fromHead: depsHead, ref: pinned ? pinned.appSha : 'HEAD', env });
   const onDesktop = declared.filter((depId) => existsSync(join(root, `mls-${depId}`, '.git')));
   if (!onDesktop.length) return { changed: [], missing: [] };
 
@@ -918,6 +927,7 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, prof
   for (const depId of ordered) {
     const depName = `mls-${depId}`;
     const remote = ensureProfileRemote(join(root, depName), remoteUrlFor(conf, depName), profile);
+    if (pinned && !pinned.deps[depId]) fail(`[publishGit] ${depName} is declared by ${shortSha(pinned.appSha)} but the --pinned file has no commit for it.`);
     const plan = planSnapshot({
       repo: join(root, depName),
       remote,
@@ -928,7 +938,7 @@ async function publishPlatformDeps({ root, clientRepo, clientId, conf, env, prof
       env,
       gitSync,
       ensureRemote: (repo, remoteUrl) => ensureProfileRemote(repo, remoteUrl, profile),
-      fromHead: depsHead,
+      fromHead: pinned ? pinned.deps[depId] : depsHead,
     });
     if (plan.status === 'missing') {
       process.stderr.write(`${missingVmRepoMessage(depName)}\n`);
@@ -972,6 +982,22 @@ export function needsRebuildCommit(relation, changedDeps, missingDeps = []) {
   return changed || missing;
 }
 
+/** rt215: the commits a pinned prepare publishes. Throws a plain message when the file does not say it all. */
+export function loadPinned(file) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (error) {
+    fail(`--pinned file unreadable: ${error.message}`);
+  }
+  const sha = /^[0-9a-f]{40}$/u;
+  const deps = parsed?.deps && typeof parsed.deps === 'object' ? parsed.deps : null;
+  if (!sha.test(String(parsed?.appSha ?? '')) || !deps || Object.entries(deps).some(([id, value]) => !/^\d+$/u.test(id) || !sha.test(String(value)))) {
+    fail('--pinned file must be { "appSha": <40 hex>, "deps": { "<id>": <40 hex> } }');
+  }
+  return { appSha: parsed.appSha, deps: Object.fromEntries(Object.entries(deps).map(([id, value]) => [String(id), String(value)])) };
+}
+
 /**
  * Marker commit. `headMode` (rt214): built without the index (`commit-tree` on HEAD's own tree + `update-ref`), so what
  * another session left staged is not swept in; the tree is the same as HEAD's and the index and disk stay as they were.
@@ -991,8 +1017,25 @@ export function makeRebuildCommit(repo, changedDeps, { headMode = false } = {}) 
   return message;
 }
 
+/**
+ * rt215, pinned prepare: the marker is a child of the pinned app commit, with its tree, built without the index.
+ * `main` moves to it only while it is still the pinned commit; if another session has committed since, main is
+ * left alone and the marker goes only to the VM. Returns the marker sha.
+ */
+export function makePinnedMarker(repo, changedDeps, baseSha) {
+  const message = rebuildCommitMessage(changedDeps);
+  const marker = gitOut(repo, ['commit-tree', `${baseSha}^{tree}`, '-p', baseSha, '-m', message]);
+  if (!marker) fail('could not create the marker commit (commit-tree).');
+  const moved = gitSync(repo, ['update-ref', 'refs/heads/main', marker, baseSha]);
+  if (moved.code !== 0) {
+    process.stderr.write(`[publishGit] main moved after the plan; the marker ${shortSha(marker)} goes only to the VM and main is left as it is.\n`);
+  }
+  process.stderr.write(`[publishGit] ${message}\n`);
+  return marker;
+}
+
 async function main() {
-  const { id, profile, command, align, autocommit, noDeps, depsHead, installHelper, paste, flagConf } = parseArgs(process.argv.slice(2));
+  const { id, profile, command, align, autocommit, noDeps, depsHead, pinned: pinnedFile, installHelper, paste, flagConf } = parseArgs(process.argv.slice(2));
   if (command === 'login') {
     process.exit(await runLogin({ installHelper, paste, flagConf }));
   }
@@ -1037,7 +1080,7 @@ async function main() {
       activeGuard = createLocalPublishGuard();
       await activeGuard.begin(ROOT);
     }
-    await publishTree({ id, profile, repo, url, env, projectName, align, autocommit, noDeps, depsHead, conf });
+    await publishTree({ id, profile, repo, url, env, projectName, align, autocommit, noDeps, depsHead, conf, pinned: pinnedFile ? loadPinned(pinnedFile) : null });
   } catch (error) {
     if (error && error.limaExit) {
       await leaveLima(limaControl, { retain: error.limaRetain === true });
@@ -1047,7 +1090,7 @@ async function main() {
   }
 }
 
-async function publishTree({ id, profile, repo, url, env, projectName, align, autocommit, noDeps, depsHead, conf }) {
+async function publishTree({ id, profile, repo, url, env, projectName, align, autocommit, noDeps, depsHead, conf, pinned = null }) {
 
   const branch = gitOut(repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (branch !== 'main') {
@@ -1056,11 +1099,16 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
   // rt214: --deps-head (what the lima prepare passes) publishes the HEAD; uncommitted work is a warning, not a refusal,
   // and nothing here touches the index or the worktree of whoever is editing. --autocommit keeps its old meaning.
   const headMode = depsHead && !autocommit;
-  removeLocalObj(repo, { headMode });
+  // rt215: with --pinned the commits to publish are the ones the prepare planned (app and dependencies), not
+  // whatever HEAD has become since, so what reaches the lima is the plan by construction.
+  if (pinned && gitSync(repo, ['cat-file', '-e', `${pinned.appSha}^{commit}`]).code !== 0) {
+    fail(`--pinned appSha ${shortSha(pinned.appSha)} is not a commit of ${projectName}.`);
+  }
+  removeLocalObj(repo, { headMode, ref: pinned ? pinned.appSha : 'HEAD' });
   warnClientConfig(ROOT, id);
   if (isDirty(repo)) {
     if (headMode) {
-      process.stderr.write(`[publishGit] ${projectName}: uncommitted changes left out, prepared from HEAD ${gitOut(repo, ['rev-parse', '--short=7', 'HEAD'])}\n`);
+      process.stderr.write(`[publishGit] ${projectName}: uncommitted changes left out, prepared from ${pinned ? `pinned ${shortSha(pinned.appSha)}` : `HEAD ${gitOut(repo, ['rev-parse', '--short=7', 'HEAD'])}`}\n`);
     } else {
       if (!autocommit) fail(DIRTY_LOCAL_MSG);
       autocommitDirty(repo);
@@ -1079,7 +1127,7 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
     fail(`could not read VM main:\n${fetch.out.trim()}`);
   }
 
-  let originSha = gitOut(repo, ['rev-parse', 'HEAD']);
+  let originSha = pinned ? pinned.appSha : gitOut(repo, ['rev-parse', 'HEAD']);
   const localSha = originSha;
   const remoteRef = gitSync(repo, ['rev-parse', trackingMain(remote)]);
   if (remoteRef.code !== 0) {
@@ -1093,7 +1141,7 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
   const { changed: changedDeps, missing: missingDeps = [] } = noDeps
     ? { changed: [], missing: [] }
     : await publishPlatformDeps({
-      root: ROOT, clientRepo: repo, clientId: id, conf, env, profile, depsHead,
+      root: ROOT, clientRepo: repo, clientId: id, conf, env, profile, depsHead, pinned,
     });
 
   if (rel === 'same') {
@@ -1109,8 +1157,12 @@ async function publishTree({ id, profile, repo, url, env, projectName, align, au
     process.stderr.write(
       `[publishGit] app unchanged; deps changed: ${rebuildIds.join(' ')} — marker commit on the project to cut the release.\n`,
     );
-    makeRebuildCommit(repo, rebuildIds, { headMode });
-    originSha = selectPublishedSha(gitOut(repo, ['rev-parse', 'HEAD']));
+    if (pinned) {
+      originSha = selectPublishedSha(makePinnedMarker(repo, rebuildIds, pinned.appSha));
+    } else {
+      makeRebuildCommit(repo, rebuildIds, { headMode });
+      originSha = selectPublishedSha(gitOut(repo, ['rev-parse', 'HEAD']));
+    }
   }
 
   if (rel === 'unrelated' && profile !== 'local') printDiffSummary(repo, localSha, remoteSha);

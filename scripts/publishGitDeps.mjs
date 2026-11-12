@@ -33,8 +33,8 @@ function readWorkspaceDeps(path) {
 }
 
 /** Same as readWorkspaceDeps, but from the last commit (`git show HEAD:<file>`): uncommitted edits do not count. */
-function readWorkspaceDepsFromHead(repo, relativePath, env) {
-  const shown = spawnSync('git', ['show', `HEAD:${relativePath}`], { cwd: repo, encoding: 'utf8', env });
+function readWorkspaceDepsFromHead(repo, relativePath, env, rev = 'HEAD') {
+  const shown = spawnSync('git', ['show', `${rev}:${relativePath}`], { cwd: repo, encoding: 'utf8', env });
   if (shown.status !== 0) return null;
   try {
     const parsed = JSON.parse(shown.stdout);
@@ -58,10 +58,11 @@ function readWorkspaceDepsFromHead(repo, relativePath, env) {
  *
  * `fromHead` (rt214): lê os dois arquivos do último commit, não do disco, para que um
  * l5/config.json em edição não mude a lista de um preparo que sai do HEAD.
+ * `ref` (rt215): o commit de onde ler, no lugar do HEAD (preparo com SHAs fixados).
  */
-export function readDepIds(clientRepo, clientId, { fromHead = false, env = process.env } = {}) {
+export function readDepIds(clientRepo, clientId, { fromHead = false, env = process.env, ref = 'HEAD' } = {}) {
   const list = fromHead
-    ? readWorkspaceDepsFromHead(clientRepo, 'l5/config.json', env) ?? readWorkspaceDepsFromHead(clientRepo, 'mlsDep.json', env) ?? []
+    ? readWorkspaceDepsFromHead(clientRepo, 'l5/config.json', env, ref) ?? readWorkspaceDepsFromHead(clientRepo, 'mlsDep.json', env, ref) ?? []
     : readWorkspaceDeps(join(clientRepo, 'l5', 'config.json')) ?? readWorkspaceDeps(join(clientRepo, 'mlsDep.json')) ?? [];
   return [...new Set(list.map(String).filter((id) => /^\d+$/u.test(id) && id !== String(clientId)))];
 }
@@ -128,7 +129,8 @@ export function snapshotTree(repo, env = process.env, { fromHead = false } = {})
   const snapEnv = { ...env, GIT_INDEX_FILE: indexFile };
   try {
     // fromHead: the committed tree only (work in progress is left out), still without obj/.
-    const read = git(repo, ['read-tree', fromHead ? 'HEAD' : '--empty'], snapEnv);
+    // A string is the commit to read (rt215, pinned prepare); `true` is HEAD.
+    const read = git(repo, ['read-tree', fromHead ? (typeof fromHead === 'string' ? fromHead : 'HEAD') : '--empty'], snapEnv);
     if (read.code !== 0) return { ok: false, tree: '', reason: read.out };
     if (!fromHead) {
       const add = git(repo, ['add', '-A', '--', '.'], snapEnv);
@@ -211,8 +213,9 @@ export function planSnapshot({ repo, remote, url, env, gitSync, ensureRemote, fr
  */
 export function sendSnapshot({ plan, remote, env, pushOptions = [], gitSync, runPush }) {
   const { repo, remoteSha, tree, fromHead } = plan;
-  const headSha = gitOut(repo, ['rev-parse', 'HEAD'], env);
-  const subject = gitOut(repo, ['log', '-1', '--pretty=%s'], env);
+  const rev = typeof fromHead === 'string' ? fromHead : 'HEAD';
+  const headSha = gitOut(repo, ['rev-parse', rev], env);
+  const subject = gitOut(repo, ['log', '-1', '--pretty=%s', rev], env);
   const dirty = !fromHead && git(repo, ['status', '--porcelain'], env).out.length > 0;
   const message = snapshotMessage(headSha, dirty, subject);
 
