@@ -38,6 +38,7 @@ function benchTree(options = {}) {
   write(path.join(release, 'config.json'), JSON.stringify({
     defaultProjectId: '102047',
     ...(options.noOnboarding ? {} : { onboarding: { moduleId: 'inicio', entryPath: '/inicio/inicio_pessoa' } }),
+    ...(options.organization ? { organization: { source: 'development-project' } } : {}),
     projects: { 102047: { type: 'client' }, 102034: { type: 'master backend' } },
   }));
   write(path.join(release, 'release.json'), JSON.stringify({
@@ -200,6 +201,21 @@ test('a release without an onboarding block is ready without the seed', async ()
   assert.deepEqual(receipt.seed, { ok: true, skipped: true, reason: 'release config has no onboarding block', personas: null });
   assert.equal(receipt.limits.includes('no test logins: the project has no onboarding block yet'), true);
   assert.deepEqual(receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers: 2 });
+});
+
+test('a release without onboarding but with an organization seeds with the member role', async () => {
+  const tree = benchTree({ noOnboarding: true, organization: true });
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const box = harness(tree, logFile);
+  const receipt = await box.run('migrate');
+  assert.equal(receipt.ok, true);
+  assert.equal(box.order.includes('seed'), true);
+  assert.ok(box.seedArgv[0].includes('--member-role'));
+  assert.ok(box.seedArgv[0].includes('tarefas.MembroEquipe'));
+  assert.equal(receipt.seed.skipped, undefined);
+  assert.equal(receipt.seed.ok, true);
+  assert.equal(receipt.seed.companyMdmId, 'co-1');
+  assert.deepEqual(Object.keys(receipt.seed.personas), ['responsavel', 'membro']);
 });
 
 test('an unreadable release config is an error, not a skipped seed', async () => {

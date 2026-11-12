@@ -60,8 +60,7 @@ const STAMP_FIELDS = ['id', 'client', 'versionRef', 'platformCommit', 'libs', 'm
 
 const defaultFs = { existsSync, readFileSync, realpathSync, readdirSync };
 
-/** True when the release config declares `onboarding`. An unreadable config is an error, never "no block". */
-export function releaseHasOnboarding(fs, releaseRoot) {
+function readReleaseConfig(fs, releaseRoot) {
   const file = path.join(releaseRoot, 'config.json');
   if (!fs.existsSync(file)) throw new Error(`release config is missing: ${file}`);
   let parsed;
@@ -70,7 +69,21 @@ export function releaseHasOnboarding(fs, releaseRoot) {
   } catch {
     throw new Error(`release config is not valid JSON: ${file}`);
   }
-  return parsed != null && typeof parsed === 'object' && parsed.onboarding != null;
+  return parsed != null && typeof parsed === 'object' ? parsed : {};
+}
+
+/** True when the release config declares `onboarding`. An unreadable config is an error, never "no block". */
+export function releaseHasOnboarding(fs, releaseRoot) {
+  return readReleaseConfig(fs, releaseRoot).onboarding != null;
+}
+
+/**
+ * True when the seed can run: an onboarding block, or an `organization` block plus a member role
+ * (the role stands in for the onboarding person type; the company is the organization's own).
+ */
+export function releaseSeedable(fs, releaseRoot, hasMemberRole) {
+  const config = readReleaseConfig(fs, releaseRoot);
+  return config.onboarding != null || (hasMemberRole && config.organization != null);
 }
 
 export class BenchError extends Error {
@@ -587,9 +600,10 @@ export async function prepareBench(input) {
       baseReceipt.migrate = { executed: false, reused: true, ok: true, script: path.basename(migrateJs) };
     }
 
-    // The seed resolves the organization from the release config's `onboarding` block. A project whose
-    // onboarding module was not generated yet has no block: the bench is ready without test logins.
-    if (!releaseHasOnboarding(fs, slot.resolvedRoot)) {
+    // The seed resolves the company from the release config's `onboarding` block, or from `organization`
+    // plus a member role when the project has no onboarding module (102047). With neither, the bench is
+    // ready without test logins.
+    if (!releaseSeedable(fs, slot.resolvedRoot, !noModuleRole)) {
       baseReceipt.seed = { ok: true, skipped: true, reason: 'release config has no onboarding block', personas: null };
       baseReceipt.limits = baseReceipt.limits.concat(['no test logins: the project has no onboarding block yet']);
     } else {
