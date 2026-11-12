@@ -173,7 +173,7 @@ test('migrate uses the verified release and restarts only app2047', async () => 
   assert.equal(log.filter((row) => row.cmd === 'pm2' && row.args[0] !== 'jlist').every((row) => row.args.join(' ').includes('app2047') && !row.args.join(' ').includes('2043')), true);
   assert.equal(box.order.indexOf('seed') > box.order.indexOf('probe:before'), true);
   assert.ok(box.seedArgv[0].includes('--member-role'));
-  assert.ok(box.seedArgv[0].includes('tarefas.MembroEquipe'));
+  assert.ok(box.seedArgv[0].includes('tarefas.Participante'));
   assert.equal(receipt.seed.companyMdmId, 'co-1');
   assert.equal(receipt.seed.personas.membro.cmUserId, 'cm-m');
   assert.equal(JSON.stringify(receipt).includes('cookie'), false);
@@ -211,7 +211,7 @@ test('a release without onboarding but with an organization seeds with the membe
   assert.equal(receipt.ok, true);
   assert.equal(box.order.includes('seed'), true);
   assert.ok(box.seedArgv[0].includes('--member-role'));
-  assert.ok(box.seedArgv[0].includes('tarefas.MembroEquipe'));
+  assert.ok(box.seedArgv[0].includes('tarefas.Participante'));
   assert.equal(receipt.seed.skipped, undefined);
   assert.equal(receipt.seed.ok, true);
   assert.equal(receipt.seed.companyMdmId, 'co-1');

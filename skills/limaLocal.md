@@ -73,7 +73,7 @@ Reset indisponível (decisão de 18/10/2026), só `migrate`.
 
 Humanos e histórico do cm permanecem. Testes novos usam referências únicas da rodada.
 
-O seed interno continua `scripts/runtime/prepareLocalTestBench.mjs` (`--member-role tarefas.MembroEquipe`). Ele agora só semeia dentro da reserva. Não é o comando de preparar a bancada.
+O seed interno continua `scripts/runtime/prepareLocalTestBench.mjs` (`--member-role tarefas.Participante`). Ele agora só semeia dentro da reserva. Não é o comando de preparar a bancada.
 
 O recibo pronto fica no temp do Mac (`lima-receipt-<sessão>.json`), escrito só depois de todos os checks. Traz sessão, fase, instante, VM, projeto, origem `localhost`, stamp da release (`id`, `client`, `versionRef`, `platformCommit`, `libs`, `monaco`), SHAs, árvores das dependências, resultado migrate/reset, módulos, Company, personas, CMids e limites. Falha apaga o recibo pronto e deixa um diagnóstico ao lado. Não promete perfis C14/C15, aviso diário nem integração How. O alpha das duas personas permanece. A instalação npm não é reproduzível byte a byte (versão da lib resolvida pelo `prepare` (freio ou `latest.json`, rt149); lockfile fora, Wagner 04/09).
 
@@ -86,7 +86,7 @@ O recibo `ready` descreve a topologia observada. Não é aceite do ciclo, não a
 - **Desde 20/10 a bancada é o 102056** (Wagner: *"ele vai ser a bancada agora, vou parar o módulo tarefas até completar o onboarding"*).
   Os exemplos abaixo com 102047 valem trocando o id.
 - **Seed por projeto:**
-  - o 102047 aplica o papel do tarefas (`tarefas.MembroEquipe`);
+  - o 102047 aplica o papel do tarefas (`tarefas.Participante`);
   - os outros usam o seed sem papel de módulo.
 - **Sem bloco `onboarding` no `config.json` da release não há seed.** O `prepare` fica `ready` com `seedSkipped: true` no recibo, sem
   Company e sem logins de teste (limite `no test logins: the project has no onboarding block yet`). É o caso do 102056 até o onboarding

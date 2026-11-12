@@ -15,7 +15,7 @@ import { DEFAULT_LOCK_PATH, dispatch } from './sessionVm.mjs';
 
 export const BENCH_PROJECT_ID = SUPPORTED_PROJECTS[0];
 export const BENCH_APP = projectApp(BENCH_PROJECT_ID);
-export const MEMBER_ROLE = 'tarefas.MembroEquipe';
+export const MEMBER_ROLE = 'tarefas.Participante';
 export const VM_RUNTIME_ROOT = projectRuntimeRoot(BENCH_PROJECT_ID);
 /** Projects whose bench seed attaches a module role (tarefas). The others get only the test logins. */
 const MEMBER_ROLE_PROJECTS = new Set(['102047']);

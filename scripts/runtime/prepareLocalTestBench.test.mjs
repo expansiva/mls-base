@@ -396,12 +396,12 @@ test('entrada direta do host: exit 0 com o resumo e exit 1 com a falha', () => {
 test('--member-role válido chega ao seed e o inválido recusa no host', async () => {
   const box = fixture();
   const calls = [];
-  const role = 'tarefas.MembroEquipe';
+  const role = 'tarefas.Participante';
   const argv = ['--project', '102047', '--member-role', role, '--runtime-root', box.alias, '--cm-root', box.cmRoot];
   runOnVm({ argv, spawnSync: spawner(calls), manifestDir: path.join(box.base, 'manifests') });
   assert.equal(calls[0].bin, 'node');
   assert.deepEqual(calls[0].args.slice(1), ['--member-role', role]);
-  assert.match(sshArgs('102047', '/r', '/c', [role])[1], /'--member-role' 'tarefas\.MembroEquipe'/);
+  assert.match(sshArgs('102047', '/r', '/c', [role])[1], /'--member-role' 'tarefas\.Participante'/);
   assert.throws(
     () => parseArgs(['--project', '102047', '--runtime-root', '/r', '--cm-root', '/c', '--member-role', 'tarefas.membro']),
     /not <moduleId>\.<Tipo>/,
