@@ -50,8 +50,6 @@ export function allowedOriginsFor(port) {
 }
 
 const MEMBER_ROLE = /^[A-Za-z][A-Za-z0-9]*\.[A-Z][A-Za-z0-9]*$/;
-/** `--alias-role <alias>=<moduleId>.<Tipo>`: a role for one bench persona only (the seed checks module and alias too). */
-const ALIAS_ROLE = /^(responsavel|membro)=[A-Za-z][A-Za-z0-9]*\.[A-Z][A-Za-z0-9]*$/;
 
 const LIMA_SESSION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
@@ -61,7 +59,6 @@ export function parseArgs(argv) {
   let cmRoot = '';
   let limaSession = '';
   const memberRoles = [];
-  const aliasRoles = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--project') project = argv[++i] ?? '';
@@ -76,20 +73,15 @@ export function parseArgs(argv) {
       if (!MEMBER_ROLE.test(role)) throw new Error(`--member-role '${role}' is not <moduleId>.<Tipo>`);
       memberRoles.push(role);
     }
-    else if (arg === '--alias-role') {
-      const role = argv[++i] ?? '';
-      if (!ALIAS_ROLE.test(role)) throw new Error(`--alias-role '${role}' is not <alias>=<moduleId>.<Tipo>`);
-      aliasRoles.push(role);
-    }
     else if (arg.startsWith('--')) throw new Error(`unknown argument ${arg}`);
     else throw new Error(`unexpected argument ${arg}`);
   }
   if (!runtimeRoot) throw new Error('--runtime-root is required');
   if (!cmRoot) throw new Error('--cm-root is required');
-  return { project: assertProjectId(project), runtimeRoot, cmRoot, memberRoles, aliasRoles, limaSession };
+  return { project: assertProjectId(project), runtimeRoot, cmRoot, memberRoles, limaSession };
 }
 
-export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [], context, aliasRoles = []) {
+export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [], context) {
   const parts = ['env', 'LOCAL_TEST_BENCH_ROLE=remote'];
   if (context) {
     if (!context.ownerId || !context.operationId || !context.lockPath) {
@@ -115,12 +107,11 @@ export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [
     cmRoot,
   );
   for (const role of memberRoles) parts.push('--member-role', role);
-  for (const role of aliasRoles) parts.push('--alias-role', role);
   return parts.map(shQuote).join(' ');
 }
 
-export function sshArgs(project, runtimeRoot, cmRoot, memberRoles = [], context, aliasRoles = []) {
-  return [SSH_ALIAS, remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles, context, aliasRoles)];
+export function sshArgs(project, runtimeRoot, cmRoot, memberRoles = [], context) {
+  return [SSH_ALIAS, remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles, context)];
 }
 
 export function testDatabaseUrlFromEnvText(text) {
@@ -391,7 +382,7 @@ export function runOnVm(options) {
     existsSync, readFileSync, realpathSync, mkdirSync, writeFileSync, renameSync, chmodSync,
   };
   const spawn = options.spawnSync ?? spawnSync;
-  const { project, runtimeRoot, cmRoot, memberRoles, aliasRoles } = parseArgs(options.argv);
+  const { project, runtimeRoot, cmRoot, memberRoles } = parseArgs(options.argv);
   if (!fs.existsSync(cmRoot)) throw new Error('cm root is missing');
   const slot = inspectSlot(runtimeRoot, project, fs);
   const manifestFile = path.join(options.manifestDir ?? MANIFEST_DIR, `${project}.json`);
@@ -402,7 +393,6 @@ export function runOnVm(options) {
   try {
     const seedArgs = ['node', slot.seedJs];
     for (const role of memberRoles) seedArgs.push('--member-role', role);
-    for (const role of aliasRoles) seedArgs.push('--alias-role', role);
     mdm = spawnSeed(spawn, seedArgs, slot.resolvedRoot, childEnv, 'mdm');
   } catch (error) {
     error.resume = 'mdm';
@@ -455,7 +445,7 @@ export async function hostMain(argv = process.argv.slice(2), spawn = spawnSync, 
       operationId: ctx.operationId,
       lockPath,
       sessionVmB64,
-    }, args.aliasRoles);
+    });
     if (command[0] !== SSH_ALIAS) throw new Error('ssh target is not lima-ubuntu24');
     const source = readFileSync(fileURLToPath(import.meta.url));
     const result = spawn(sshBin, command, {
