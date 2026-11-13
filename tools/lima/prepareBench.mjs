@@ -446,6 +446,11 @@ export async function prepareBench(input) {
   if (!declaredTestMode(slot.remoteBase, projectId)) {
     throw new Error('appEnv is not a declared test mode');
   }
+  const noAlpha = input.noAlpha === true;
+  // The mode lives in the bench manifest, which only a seeded bench has: asking for it without one is a refusal.
+  if (noAlpha && !releaseSeedable(fs, slot.resolvedRoot, rolesFrom.roles.length > 0)) {
+    throw new Error('--no-alpha needs a seeded bench: the release has no test logins');
+  }
   const databaseUrl = testDatabaseUrlFromEnvText(fs.readFileSync(slot.envPath, 'utf8'));
   const identity = assertLocalTestTarget(databaseUrl);
   let client = null;
@@ -528,6 +533,7 @@ export async function prepareBench(input) {
   const pm2 = input.pm2 ?? defaultPm2(spawn);
   const needsDdl = input.db === 'reset' || !migrateReused;
   let suspended = false;
+  let modeChanged = false;
   const resume = () => {
     if (!suspended) return;
     pm2.restart(path.join(slot.remoteBase, 'pm2.apps.d', `${appName}.config.js`));
@@ -620,6 +626,7 @@ export async function prepareBench(input) {
       baseReceipt.limits = baseReceipt.limits.concat(['no test logins: the project has no onboarding block yet']);
     } else {
       const seedArgv = ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot];
+      if (noAlpha) seedArgv.push('--no-alpha');
       for (const role of rolesFrom.roles) seedArgv.push('--member-role', role);
       // The bench session issues every actor of the project's modules to the responsible persona, only the actors
       // tied to a person type to the member, and nothing to semPapel.
@@ -638,6 +645,13 @@ export async function prepareBench(input) {
         receipt.ddlStarted = needsDdl;
         throw new BenchError(receipt.error, receipt);
       }
+      // The manifest must say the mode that was asked for; the app reads it at its start, so a changed mode restarts it.
+      if ((manifest.noAlpha === true) !== noAlpha) {
+        const receipt = failedReceipt(baseReceipt, 'bench seed did not record the requested mode');
+        receipt.ddlStarted = needsDdl;
+        throw new BenchError(receipt.error, receipt);
+      }
+      modeChanged = (seed.previousNoAlpha === true) !== noAlpha;
       const personas = {};
       for (const alias of BENCH_ALIASES) {
         const persona = manifest.personas[alias];
@@ -665,6 +679,15 @@ export async function prepareBench(input) {
       baseReceipt.limits = baseReceipt.limits.concat(['do not treat previous MDM ids as still valid']);
     }
 
+    // After a DDL the app is started by `resume` below, which also reads the new manifest; otherwise it is still up
+    // and has the old mode, so it is restarted with the same command as `resume`.
+    let modeRestarted = false;
+    if (modeChanged) {
+      modeRestarted = true;
+      if (!suspended) pm2.restart(path.join(slot.remoteBase, 'pm2.apps.d', `${appName}.config.js`));
+    }
+    baseReceipt.benchMode = { noAlpha };
+    baseReceipt.modeRestarted = modeRestarted;
     resume();
     const health = await readBenchHealth(input, slot.port, stamp);
     if (!health || health.ok !== true) {
@@ -769,6 +792,7 @@ export async function main({
       projectId: command.projectId,
       runtimeRoot: command.runtimeRoot,
       cmRoot: command.cmRoot,
+      noAlpha: command.noAlpha === true,
       operation,
     });
     stdout.write(`${JSON.stringify(receipt)}\n`);

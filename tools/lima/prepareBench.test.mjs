@@ -659,3 +659,80 @@ test('receipt stays free of the database url', () => {
   assert.equal(source.includes('DROP SCHEMA'), false);
   assert.equal(source.includes('TRUNCATE'), false);
 });
+
+// --- rt227: the bench mode without the alpha ---------------------------------------------------------------------
+
+function modeRun(noAlpha, previousNoAlpha, tree, logFile) {
+  const box = harness(tree, logFile);
+  const script = path.join(tree.release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'migrate.js');
+  return box.run('migrate', {
+    noAlpha,
+    priorMigrate: { ok: true, script, database: 'collab_app_test', projectId: '102047' },
+    runSeed: (info) => {
+      box.seedArgv.push(info.argv);
+      return { manifestFile: '/etc/collab/local-tests/102047.json', manifest: { ...manifest(), noAlpha }, previousNoAlpha };
+    },
+  }).then((receipt) => ({ receipt, box }));
+}
+
+const pm2Calls = (logFile) => readLog(logFile).filter((row) => row.cmd === 'pm2').map((row) => row.args[0]);
+
+test('--no-alpha reaches the seed, the receipt says the mode, and the app restarts when the mode was the other', async () => {
+  const tree = benchTree();
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const { receipt, box } = await modeRun(true, false, tree, logFile);
+  assert.equal(box.seedArgv[0].includes('--no-alpha'), true);
+  assert.deepEqual(receipt.benchMode, { noAlpha: true });
+  assert.equal(receipt.modeRestarted, true);
+  // No DDL here: the restart is the mode's own.
+  assert.equal(receipt.migrate.executed, false);
+  assert.deepEqual(pm2Calls(logFile), ['restart', 'jlist']);
+});
+
+test('a prepare without the option after one with it goes back to the normal mode and restarts', async () => {
+  const tree = benchTree();
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const { receipt, box } = await modeRun(false, true, tree, logFile);
+  assert.equal(box.seedArgv[0].includes('--no-alpha'), false);
+  assert.deepEqual(receipt.benchMode, { noAlpha: false });
+  assert.equal(receipt.modeRestarted, true);
+  assert.deepEqual(pm2Calls(logFile), ['restart', 'jlist']);
+});
+
+test('the same mode twice does not restart the app', async () => {
+  for (const mode of [true, false]) {
+    const tree = benchTree();
+    const logFile = path.join(tree.root, 'log.ndjson');
+    const { receipt } = await modeRun(mode, mode, tree, logFile);
+    assert.deepEqual(receipt.benchMode, { noAlpha: mode });
+    assert.equal(receipt.modeRestarted, false);
+    assert.deepEqual(pm2Calls(logFile), ['jlist']);
+  }
+});
+
+test('with a DDL the mode change does not add a second restart', async () => {
+  const tree = benchTree();
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const box = harness(tree, logFile);
+  const receipt = await box.run('migrate', {
+    noAlpha: true,
+    runSeed: () => ({ manifestFile: '/etc/collab/local-tests/102047.json', manifest: { ...manifest(), noAlpha: true }, previousNoAlpha: false }),
+  });
+  assert.equal(receipt.modeRestarted, true);
+  assert.deepEqual(pm2Calls(logFile), ['stop', 'restart', 'jlist']);
+});
+
+test('a manifest that does not carry the requested mode fails the prepare', async () => {
+  const tree = benchTree();
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const box = harness(tree, logFile);
+  await assert.rejects(() => box.run('migrate', { noAlpha: true }), /did not record the requested mode/);
+});
+
+test('--no-alpha on a bench that cannot be seeded is refused before anything is touched', async () => {
+  const tree = benchTree({ noOnboarding: true });
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const box = harness(tree, logFile);
+  await assert.rejects(() => box.run('migrate', { noAlpha: true }), /--no-alpha needs a seeded bench/);
+  assert.deepEqual(readLog(logFile).filter((row) => row.cmd === 'pm2'), []);
+});

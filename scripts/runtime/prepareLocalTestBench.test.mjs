@@ -526,3 +526,25 @@ async function profileOf(box) {
   const { resolveLocalProfile } = await import('../../tools/lima/session.mjs');
   return resolveLocalProfile(box.root, box.env);
 }
+
+test('--no-alpha vai ao manifesto como noAlpha, sem a opção grava false, e o modo anterior volta no resultado', () => {
+  const box = fixture();
+  const argv = ['--project', '102047', '--runtime-root', box.alias, '--cm-root', box.cmRoot];
+  assert.equal(parseArgs(argv).noAlpha, false);
+  assert.equal(parseArgs([...argv, '--no-alpha']).noAlpha, true);
+  assert.match(sshArgs('102047', '/r', '/c', [], undefined, [], true)[1], /'--no-alpha'/);
+  assert.equal(sshArgs('102047', '/r', '/c')[1].includes('--no-alpha'), false);
+  const dir = path.join(box.base, 'manifests');
+  const first = runOnVm({ argv, spawnSync: spawner([]), manifestDir: dir });
+  assert.equal(first.manifest.noAlpha, false);
+  assert.equal(first.previousNoAlpha, false);
+  const second = runOnVm({ argv: [...argv, '--no-alpha'], spawnSync: spawner([]), manifestDir: dir });
+  assert.equal(second.manifest.noAlpha, true);
+  assert.equal(JSON.parse(readFileSync(second.manifestFile, 'utf8')).noAlpha, true);
+  assert.equal(second.previousNoAlpha, false);
+  const third = runOnVm({ argv, spawnSync: spawner([]), manifestDir: dir });
+  assert.equal(third.manifest.noAlpha, false);
+  assert.equal(third.previousNoAlpha, true);
+  assert.throws(() => buildManifest({ projectId: '102047', mdm: mdmFragment(), cm: cmFragment(), cookieKey: 'k'.repeat(32), origins: [`http://localhost:${box.port}`, `http://127.0.0.1:${box.port}`], noAlpha: 'yes' }), /noAlpha must be a boolean/);
+  rmSync(box.base, { recursive: true, force: true });
+});

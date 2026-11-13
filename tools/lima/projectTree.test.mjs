@@ -136,3 +136,13 @@ test('isProjectApp reads projects[<id>] of the repo l5/config.json and nothing e
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('--no-alpha belongs to prepare, is in the usage and is off by default', async () => {
+  const { usage } = await import('./lima.mjs');
+  assert.equal(parseCli(['prepare', '102047', '--session', 'a', '--no-alpha']).noAlpha, true);
+  assert.equal(parseCli(['prepare', '102047', '--session', 'a']).noAlpha, false);
+  assert.match(usage(), /\[--no-alpha\]/);
+  for (const argv of [['begin', '102047', '--session', 'a', '--no-alpha'], ['status', '--no-alpha'], ['end', '--session', 'a', '--no-alpha']]) {
+    assert.throws(() => parseCli(argv), (error) => error.code === 'usage' && error.exitCode === 2 && /--no-alpha belongs to prepare/.test(error.message));
+  }
+});

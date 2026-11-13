@@ -105,6 +105,8 @@ node tools/lima/lima.mjs prepare 102047 --session tester-<rodada> --db migrate
 
 Depois abre as jars com `--lima-session tester-<rodada>` e dá o `end` ao terminar. Próxima rodada, campanha nova.
 
+**Modo sem alpha (`--no-alpha`, só no `prepare`):** `prepare 102047 --session tester-<rodada> --no-alpha` liga a bancada sem o alpha (o super usuário que dá todos os atores) e com a recusa da tela ligada (escopo vazio recusado). O modo vai no manifesto da bancada (`noAlpha`), só existe na lima em modo de teste declarado e não mexe no repositório do app. O recibo traz `benchMode: { noAlpha }` e `modeRestarted` (o app reinicia quando o modo muda). Um `prepare` sem a opção volta ao modo normal.
+
 **O que o `prepare` faz:**
 - Publica o **HEAD** de cada repo do Mac (raiz `mls-base`, 102047 e dependências), inclusive commits de outras sessões. O que está sujo (arquivo editado, novo ou já preparado com `git add`) **fica de fora**, não é tocado e aparece como aviso no recibo (`warnings`: `mls-<id>: uncommitted changes left out, prepared from HEAD <sha7>`). Só o `.collab-msg.lock` (geração em andamento) recusa.
 - **Os commits enviados são os do primeiro plano** (rt215): raiz, app e cada dependência saem pelo sha planejado. Um commit de outra fila durante o preparo (raiz, app ou dependência) **não derruba mais**: vai o que estava no plano e o commit novo aparece como aviso (`mls-<id>: new commit <sha7> after the plan, left out of this prepare`). Para incluí-lo, rodar o prepare de novo; a `main` do app e a da lima podem divergir só por um marcador, e o perfil local alinha sozinho (`--force-with-lease`). Só um `.collab-msg.lock` que apareça no meio ainda recusa.

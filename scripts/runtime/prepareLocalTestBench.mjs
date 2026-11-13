@@ -62,6 +62,7 @@ export function parseArgs(argv) {
   let limaSession = '';
   const memberRoles = [];
   const authorities = [];
+  let noAlpha = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--project') project = argv[++i] ?? '';
@@ -81,15 +82,16 @@ export function parseArgs(argv) {
       if (!AUTHORITY_ARG.test(value)) throw new Error(`--authority '${value}' is not <alias>=<moduleId>:<actorId>`);
       authorities.push(value);
     }
+    else if (arg === '--no-alpha') noAlpha = true;
     else if (arg.startsWith('--')) throw new Error(`unknown argument ${arg}`);
     else throw new Error(`unexpected argument ${arg}`);
   }
   if (!runtimeRoot) throw new Error('--runtime-root is required');
   if (!cmRoot) throw new Error('--cm-root is required');
-  return { project: assertProjectId(project), runtimeRoot, cmRoot, memberRoles, authorities, limaSession };
+  return { project: assertProjectId(project), runtimeRoot, cmRoot, memberRoles, authorities, limaSession, noAlpha };
 }
 
-export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [], context, authorities = []) {
+export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [], context, authorities = [], noAlpha = false) {
   const parts = ['env', 'LOCAL_TEST_BENCH_ROLE=remote'];
   if (context) {
     if (!context.ownerId || !context.operationId || !context.lockPath) {
@@ -116,11 +118,12 @@ export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [
   );
   for (const role of memberRoles) parts.push('--member-role', role);
   for (const item of authorities) parts.push('--authority', item);
+  if (noAlpha) parts.push('--no-alpha');
   return parts.map(shQuote).join(' ');
 }
 
-export function sshArgs(project, runtimeRoot, cmRoot, memberRoles = [], context, authorities = []) {
-  return [SSH_ALIAS, remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles, context, authorities)];
+export function sshArgs(project, runtimeRoot, cmRoot, memberRoles = [], context, authorities = [], noAlpha = false) {
+  return [SSH_ALIAS, remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles, context, authorities, noAlpha)];
 }
 
 export function testDatabaseUrlFromEnvText(text) {
@@ -210,7 +213,9 @@ export function authoritiesByAlias(items = []) {
   return byAlias;
 }
 
-export function buildManifest({ projectId, mdm, cm, cookieKey, origins, authorities = [] }) {
+/** `noAlpha`: the bench runs without the alpha super user and with the screen's refusal on (read by the app from this file). */
+export function buildManifest({ projectId, mdm, cm, cookieKey, origins, authorities = [], noAlpha = false }) {
+  if (typeof noAlpha !== 'boolean') throw new Error('noAlpha must be a boolean');
   const authoritiesOf = authoritiesByAlias(authorities);
   const id = assertProjectId(projectId);
   const port = projectPort(id);
@@ -266,6 +271,7 @@ export function buildManifest({ projectId, mdm, cm, cookieKey, origins, authorit
     storagePrefix: 'desenv_',
     allowedOrigins: expectedOrigins,
     cookieKey,
+    noAlpha,
     personas,
   };
 }
@@ -405,7 +411,7 @@ export function runOnVm(options) {
     existsSync, readFileSync, realpathSync, mkdirSync, writeFileSync, renameSync, chmodSync,
   };
   const spawn = options.spawnSync ?? spawnSync;
-  const { project, runtimeRoot, cmRoot, memberRoles, authorities } = parseArgs(options.argv);
+  const { project, runtimeRoot, cmRoot, memberRoles, authorities, noAlpha } = parseArgs(options.argv);
   if (!fs.existsSync(cmRoot)) throw new Error('cm root is missing');
   const slot = inspectSlot(runtimeRoot, project, fs);
   const manifestFile = path.join(options.manifestDir ?? MANIFEST_DIR, `${project}.json`);
@@ -441,9 +447,11 @@ export function runOnVm(options) {
     cookieKey: keepCookieKey(previous, options.randomBytes ? options.randomBytes() : undefined),
     origins: slot.origins,
     authorities,
+    noAlpha,
   });
   publishManifest(manifestFile, manifest, fs);
-  return { manifestFile, summary: publicSummary(manifest, manifestFile), manifest };
+  // What the manifest said before this run: the app only reads it at start, so a change of mode needs a restart.
+  return { manifestFile, summary: publicSummary(manifest, manifestFile), manifest, previousNoAlpha: previous?.noAlpha === true };
 }
 
 const STANDALONE_SESSION = 'prepare-local-bench';
@@ -469,7 +477,7 @@ export async function hostMain(argv = process.argv.slice(2), spawn = spawnSync, 
       operationId: ctx.operationId,
       lockPath,
       sessionVmB64,
-    }, args.authorities);
+    }, args.authorities, args.noAlpha);
     if (command[0] !== SSH_ALIAS) throw new Error('ssh target is not lima-ubuntu24');
     const source = readFileSync(fileURLToPath(import.meta.url));
     const result = spawn(sshBin, command, {

@@ -60,6 +60,8 @@ if (benchCall) {
           },
         },
     limits: ['cm history preserved'],
+    benchMode: { noAlpha: process.env.LIMA_MODE_LIE === 'true' ? body.noAlpha !== true : body.noAlpha === true },
+    modeRestarted: body.noAlpha === true,
     ...(process.env.LIMA_HEALTH_OK === 'omit' ? {} : {
       healthOk: process.env.LIMA_HEALTH_OK === 'false'
         ? false
@@ -528,6 +530,25 @@ test('prepare receipt carries runtimeTopology from the bench', async () => {
   const receipt = JSON.parse(readFileSync(view.receiptFile, 'utf8'));
   assert.deepEqual(receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers: 2 });
   assert.equal(Object.hasOwn(receipt, 'workflowMemory'), false);
+});
+
+test('prepare --no-alpha sends the mode to the bench and the receipt carries it; without it the mode is off', async () => {
+  const box = bench();
+  const on = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate', '--no-alpha'], withStages(box));
+  assert.equal(on.code, 0, on.stderr);
+  const receiptOn = JSON.parse(readFileSync(JSON.parse(on.stdout).receiptFile, 'utf8'));
+  assert.deepEqual(receiptOn.benchMode, { noAlpha: true });
+  assert.equal(receiptOn.modeRestarted, true);
+  const off = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate'], withStages(box));
+  assert.equal(off.code, 0, off.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(JSON.parse(off.stdout).receiptFile, 'utf8')).benchMode, { noAlpha: false });
+});
+
+test('prepare is not ready when the bench receipt carries another mode than the requested one', async () => {
+  const box = bench();
+  const refused = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate', '--no-alpha'], withStages(box, { LIMA_MODE_LIE: 'true' }));
+  assert.notEqual(refused.code, 0);
+  assert.match(readFileSync(join(box.stateDir, 'lima-receipt-campanha.diagnosis.json'), 'utf8'), /bench mode does not match the requested mode/u);
 });
 
 test('prepare is ready with a declared skipped seed and refuses a skipped seed that claims logins', async () => {

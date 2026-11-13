@@ -32,10 +32,11 @@ export function usage() {
     'usage: node tools/lima/lima.mjs <command>',
     '  begin <projectId> --session <name>',
     '  status [--session <name>]',
-    '  prepare <projectId> --session <name> [--db migrate] [--dry-run] [--tree project]',
+    '  prepare <projectId> --session <name> [--db migrate] [--dry-run] [--tree project] [--no-alpha]',
     '  end --session <name>',
     'help and status do not start prepare or a browser.',
     'prepare keeps the reservation; --dry-run only reports occupation and the plan.',
+    '--no-alpha (prepare only) runs the bench without the alpha super user and with the screen refusal on; it is written in the bench manifest, so a prepare without it goes back to the normal mode. The receipt says benchMode and whether the app restarted for it.',
     '--tree project (or LIMA_PROJECT_TREE=1) forces the project tree; without it the prepare asks the bench where the app runs. It uses /data/app<id>/mls-base and current. The default is /data/mls-base and current-<id>.',
   ].join('\n');
 }
@@ -62,6 +63,7 @@ export function parseCli(argv) {
   let db = 'migrate';
   let dryRun = false;
   let tree = '';
+  let noAlpha = false;
   const positional = [];
   for (let i = 1; i < args.length; i += 1) {
     const sessionValue = takeSession(args, i);
@@ -80,6 +82,10 @@ export function parseCli(argv) {
     }
     if (args[i] === '--dry-run') {
       dryRun = true;
+      continue;
+    }
+    if (args[i] === '--no-alpha') {
+      noAlpha = true;
       continue;
     }
     if (args[i] === '--tree') {
@@ -124,7 +130,10 @@ export function parseCli(argv) {
   if (tree && command !== 'prepare') {
     throw Object.assign(new Error('--tree belongs to prepare'), { code: 'usage', exitCode: 2 });
   }
-  return { command, session, projectId, db, dryRun, tree };
+  if (noAlpha && command !== 'prepare') {
+    throw Object.assign(new Error('--no-alpha belongs to prepare'), { code: 'usage', exitCode: 2 });
+  }
+  return { command, session, projectId, db, dryRun, tree, noAlpha };
 }
 
 function sessionOptions(env) {
@@ -207,6 +216,8 @@ function buildReceipt({ parsed, profile, sources, bench }) {
       membro: personas.membro?.cmUserId || null,
     },
     seedSkipped: seed.skipped === true,
+    benchMode: bench.benchMode || null,
+    modeRestarted: bench.modeRestarted === true,
     limits: bench.limits || [],
     runtimeTopology: bench.runtimeTopology,
     healthOk: bench.healthOk,
@@ -218,6 +229,9 @@ function buildReceipt({ parsed, profile, sources, bench }) {
     && topology.expectedWorkers === 2 && topology.onlineWorkers === 2;
   if (!topologyOk) {
     throw Object.assign(new Error('receipt runtime topology is missing, invalid, or not two workers'), { code: 'receipt' });
+  }
+  if ((receipt.benchMode?.noAlpha === true) !== (parsed.noAlpha === true)) {
+    throw Object.assign(new Error('receipt bench mode does not match the requested mode'), { code: 'receipt' });
   }
   if (receipt.healthOk !== true) {
     throw Object.assign(new Error('receipt health is missing or not affirmed'), { code: 'receipt' });
@@ -423,6 +437,7 @@ export async function runPrepare(parsed, profile, env = process.env) {
     projectId: parsed.projectId,
     runtimeRoot: projectRuntimeRoot(parsed.projectId, env),
     cmRoot: VM_CM_ROOT,
+    noAlpha: parsed.noAlpha === true,
     operation: { ownerId: ref.ownerId, operationId: ref.operationId, lockPath: options.lockPath },
   });
   if (!bench?.ready) await fail(bench?.code || 'bench', bench?.message || 'bench did not become ready', true);
