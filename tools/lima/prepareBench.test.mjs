@@ -7,7 +7,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { dispatch } from './sessionVm.mjs';
 import {
-  BenchError, PROBE_ACTIVITY_SQL, PROBE_COUNT_SQL, PROBE_DATABASE_SQL, PROBE_DEPENDENTS_SQL, PROBE_SCOPE_SQL, prepareBench, probeWithPg,
+  ALIAS_ROLES, BenchError, PROBE_ACTIVITY_SQL, PROBE_COUNT_SQL, PROBE_DATABASE_SQL, PROBE_DEPENDENTS_SQL, PROBE_SCOPE_SQL, prepareBench, probeWithPg,
 } from './prepareBench.mjs';
 
 const SECRET_URL = 'postgres://bench_user:bench_secret@127.0.0.1:5432/collab_app_test';
@@ -174,6 +174,9 @@ test('migrate uses the verified release and restarts only app2047', async () => 
   assert.equal(box.order.indexOf('seed') > box.order.indexOf('probe:before'), true);
   assert.ok(box.seedArgv[0].includes('--member-role'));
   assert.ok(box.seedArgv[0].includes('tarefas.Participante'));
+  assert.equal(box.seedArgv[0].filter((arg) => arg === '--member-role').length, 1);
+  assert.deepEqual(box.seedArgv[0].slice(box.seedArgv[0].indexOf('--alias-role')), ['--alias-role', 'responsavel=compras.Comprador']);
+  assert.deepEqual(receipt.seed.aliasRoles, { responsavel: ['compras.Comprador'] });
   assert.equal(receipt.seed.companyMdmId, 'co-1');
   assert.equal(receipt.seed.personas.membro.cmUserId, 'cm-m');
   assert.equal(JSON.stringify(receipt).includes('cookie'), false);
@@ -201,6 +204,11 @@ test('a release without an onboarding block is ready without the seed', async ()
   assert.deepEqual(receipt.seed, { ok: true, skipped: true, reason: 'release config has no onboarding block', personas: null });
   assert.equal(receipt.limits.includes('no test logins: the project has no onboarding block yet'), true);
   assert.deepEqual(receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers: 2 });
+});
+
+test('only the 102047 bench gives a role to one persona; the other project keeps the seed as it was', () => {
+  assert.deepEqual(ALIAS_ROLES, { 102047: { responsavel: ['compras.Comprador'] } });
+  assert.equal(ALIAS_ROLES['102056'], undefined);
 });
 
 test('a release without onboarding but with an organization seeds with the member role', async () => {

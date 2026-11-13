@@ -19,6 +19,8 @@ export const MEMBER_ROLE = 'tarefas.Participante';
 export const VM_RUNTIME_ROOT = projectRuntimeRoot(BENCH_PROJECT_ID);
 /** Projects whose bench seed attaches a module role (tarefas). The others get only the test logins. */
 const MEMBER_ROLE_PROJECTS = new Set(['102047']);
+/** Roles for one bench persona only, per project (`<alias>=<moduleId>.<Tipo>` at the seed). Compras never registers a buyer: only the responsible one is. */
+export const ALIAS_ROLES = { 102047: { responsavel: ['compras.Comprador'] } };
 export const VM_CM_ROOT = '/data/msg.collab.codes/current';
 export const VM_BENCH_SCRIPT = '/data/mls-base/tools/lima/prepareBench.mjs';
 
@@ -609,6 +611,10 @@ export async function prepareBench(input) {
     } else {
       const seedArgv = ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot];
       if (!noModuleRole) seedArgv.push('--member-role', MEMBER_ROLE);
+      const aliasRoles = ALIAS_ROLES[projectId] ?? {};
+      for (const [alias, roles] of Object.entries(aliasRoles)) {
+        for (const role of roles) seedArgv.push('--alias-role', `${alias}=${role}`);
+      }
       const seed = input.runSeed
         ? input.runSeed({ argv: seedArgv, cwd: slot.resolvedRoot })
         : runOnVm({
@@ -635,6 +641,7 @@ export async function prepareBench(input) {
       baseReceipt.seed = {
         ok: true,
         memberRole: noModuleRole ? null : MEMBER_ROLE,
+        aliasRoles,
         companyMdmId: manifest.companyMdmId,
         organizationKey: manifest.organizationKey,
         personas,

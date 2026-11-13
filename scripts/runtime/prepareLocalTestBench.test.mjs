@@ -393,6 +393,24 @@ test('entrada direta do host: exit 0 com o resumo e exit 1 com a falha', () => {
   rmSync(fail.root, { recursive: true, force: true });
 });
 
+test('--alias-role válido chega ao seed (local e remoto) e o inválido recusa no host', () => {
+  const box = fixture();
+  const calls = [];
+  const alias = 'responsavel=compras.Comprador';
+  const argv = ['--project', '102047', '--member-role', 'tarefas.Participante', '--alias-role', alias, '--runtime-root', box.alias, '--cm-root', box.cmRoot];
+  assert.deepEqual(parseArgs(argv).aliasRoles, [alias]);
+  runOnVm({ argv, spawnSync: spawner(calls), manifestDir: path.join(box.base, 'manifests') });
+  assert.deepEqual(calls[0].args.slice(1), ['--member-role', 'tarefas.Participante', '--alias-role', alias]);
+  assert.match(sshArgs('102047', '/r', '/c', ['tarefas.Participante'], undefined, [alias])[1], /'--alias-role' 'responsavel=compras\.Comprador'/);
+  assert.equal(parseArgs(['--project', '102047', '--runtime-root', '/r', '--cm-root', '/c']).aliasRoles.length, 0);
+  for (const bad of ['gerente=compras.Comprador', 'responsavel', 'responsavel=compras.comprador', '=compras.Comprador']) {
+    assert.throws(
+      () => parseArgs(['--project', '102047', '--runtime-root', '/r', '--cm-root', '/c', '--alias-role', bad]),
+      /not <alias>=<moduleId>\.<Tipo>/,
+    );
+  }
+});
+
 test('--member-role válido chega ao seed e o inválido recusa no host', async () => {
   const box = fixture();
   const calls = [];
