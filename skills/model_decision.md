@@ -8,9 +8,20 @@ Swapping the underlying model is an admin registration (`models.mode = 'decision
 
 ## Contract
 
-`state` is a string of valid JSON, shared by every question in the request. `questions` is at least one item, up to the configured practical ceiling (`collab-llm.decisions.maxQuestions`). A request above that ceiling is 400 `llm.decision.invalid_questions`, and the error text states the ceiling. Each `id` is unique and matches `[A-Za-z0-9_-]{1,64}`, `instructions` is non-empty, and `options` has 2 to the configured maximum (20 unless `maxOptions` overrides it).
+`state` is a string of valid JSON, shared by every question in the request. `questions` has at least one item and up to 300 questions per request (default of `collab-llm.decisions.maxQuestions`; raised in appconfig). A request above the ceiling is 400 `llm.decision.invalid_questions`, and the error text states the ceiling. Each `id` is unique and matches `[A-Za-z0-9_-]{1,64}`, `instructions` is non-empty, and `options` has 2 to 20 items (default of `maxOptions`; raised in appconfig).
 
-A request larger than the part size (10 unless `partSize` overrides it) is one HTTP call. collab-llm splits the questions in order, keeps the same `state` on every part, and runs a bounded number of parts at once (`maxConcurrentParts`). Callers who send at most one part see the same success body as a single call, plus `blockId`.
+A request larger than one part (10 questions per part, default of `partSize`; raised in appconfig) is still one HTTP call. collab-llm splits the questions in order, keeps the same `state` on every part, and runs up to 10 parts at once (default of `maxConcurrentParts`; raised in appconfig). Callers who send at most one part see the same success body as a single call, plus `blockId`.
+
+Limits in production (all keys optional under `collab-llm.decisions` in appconfig; the value shown is the default):
+
+| Key | Value | Meaning |
+|---|---|---|
+| `maxQuestions` | 300 | questions per request |
+| `maxOptions` | 20 | options per question |
+| `partSize` | 10 | questions per provider call |
+| `maxConcurrentParts` | 10 | parts running at once |
+| `partTimeoutMs` | 10000 | deadline of each part |
+| `blockTimeoutMs` | 15000 | deadline of the whole request |
 
 ```json
 {
@@ -50,8 +61,8 @@ When at least one part returns and another fails, the HTTP status stays 200 and 
 | `questions` breaks the limits above | 400 `llm.decision.invalid_questions` (the text includes the ceiling) |
 | No credit | 402, same gate as chat, checked once at the start |
 | Alias missing, inactive, or not `mode = decision` | 404 `llm.model.alias_not_found` |
-| Each part | Its own deadline (10 s unless `partTimeoutMs` overrides it). A timeout, a 5xx, or a 429 retries once on `alternate_alias` when that alias is also `mode = decision` |
-| The whole request | Its own deadline (15 s unless `blockTimeoutMs` overrides it). Parts still running are cancelled and count as `timeout` |
+| Each part | Its own deadline (10 s, default of `partTimeoutMs`; raised in appconfig). A timeout, a 5xx, or a 429 retries once on `alternate_alias` when that alias is also `mode = decision` |
+| The whole request | Its own deadline (15 s, default of `blockTimeoutMs`; raised in appconfig). Parts still running are cancelled and count as `timeout` |
 | Every part fails | The error of that failure (504 `llm.decision.timeout` when the failure is a timeout) |
 | Some parts fail | 200 with `partial: true` and `error` on those questions |
 | Provider 400 | forwarded, no alternate |
