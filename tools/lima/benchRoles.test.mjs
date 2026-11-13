@@ -22,6 +22,7 @@ test('roles are the person types of every module, in config order then actor ord
   assert.deepEqual(derived, {
     roles: ['modB.Gamma', 'modA.Alpha', 'modA.Beta'],
     authorities: ['modB:actor0', 'modB:actor1', 'modA:actor0', 'modA:actor1', 'modA:actor2', 'modA:actor3'],
+    personAuthorities: ['modB:actor0', 'modA:actor1', 'modA:actor2', 'modA:actor3'],
     modulesWithoutAccess: [],
     skipped: null,
   });
@@ -33,6 +34,7 @@ test('a module without access.defs.ts is skipped and listed; a module with no pe
   assert.deepEqual(derived, {
     roles: ['modC.Delta'],
     authorities: ['modA:actor0', 'modA:actor1', 'modC:actor0'],
+    personAuthorities: ['modC:actor0'],
     modulesWithoutAccess: ['modB'],
     skipped: null,
   });

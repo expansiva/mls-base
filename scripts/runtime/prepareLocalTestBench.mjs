@@ -16,8 +16,8 @@ export const SSH_ALIAS = 'lima-ubuntu24';
 export const CM_TARGET = 'http://127.0.0.1:8180';
 export const MANIFEST_DIR = '/etc/collab/local-tests';
 export const TEST_DATABASE_NAME = 'collab_app_test';
-const ALIASES = ['responsavel', 'membro'];
-const BENCH_NAMES = { responsavel: 'Bench responsible', membro: 'Bench member' };
+const ALIASES = ['responsavel', 'membro', 'semPapel'];
+const BENCH_NAMES = { responsavel: 'Bench responsible', membro: 'Bench member', semPapel: 'Bench no role' };
 
 export function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -51,7 +51,7 @@ export function allowedOriginsFor(port) {
 
 const MEMBER_ROLE = /^[A-Za-z][A-Za-z0-9]*\.[A-Z][A-Za-z0-9]*$/;
 /** `--authority <alias>=<moduleId>:<actorId>`: an authority the bench session issues for that persona. */
-const AUTHORITY_ARG = /^(responsavel|membro)=([A-Za-z][A-Za-z0-9]*:[A-Za-z][A-Za-z0-9]*)$/;
+const AUTHORITY_ARG = /^(responsavel|membro|semPapel)=([A-Za-z][A-Za-z0-9]*:[A-Za-z][A-Za-z0-9]*)$/;
 
 const LIMA_SESSION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 

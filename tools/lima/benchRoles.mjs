@@ -57,6 +57,15 @@ function actorIdsOf(defs, label) {
   return ids;
 }
 
+/** `actorId`s whose `personEntity` is filled (checked by `personTypesOf`, which runs first). */
+function personActorIdsOf(defs) {
+  const ids = new Set();
+  for (const actor of defs.actors) {
+    if (typeof actor?.personEntity === 'string' && actor.personEntity !== '') ids.add(actor.actorId);
+  }
+  return ids;
+}
+
 function personTypesOf(defs, label) {
   if (defs == null || typeof defs !== 'object') throw new Error(`${label} has no default export object`);
   if (defs.schemaVersion !== ACCESS_SCHEMA_VERSION) {
@@ -81,10 +90,11 @@ function personTypesOf(defs, label) {
  * A module without `access.defs.ts` at that ref is skipped and listed; a file that exists and does not import
  * is an error. No source copy, no `versionRef` or a ref the copy does not have → no roles, with the reason.
  * `authorities` is `<moduleId>:<actorId>` of every actor of every module (person or not), same reading and order.
- * @returns {Promise<{ roles: string[], authorities: string[], modulesWithoutAccess: string[], skipped: string | null }>}
+ * `personAuthorities` is the same form for the actors that have a `personEntity` only, in the same order.
+ * @returns {Promise<{ roles: string[], authorities: string[], personAuthorities: string[], modulesWithoutAccess: string[], skipped: string | null }>}
  */
 export async function deriveMemberRoles({ config, projectId, appRoot, versionRef, run = git }) {
-  const none = (skipped) => ({ roles: [], authorities: [], modulesWithoutAccess: [], skipped });
+  const none = (skipped) => ({ roles: [], authorities: [], personAuthorities: [], modulesWithoutAccess: [], skipped });
   const modules = projectModuleIds(config, projectId);
   if (modules.length === 0) return none('the release config lists no module for the project');
   if (typeof versionRef !== 'string' || !/^[0-9a-f]{7,40}$/i.test(versionRef)) return none('release.json has no versionRef');
@@ -94,6 +104,7 @@ export async function deriveMemberRoles({ config, projectId, appRoot, versionRef
 
   const roles = [];
   const authorities = [];
+  const personAuthorities = [];
   const modulesWithoutAccess = [];
   for (const moduleId of modules) {
     const rel = `l4/${moduleId}/access.defs.ts`;
@@ -106,11 +117,15 @@ export async function deriveMemberRoles({ config, projectId, appRoot, versionRef
     if (shown.status !== 0) throw new Error(`${rel} could not be read at ${versionRef.slice(0, 7)}: ${String(shown.stderr).trim()}`);
     const mod = await importDefs(shown.stdout, rel);
     const types = personTypesOf(mod.default, rel); // also checks the default export, schemaVersion and actors
-    for (const actorId of actorIdsOf(mod.default, rel)) authorities.push(`${moduleId}:${actorId}`);
+    const personActors = personActorIdsOf(mod.default);
+    for (const actorId of actorIdsOf(mod.default, rel)) {
+      authorities.push(`${moduleId}:${actorId}`);
+      if (personActors.has(actorId)) personAuthorities.push(`${moduleId}:${actorId}`);
+    }
     for (const type of types) {
       const role = `${moduleId}.${type}`;
       if (!roles.includes(role)) roles.push(role);
     }
   }
-  return { roles, authorities, modulesWithoutAccess, skipped: null };
+  return { roles, authorities, personAuthorities, modulesWithoutAccess, skipped: null };
 }

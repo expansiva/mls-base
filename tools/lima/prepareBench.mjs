@@ -51,6 +51,8 @@ export const PROBE_COUNT_SQL = `SELECT s.name AS name,
   (xpath('/row/c/text()', query_to_xml(format('SELECT count(*)::int AS c FROM public.%I', s.name), false, true, '')))[1]::text::int AS n
 FROM unnest($1::text[]) AS s(name)`;
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+/** The bench people, in the order the seed returns them. */
+const BENCH_ALIASES = ['responsavel', 'membro', 'semPapel'];
 const STAMP_FIELDS = ['id', 'client', 'versionRef', 'platformCommit', 'libs', 'monaco'];
 
 const defaultFs = { existsSync, readFileSync, realpathSync, readdirSync };
@@ -433,7 +435,7 @@ export async function prepareBench(input) {
   // Person roles come from the project's own L4, read before anything is touched: a broken defs file stops here.
   // A release with an `onboarding` block registers people through it and derives no role.
   const rolesFrom = config.onboarding != null
-    ? { roles: [], authorities: [], modulesWithoutAccess: [], skipped: 'the release config has an onboarding block' }
+    ? { roles: [], authorities: [], personAuthorities: [], modulesWithoutAccess: [], skipped: 'the release config has an onboarding block' }
     : await deriveMemberRoles({
       config,
       projectId,
@@ -619,8 +621,10 @@ export async function prepareBench(input) {
     } else {
       const seedArgv = ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot];
       for (const role of rolesFrom.roles) seedArgv.push('--member-role', role);
-      // The bench session issues every actor of the project's modules to the responsible persona and none to the member.
+      // The bench session issues every actor of the project's modules to the responsible persona, only the actors
+      // tied to a person type to the member, and nothing to semPapel.
       for (const authority of rolesFrom.authorities) seedArgv.push('--authority', `responsavel=${authority}`);
+      for (const authority of rolesFrom.personAuthorities) seedArgv.push('--authority', `membro=${authority}`);
       const seed = input.runSeed
         ? input.runSeed({ argv: seedArgv, cwd: slot.resolvedRoot })
         : runOnVm({
@@ -629,13 +633,13 @@ export async function prepareBench(input) {
           ...(input.manifestDir ? { manifestDir: input.manifestDir } : {}),
         });
       const manifest = seed?.manifest;
-      if (!manifest?.companyMdmId || !manifest?.personas?.responsavel || !manifest?.personas?.membro) {
-        const receipt = failedReceipt(baseReceipt, 'bench seed did not return company and both sessions');
+      if (!manifest?.companyMdmId || !BENCH_ALIASES.every((alias) => manifest?.personas?.[alias])) {
+        const receipt = failedReceipt(baseReceipt, 'bench seed did not return company and the three sessions');
         receipt.ddlStarted = needsDdl;
         throw new BenchError(receipt.error, receipt);
       }
       const personas = {};
-      for (const alias of ['responsavel', 'membro']) {
+      for (const alias of BENCH_ALIASES) {
         const persona = manifest.personas[alias];
         personas[alias] = {
           email: persona.email,
@@ -647,7 +651,7 @@ export async function prepareBench(input) {
       baseReceipt.seed = {
         ok: true,
         memberRoles: rolesFrom.roles,
-        authorities: Object.fromEntries(['responsavel', 'membro'].map((alias) => [alias, manifest.personas[alias].authorities?.length ?? 0])),
+        authorities: Object.fromEntries(BENCH_ALIASES.map((alias) => [alias, manifest.personas[alias].authorities?.length ?? 0])),
         modulesWithoutAccess: rolesFrom.modulesWithoutAccess,
         companyMdmId: manifest.companyMdmId,
         organizationKey: manifest.organizationKey,

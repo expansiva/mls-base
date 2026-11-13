@@ -113,6 +113,7 @@ function manifest() {
     personas: {
       responsavel: { email: 'responsavel.102047@runtime.test', sub: 'local-test:102047:responsavel', personMdmId: 'p-r', cmUserId: 'cm-r' },
       membro: { email: 'membro.102047@runtime.test', sub: 'local-test:102047:membro', personMdmId: 'p-m', cmUserId: 'cm-m' },
+      semPapel: { email: 'semPapel.102047@runtime.test', sub: 'local-test:102047:semPapel', personMdmId: 'p-s', cmUserId: 'cm-s' },
     },
   };
 }
@@ -236,15 +237,19 @@ test('without onboarding the seed gets every person type of the project from its
   assert.deepEqual(roles, ['modA.Alpha', 'modC.Gamma', 'modC.Alpha']);
   assert.equal(argv.includes('--alias-role'), false);
   assert.deepEqual(receipt.seed.memberRoles, ['modA.Alpha', 'modC.Gamma', 'modC.Alpha']);
-  // Every actor (person or not) goes to the responsible persona, none to the member; the receipt counts them.
+  // Every actor goes to the responsible persona, only the person actors to the member, nothing to semPapel.
   const authorities = argv.flatMap((arg, i) => (arg === '--authority' ? [argv[i + 1]] : []));
-  assert.deepEqual(authorities, ['responsavel=modA:actor0', 'responsavel=modA:actor1', 'responsavel=modC:actor0', 'responsavel=modC:actor1']);
-  assert.deepEqual(receipt.seed.authorities, { responsavel: 0, membro: 0 }); // the stub manifest carries none
+  assert.deepEqual(authorities, [
+    'responsavel=modA:actor0', 'responsavel=modA:actor1', 'responsavel=modC:actor0', 'responsavel=modC:actor1',
+    'membro=modA:actor1', 'membro=modC:actor0', 'membro=modC:actor1',
+  ]);
+  assert.equal(authorities.some((item) => item.startsWith('semPapel=')), false);
+  assert.deepEqual(receipt.seed.authorities, { responsavel: 0, membro: 0, semPapel: 0 }); // the stub manifest carries none
   assert.deepEqual(receipt.seed.modulesWithoutAccess, ['modB']);
   assert.equal(receipt.seed.skipped, undefined);
   assert.equal(receipt.seed.ok, true);
   assert.equal(receipt.seed.companyMdmId, 'co-1');
-  assert.deepEqual(Object.keys(receipt.seed.personas), ['responsavel', 'membro']);
+  assert.deepEqual(Object.keys(receipt.seed.personas), ['responsavel', 'membro', 'semPapel']);
 });
 
 test('the roles are read at the release versionRef, not at a later commit of the source copy', async () => {
@@ -500,6 +505,7 @@ test('seed writes the manifest through the real runOnVm fs', async () => {
     personas: [
       { alias: 'responsavel', email: 'responsavel.102047@runtime.test', name: 'Bench responsible', sub: 'local-test:102047:responsavel', personMdmId: 'mdm-r' },
       { alias: 'membro', email: 'membro.102047@runtime.test', name: 'Bench member', sub: 'local-test:102047:membro', personMdmId: 'mdm-m' },
+      { alias: 'semPapel', email: 'semPapel.102047@runtime.test', name: 'Bench no role', sub: 'local-test:102047:semPapel', personMdmId: 'mdm-s' },
     ],
   };
   const cm = {
@@ -507,6 +513,7 @@ test('seed writes the manifest through the real runOnVm fs', async () => {
     personas: [
       { alias: 'responsavel', email: 'responsavel.102047@runtime.test', sub: 'local-test:102047:responsavel', cmUserId: 'cm-r' },
       { alias: 'membro', email: 'membro.102047@runtime.test', sub: 'local-test:102047:membro', cmUserId: 'cm-m' },
+      { alias: 'semPapel', email: 'semPapel.102047@runtime.test', sub: 'local-test:102047:semPapel', cmUserId: 'cm-s' },
     ],
   };
   const receipt = await prepareBench({
@@ -533,6 +540,7 @@ test('seed writes the manifest through the real runOnVm fs', async () => {
   assert.equal(saved.companyMdmId, 'company-1');
   assert.equal(saved.personas.responsavel.personMdmId, 'mdm-r');
   assert.equal(saved.personas.membro.cmUserId, 'cm-m');
+  assert.equal(saved.personas.semPapel.cmUserId, 'cm-s');
   assert.equal(receipt.seed.manifestFile, file);
   assert.equal(JSON.stringify(receipt).includes('cookie'), false);
 });

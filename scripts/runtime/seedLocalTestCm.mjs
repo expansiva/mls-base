@@ -8,8 +8,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const ALIASES = ['responsavel', 'membro'];
-const NAMES = { responsavel: 'Bench responsible', membro: 'Bench member' };
+const ALIASES = ['responsavel', 'membro', 'semPapel'];
+const NAMES = { responsavel: 'Bench responsible', membro: 'Bench member', semPapel: 'Bench no role' };
 export const BENCH_STORAGE_PREFIX = 'desenv_';
 
 export function localTestEmail(projectId, alias) {

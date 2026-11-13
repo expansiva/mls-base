@@ -72,14 +72,16 @@ test('prefixo ausente ou produtivo recusa antes de qualquer write', async () => 
   assert.throws(() => assertBenchStorage({ tablePrefix: 'desenv_' }), /declared local destination/);
 });
 
-test('cria os dois humanos e a repetição devolve os mesmos ids sem novo write', async () => {
+test('cria os três humanos e a repetição devolve os mesmos ids sem novo write', async () => {
   const box = harness();
   const first = await seedLocalTestCm(box.loaded, '102047');
   const second = await seedLocalTestCm(box.loaded, '102047');
   assert.equal(first.storagePrefix, 'desenv_');
-  assert.deepEqual(first.personas.map((p) => p.alias), ['responsavel', 'membro']);
+  assert.deepEqual(first.personas.map((p) => p.alias), ['responsavel', 'membro', 'semPapel']);
   assert.deepEqual(second.personas.map((p) => p.cmUserId), first.personas.map((p) => p.cmUserId));
-  assert.equal(box.writes.length, 2);
+  assert.equal(box.writes.length, 3);
+  assert.equal(box.writes[2].name, 'Bench no role');
+  assert.equal(box.writes[2].email, 'semPapel.102047@runtime.test');
   assert.equal(box.writes[0].kind, 'human');
   assert.equal(box.writes[0].email, 'responsavel.102047@runtime.test');
   assert.equal(box.writes[0].sub, 'local-test:102047:responsavel');

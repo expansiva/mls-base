@@ -40,6 +40,13 @@ function mdmFragment() {
         sub: 'local-test:102047:membro',
         personMdmId: 'mdm-m',
       },
+      {
+        alias: 'semPapel',
+        email: 'semPapel.102047@runtime.test',
+        name: 'Bench no role',
+        sub: 'local-test:102047:semPapel',
+        personMdmId: 'mdm-s',
+      },
     ],
   };
 }
@@ -50,6 +57,7 @@ function cmFragment() {
     personas: [
       { alias: 'responsavel', email: 'responsavel.102047@runtime.test', sub: 'local-test:102047:responsavel', cmUserId: 'cm-r' },
       { alias: 'membro', email: 'membro.102047@runtime.test', sub: 'local-test:102047:membro', cmUserId: 'cm-m' },
+      { alias: 'semPapel', email: 'semPapel.102047@runtime.test', sub: 'local-test:102047:semPapel', cmUserId: 'cm-s' },
     ],
   };
 }
@@ -166,10 +174,10 @@ test('falha do cm não publica nem apaga o manifesto anterior', () => {
 
 test('102056 usa o seed sem papel de módulo', () => {
   const box = fixture('102056');
-  const personas = ['responsavel', 'membro'].map((alias) => ({
+  const personas = ['responsavel', 'membro', 'semPapel'].map((alias) => ({
     alias,
     email: `${alias}.102056@runtime.test`,
-    name: alias === 'responsavel' ? 'Bench responsible' : 'Bench member',
+    name: { responsavel: 'Bench responsible', membro: 'Bench member', semPapel: 'Bench no role' }[alias],
     sub: `local-test:102056:${alias}`,
     personMdmId: `mdm-${alias}`,
   }));
@@ -199,6 +207,9 @@ test('102056 usa o seed sem papel de módulo', () => {
   assert.equal(result.manifest.companyMdmId, 'company-102056');
   assert.equal(result.manifest.organizationKey, 'org-102056');
   assert.equal(result.manifest.personas.membro.cmUserId, 'cm-membro');
+  // A release with onboarding gets no --authority: the three people carry none.
+  assert.deepEqual(Object.keys(result.manifest.personas), ['responsavel', 'membro', 'semPapel']);
+  for (const alias of ['responsavel', 'membro', 'semPapel']) assert.deepEqual(result.manifest.personas[alias].authorities, []);
   assert.equal(result.manifestFile.endsWith('/102056.json'), true);
   rmSync(box.base, { recursive: true, force: true });
 });
@@ -397,14 +408,15 @@ test('entrada direta do host: exit 0 com o resumo e exit 1 com a falha', () => {
 test('--authority vai ao manifesto por persona (não ao seed do mdm) e o inválido recusa no host', () => {
   const box = fixture();
   const calls = [];
-  const items = ['responsavel=modA:actor', 'responsavel=modB:other'];
+  const items = ['responsavel=modA:actor', 'responsavel=modB:other', 'membro=modA:actor'];
   const argv = ['--project', '102047', '--runtime-root', box.alias, '--cm-root', box.cmRoot, ...items.flatMap((item) => ['--authority', item])];
   assert.deepEqual(parseArgs(argv).authorities, items);
   const result = runOnVm({ argv, spawnSync: spawner(calls), manifestDir: path.join(box.base, 'manifests') });
   assert.equal(calls.some((call) => call.args.includes('--authority')), false);
   assert.deepEqual(result.manifest.personas.responsavel.authorities, ['modA:actor', 'modB:other']);
-  assert.deepEqual(result.manifest.personas.membro.authorities, []);
-  assert.match(sshArgs('102047', '/r', '/c', [], undefined, items)[1], /'--authority' 'responsavel=modA:actor' '--authority' 'responsavel=modB:other'/);
+  assert.deepEqual(result.manifest.personas.membro.authorities, ['modA:actor']);
+  assert.deepEqual(result.manifest.personas.semPapel.authorities, []);
+  assert.match(sshArgs('102047', '/r', '/c', [], undefined, items)[1], /'--authority' 'responsavel=modA:actor' '--authority' 'responsavel=modB:other' '--authority' 'membro=modA:actor'/);
   const plain = runOnVm({
     argv: ['--project', '102047', '--runtime-root', box.alias, '--cm-root', box.cmRoot],
     spawnSync: spawner([]),
@@ -412,6 +424,7 @@ test('--authority vai ao manifesto por persona (não ao seed do mdm) e o inváli
   });
   assert.deepEqual(plain.manifest.personas.responsavel.authorities, []);
   assert.deepEqual(plain.manifest.personas.membro.authorities, []);
+  assert.deepEqual(plain.manifest.personas.semPapel.authorities, []);
   for (const bad of ['gerente=modA:actor', 'responsavel', 'responsavel=modA', 'responsavel=modA:', '=modA:actor', 'responsavel=modA:actor:x']) {
     assert.throws(
       () => parseArgs(['--project', '102047', '--runtime-root', '/r', '--cm-root', '/c', '--authority', bad]),
