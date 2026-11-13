@@ -433,7 +433,7 @@ export async function prepareBench(input) {
   // Person roles come from the project's own L4, read before anything is touched: a broken defs file stops here.
   // A release with an `onboarding` block registers people through it and derives no role.
   const rolesFrom = config.onboarding != null
-    ? { roles: [], modulesWithoutAccess: [], skipped: 'the release config has an onboarding block' }
+    ? { roles: [], authorities: [], modulesWithoutAccess: [], skipped: 'the release config has an onboarding block' }
     : await deriveMemberRoles({
       config,
       projectId,
@@ -619,6 +619,8 @@ export async function prepareBench(input) {
     } else {
       const seedArgv = ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot];
       for (const role of rolesFrom.roles) seedArgv.push('--member-role', role);
+      // The bench session issues every actor of the project's modules to the responsible persona and none to the member.
+      for (const authority of rolesFrom.authorities) seedArgv.push('--authority', `responsavel=${authority}`);
       const seed = input.runSeed
         ? input.runSeed({ argv: seedArgv, cwd: slot.resolvedRoot })
         : runOnVm({
@@ -645,6 +647,7 @@ export async function prepareBench(input) {
       baseReceipt.seed = {
         ok: true,
         memberRoles: rolesFrom.roles,
+        authorities: Object.fromEntries(['responsavel', 'membro'].map((alias) => [alias, manifest.personas[alias].authorities?.length ?? 0])),
         modulesWithoutAccess: rolesFrom.modulesWithoutAccess,
         companyMdmId: manifest.companyMdmId,
         organizationKey: manifest.organizationKey,

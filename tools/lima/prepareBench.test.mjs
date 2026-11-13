@@ -182,6 +182,7 @@ test('migrate uses the verified release and restarts only app2047', async () => 
   assert.equal(box.order.indexOf('seed') > box.order.indexOf('probe:before'), true);
   // An onboarding block registers the people: no role is derived (the 102056 path).
   assert.equal(box.seedArgv[0].includes('--member-role'), false);
+  assert.equal(box.seedArgv[0].includes('--authority'), false);
   assert.deepEqual(receipt.seed.memberRoles, []);
   assert.equal(receipt.seed.companyMdmId, 'co-1');
   assert.equal(receipt.seed.personas.membro.cmUserId, 'cm-m');
@@ -235,6 +236,10 @@ test('without onboarding the seed gets every person type of the project from its
   assert.deepEqual(roles, ['modA.Alpha', 'modC.Gamma', 'modC.Alpha']);
   assert.equal(argv.includes('--alias-role'), false);
   assert.deepEqual(receipt.seed.memberRoles, ['modA.Alpha', 'modC.Gamma', 'modC.Alpha']);
+  // Every actor (person or not) goes to the responsible persona, none to the member; the receipt counts them.
+  const authorities = argv.flatMap((arg, i) => (arg === '--authority' ? [argv[i + 1]] : []));
+  assert.deepEqual(authorities, ['responsavel=modA:actor0', 'responsavel=modA:actor1', 'responsavel=modC:actor0', 'responsavel=modC:actor1']);
+  assert.deepEqual(receipt.seed.authorities, { responsavel: 0, membro: 0 }); // the stub manifest carries none
   assert.deepEqual(receipt.seed.modulesWithoutAccess, ['modB']);
   assert.equal(receipt.seed.skipped, undefined);
   assert.equal(receipt.seed.ok, true);

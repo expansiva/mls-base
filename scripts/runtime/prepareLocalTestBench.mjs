@@ -50,6 +50,8 @@ export function allowedOriginsFor(port) {
 }
 
 const MEMBER_ROLE = /^[A-Za-z][A-Za-z0-9]*\.[A-Z][A-Za-z0-9]*$/;
+/** `--authority <alias>=<moduleId>:<actorId>`: an authority the bench session issues for that persona. */
+const AUTHORITY_ARG = /^(responsavel|membro)=([A-Za-z][A-Za-z0-9]*:[A-Za-z][A-Za-z0-9]*)$/;
 
 const LIMA_SESSION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
@@ -59,6 +61,7 @@ export function parseArgs(argv) {
   let cmRoot = '';
   let limaSession = '';
   const memberRoles = [];
+  const authorities = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--project') project = argv[++i] ?? '';
@@ -73,15 +76,20 @@ export function parseArgs(argv) {
       if (!MEMBER_ROLE.test(role)) throw new Error(`--member-role '${role}' is not <moduleId>.<Tipo>`);
       memberRoles.push(role);
     }
+    else if (arg === '--authority') {
+      const value = argv[++i] ?? '';
+      if (!AUTHORITY_ARG.test(value)) throw new Error(`--authority '${value}' is not <alias>=<moduleId>:<actorId>`);
+      authorities.push(value);
+    }
     else if (arg.startsWith('--')) throw new Error(`unknown argument ${arg}`);
     else throw new Error(`unexpected argument ${arg}`);
   }
   if (!runtimeRoot) throw new Error('--runtime-root is required');
   if (!cmRoot) throw new Error('--cm-root is required');
-  return { project: assertProjectId(project), runtimeRoot, cmRoot, memberRoles, limaSession };
+  return { project: assertProjectId(project), runtimeRoot, cmRoot, memberRoles, authorities, limaSession };
 }
 
-export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [], context) {
+export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [], context, authorities = []) {
   const parts = ['env', 'LOCAL_TEST_BENCH_ROLE=remote'];
   if (context) {
     if (!context.ownerId || !context.operationId || !context.lockPath) {
@@ -107,11 +115,12 @@ export function remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles = [
     cmRoot,
   );
   for (const role of memberRoles) parts.push('--member-role', role);
+  for (const item of authorities) parts.push('--authority', item);
   return parts.map(shQuote).join(' ');
 }
 
-export function sshArgs(project, runtimeRoot, cmRoot, memberRoles = [], context) {
-  return [SSH_ALIAS, remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles, context)];
+export function sshArgs(project, runtimeRoot, cmRoot, memberRoles = [], context, authorities = []) {
+  return [SSH_ALIAS, remoteShellCommand(project, runtimeRoot, cmRoot, memberRoles, context, authorities)];
 }
 
 export function testDatabaseUrlFromEnvText(text) {
@@ -189,7 +198,20 @@ function personaByAlias(list, alias) {
   return found[0];
 }
 
-export function buildManifest({ projectId, mdm, cm, cookieKey, origins }) {
+/** `alias=module:actor` items → authorities per persona; a repeat is an error. Every alias present, maybe empty. */
+export function authoritiesByAlias(items = []) {
+  const byAlias = Object.fromEntries(ALIASES.map((alias) => [alias, []]));
+  for (const item of items) {
+    const match = AUTHORITY_ARG.exec(item);
+    if (!match) throw new Error(`authority '${item}' is not <alias>=<moduleId>:<actorId>`);
+    if (byAlias[match[1]].includes(match[2])) throw new Error(`authority ${item} is repeated`);
+    byAlias[match[1]].push(match[2]);
+  }
+  return byAlias;
+}
+
+export function buildManifest({ projectId, mdm, cm, cookieKey, origins, authorities = [] }) {
+  const authoritiesOf = authoritiesByAlias(authorities);
   const id = assertProjectId(projectId);
   const port = projectPort(id);
   const expectedOrigins = allowedOriginsFor(port);
@@ -230,6 +252,7 @@ export function buildManifest({ projectId, mdm, cm, cookieKey, origins }) {
       sub,
       personMdmId: left.personMdmId,
       cmUserId: right.cmUserId,
+      authorities: authoritiesOf[alias],
     };
   }
   return {
@@ -382,7 +405,7 @@ export function runOnVm(options) {
     existsSync, readFileSync, realpathSync, mkdirSync, writeFileSync, renameSync, chmodSync,
   };
   const spawn = options.spawnSync ?? spawnSync;
-  const { project, runtimeRoot, cmRoot, memberRoles } = parseArgs(options.argv);
+  const { project, runtimeRoot, cmRoot, memberRoles, authorities } = parseArgs(options.argv);
   if (!fs.existsSync(cmRoot)) throw new Error('cm root is missing');
   const slot = inspectSlot(runtimeRoot, project, fs);
   const manifestFile = path.join(options.manifestDir ?? MANIFEST_DIR, `${project}.json`);
@@ -417,6 +440,7 @@ export function runOnVm(options) {
     cm,
     cookieKey: keepCookieKey(previous, options.randomBytes ? options.randomBytes() : undefined),
     origins: slot.origins,
+    authorities,
   });
   publishManifest(manifestFile, manifest, fs);
   return { manifestFile, summary: publicSummary(manifest, manifestFile), manifest };
@@ -445,7 +469,7 @@ export async function hostMain(argv = process.argv.slice(2), spawn = spawnSync, 
       operationId: ctx.operationId,
       lockPath,
       sessionVmB64,
-    });
+    }, args.authorities);
     if (command[0] !== SSH_ALIAS) throw new Error('ssh target is not lima-ubuntu24');
     const source = readFileSync(fileURLToPath(import.meta.url));
     const result = spawn(sshBin, command, {

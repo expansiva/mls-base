@@ -19,13 +19,23 @@ test('roles are the person types of every module, in config order then actor ord
     'l4/modB/access.defs.ts': accessDefs(['Gamma', '']),
   }]);
   const derived = await deriveMemberRoles({ config: config('modB', 'modA'), projectId: '102047', appRoot: root, versionRef: shas[0] });
-  assert.deepEqual(derived, { roles: ['modB.Gamma', 'modA.Alpha', 'modA.Beta'], modulesWithoutAccess: [], skipped: null });
+  assert.deepEqual(derived, {
+    roles: ['modB.Gamma', 'modA.Alpha', 'modA.Beta'],
+    authorities: ['modB:actor0', 'modB:actor1', 'modA:actor0', 'modA:actor1', 'modA:actor2', 'modA:actor3'],
+    modulesWithoutAccess: [],
+    skipped: null,
+  });
 });
 
 test('a module without access.defs.ts is skipped and listed; a module with no person actor adds nothing', async () => {
   const { root, shas } = sourceCopy([{ 'l4/modA/access.defs.ts': accessDefs(['', '']), 'l4/modC/access.defs.ts': accessDefs(['Delta']) }]);
   const derived = await deriveMemberRoles({ config: config('modA', 'modB', 'modC'), projectId: '102047', appRoot: root, versionRef: shas[0] });
-  assert.deepEqual(derived, { roles: ['modC.Delta'], modulesWithoutAccess: ['modB'], skipped: null });
+  assert.deepEqual(derived, {
+    roles: ['modC.Delta'],
+    authorities: ['modA:actor0', 'modA:actor1', 'modC:actor0'],
+    modulesWithoutAccess: ['modB'],
+    skipped: null,
+  });
 });
 
 test('the file is read at versionRef, not at the working tree or HEAD', async () => {

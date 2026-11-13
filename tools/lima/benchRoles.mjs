@@ -13,6 +13,7 @@ export const ACCESS_SCHEMA_VERSION = '2026-09-12-ns5-access-v3';
 
 const MODULE_ID = /^[A-Za-z][A-Za-z0-9]*$/;
 const PERSON_TYPE = /^[A-Z][A-Za-z0-9]*$/;
+const ACTOR_ID = /^[A-Za-z][A-Za-z0-9]*$/;
 
 function git(appRoot, args) {
   return spawnSync('git', ['-C', appRoot, ...args], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -43,6 +44,19 @@ async function importDefs(source, label) {
   }
 }
 
+/** `actorId` of every actor, person or not, in the order the module declares them. */
+function actorIdsOf(defs, label) {
+  const ids = [];
+  for (const actor of defs.actors) {
+    const id = actor?.actorId;
+    if (typeof id !== 'string' || !ACTOR_ID.test(id)) {
+      throw new Error(`${label} has an actor with an invalid actorId ${JSON.stringify(id)}`);
+    }
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 function personTypesOf(defs, label) {
   if (defs == null || typeof defs !== 'object') throw new Error(`${label} has no default export object`);
   if (defs.schemaVersion !== ACCESS_SCHEMA_VERSION) {
@@ -66,10 +80,11 @@ function personTypesOf(defs, label) {
  * Order: modules as the release config lists them, then the actors as the module declares them; no repeats.
  * A module without `access.defs.ts` at that ref is skipped and listed; a file that exists and does not import
  * is an error. No source copy, no `versionRef` or a ref the copy does not have → no roles, with the reason.
- * @returns {Promise<{ roles: string[], modulesWithoutAccess: string[], skipped: string | null }>}
+ * `authorities` is `<moduleId>:<actorId>` of every actor of every module (person or not), same reading and order.
+ * @returns {Promise<{ roles: string[], authorities: string[], modulesWithoutAccess: string[], skipped: string | null }>}
  */
 export async function deriveMemberRoles({ config, projectId, appRoot, versionRef, run = git }) {
-  const none = (skipped) => ({ roles: [], modulesWithoutAccess: [], skipped });
+  const none = (skipped) => ({ roles: [], authorities: [], modulesWithoutAccess: [], skipped });
   const modules = projectModuleIds(config, projectId);
   if (modules.length === 0) return none('the release config lists no module for the project');
   if (typeof versionRef !== 'string' || !/^[0-9a-f]{7,40}$/i.test(versionRef)) return none('release.json has no versionRef');
@@ -78,6 +93,7 @@ export async function deriveMemberRoles({ config, projectId, appRoot, versionRef
   if (known.status !== 0) return none(`versionRef ${versionRef.slice(0, 7)} is not in the source copy`);
 
   const roles = [];
+  const authorities = [];
   const modulesWithoutAccess = [];
   for (const moduleId of modules) {
     const rel = `l4/${moduleId}/access.defs.ts`;
@@ -89,10 +105,12 @@ export async function deriveMemberRoles({ config, projectId, appRoot, versionRef
     const shown = run(appRoot, ['show', `${versionRef}:${rel}`]);
     if (shown.status !== 0) throw new Error(`${rel} could not be read at ${versionRef.slice(0, 7)}: ${String(shown.stderr).trim()}`);
     const mod = await importDefs(shown.stdout, rel);
-    for (const type of personTypesOf(mod.default, rel)) {
+    const types = personTypesOf(mod.default, rel); // also checks the default export, schemaVersion and actors
+    for (const actorId of actorIdsOf(mod.default, rel)) authorities.push(`${moduleId}:${actorId}`);
+    for (const type of types) {
       const role = `${moduleId}.${type}`;
       if (!roles.includes(role)) roles.push(role);
     }
   }
-  return { roles, modulesWithoutAccess, skipped: null };
+  return { roles, authorities, modulesWithoutAccess, skipped: null };
 }

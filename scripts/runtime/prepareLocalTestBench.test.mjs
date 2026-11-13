@@ -8,6 +8,7 @@ import { dispatch } from '../../tools/lima/sessionVm.mjs';
 import { withLimaOperation } from '../../tools/lima/session.mjs';
 import {
   SSH_ALIAS,
+  authoritiesByAlias,
   buildManifest,
   hostMain,
   inspectSlot,
@@ -391,6 +392,34 @@ test('entrada direta do host: exit 0 com o resumo e exit 1 com a falha', () => {
   assert.equal(retained.operations.length, 1);
   rmSync(ok.root, { recursive: true, force: true });
   rmSync(fail.root, { recursive: true, force: true });
+});
+
+test('--authority vai ao manifesto por persona (não ao seed do mdm) e o inválido recusa no host', () => {
+  const box = fixture();
+  const calls = [];
+  const items = ['responsavel=modA:actor', 'responsavel=modB:other'];
+  const argv = ['--project', '102047', '--runtime-root', box.alias, '--cm-root', box.cmRoot, ...items.flatMap((item) => ['--authority', item])];
+  assert.deepEqual(parseArgs(argv).authorities, items);
+  const result = runOnVm({ argv, spawnSync: spawner(calls), manifestDir: path.join(box.base, 'manifests') });
+  assert.equal(calls.some((call) => call.args.includes('--authority')), false);
+  assert.deepEqual(result.manifest.personas.responsavel.authorities, ['modA:actor', 'modB:other']);
+  assert.deepEqual(result.manifest.personas.membro.authorities, []);
+  assert.match(sshArgs('102047', '/r', '/c', [], undefined, items)[1], /'--authority' 'responsavel=modA:actor' '--authority' 'responsavel=modB:other'/);
+  const plain = runOnVm({
+    argv: ['--project', '102047', '--runtime-root', box.alias, '--cm-root', box.cmRoot],
+    spawnSync: spawner([]),
+    manifestDir: path.join(box.base, 'manifests2'),
+  });
+  assert.deepEqual(plain.manifest.personas.responsavel.authorities, []);
+  assert.deepEqual(plain.manifest.personas.membro.authorities, []);
+  for (const bad of ['gerente=modA:actor', 'responsavel', 'responsavel=modA', 'responsavel=modA:', '=modA:actor', 'responsavel=modA:actor:x']) {
+    assert.throws(
+      () => parseArgs(['--project', '102047', '--runtime-root', '/r', '--cm-root', '/c', '--authority', bad]),
+      /not <alias>=<moduleId>:<actorId>/,
+    );
+  }
+  assert.throws(() => authoritiesByAlias(['responsavel=modA:actor', 'responsavel=modA:actor']), /repeated/);
+  rmSync(box.base, { recursive: true, force: true });
 });
 
 test('--member-role válido chega ao seed e o inválido recusa no host', async () => {
