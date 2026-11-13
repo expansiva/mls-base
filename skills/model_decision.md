@@ -4,11 +4,13 @@
 
 The call from an agent inside collab-messages does not exist yet. That work belongs to the collabMessages queue. Do not invent a helper: until that queue ships one, the only contract is `POST /v1/decisions` on collab-llm, with the same authorization as chat.
 
-Swapping the underlying model is an admin registration (`models.mode = 'decision'`). A new database is seeded with the alias `decision` (OpenRouter, `typesafe/jev-1.14`, measured 13/11/2026); in an existing environment the alias is registered in the admin, with the same fields. An alias with another `mode` is 404 `llm.model.alias_not_found` on this route. A provider with no decision adapter is 502 `llm.decision.provider_unsupported` and is not sent to chat.
+Swapping the underlying model is an admin registration (`models.mode = 'decision'`). A new database is seeded with the alias `decision` (OpenRouter, `typesafe/jev-1.14`); in an existing environment the alias is registered in the admin, with the same fields. An alias with another `mode` is 404 `llm.model.alias_not_found` on this route. A provider with no decision adapter is 502 `llm.decision.provider_unsupported` and is not sent to chat.
 
 ## Contract
 
-`state` is a string of valid JSON. `questions` is 1 to 10 items. Each `id` is unique and matches `[A-Za-z0-9_-]{1,64}`, `instructions` is non-empty, and `options` has 2 to 20 strings.
+`state` is a string of valid JSON, shared by every question in the request. `questions` is at least one item, up to the configured practical ceiling (`collab-llm.decisions.maxQuestions`). A request above that ceiling is 400 `llm.decision.invalid_questions`, and the error text states the ceiling. Each `id` is unique and matches `[A-Za-z0-9_-]{1,64}`, `instructions` is non-empty, and `options` has 2 to the configured maximum (20 unless `maxOptions` overrides it).
+
+A request larger than the part size (10 unless `partSize` overrides it) is one HTTP call. collab-llm splits the questions in order, keeps the same `state` on every part, and runs a bounded number of parts at once (`maxConcurrentParts`). Callers who send at most one part see the same success body as a single call, plus `blockId`.
 
 ```json
 {
@@ -21,11 +23,12 @@ Swapping the underlying model is an admin registration (`models.mode = 'decision
 }
 ```
 
-A 200 body keeps `answers` in the same order as `questions`. `index` is the chosen option. `probabilities`, when the provider sends them, follows that same option order. `confidence` is the provider's own score; it is not the probability of the chosen option.
+A 200 body keeps `answers` in the same order as `questions`. `requestId` and `blockId` are the same id for the whole request. `index` is the chosen option. `probabilities`, when the provider sends them, follows that same option order. `confidence` is the provider's own score; it is not the probability of the chosen option. `usage` sums the tokens of every part.
 
 ```json
 {
   "requestId": "…",
+  "blockId": "…",
   "model": "typesafe/jev-1.14-20261014",
   "answers": [
     { "id": "intent", "index": 1, "confidence": 1, "probabilities": [0, 1, 0, 0] },
@@ -37,18 +40,22 @@ A 200 body keeps `answers` in the same order as `questions`. `index` is the chos
 
 A refusal is `{ "id": "…", "index": null, "refused": true }`. A `choice` outside the option list is returned the same way. The caller decides what a refusal means and what confidence is too low. This route does not apply a confidence cutoff.
 
+When at least one part returns and another fails, the HTTP status stays 200 and the body sets `"partial": true`. Each question from a failed part is `{ "id", "index": null, "error": "timeout" | "provider" | "rate_limited" }`. Questions from parts that returned stay normal answers, in the original order. The request is an error only when every part fails; that error is the same status and code a single call would return (for example 504 `llm.decision.timeout`).
+
 ## Errors, time, cost
 
 | Case | Result |
 |---|---|
 | `state` is not a string of valid JSON | 400 `llm.decision.invalid_state` |
-| `questions` breaks the limits above | 400 `llm.decision.invalid_questions` |
-| No credit | 402, same gate as chat |
+| `questions` breaks the limits above | 400 `llm.decision.invalid_questions` (the text includes the ceiling) |
+| No credit | 402, same gate as chat, checked once at the start |
 | Alias missing, inactive, or not `mode = decision` | 404 `llm.model.alias_not_found` |
-| Each attempt | 10 s. A timeout or a 5xx retries once on `alternate_alias` when that alias is also `mode = decision` |
-| Both attempts time out | 504 `llm.decision.timeout` |
+| Each part | Its own deadline (10 s unless `partTimeoutMs` overrides it). A timeout, a 5xx, or a 429 retries once on `alternate_alias` when that alias is also `mode = decision` |
+| The whole request | Its own deadline (15 s unless `blockTimeoutMs` overrides it). Parts still running are cancelled and count as `timeout` |
+| Every part fails | The error of that failure (504 `llm.decision.timeout` when the failure is a timeout) |
+| Some parts fail | 200 with `partial: true` and `error` on those questions |
 | Provider 400 | forwarded, no alternate |
 
-Billing uses the provider-reported `usage.cost`, charged like chat (the OpenRouter fee the chat path already applies, times the organization commission). `usage` in the response is token counts only. A success and a failure both write a `request_event` under the alias that was called.
+Organization credit and the rate limiter run once, at the start of the request. Tokens from every part are counted against that limiter. Each part is billed on its own and writes its own `request_event`, all of them carrying the same `blockId`. Billing uses the provider-reported `usage.cost`, charged like chat (the OpenRouter fee the chat path already applies, times the organization commission). `usage` in the response is token counts only.
 
-Measured on `typesafe/jev-1.14` (13/11/2026): two questions in one call returned in about 300–370 ms and cost about US$ 0.000017 before commission. One cold call took 695 ms. The 10 s limit held.
+A part returns in about 0.4–0.7 s. A block of a few hundred questions, split and run together, returns in a few seconds. Cost is about US$ 0.00001 per question before commission. The part deadline and the block deadline stay well above that.
