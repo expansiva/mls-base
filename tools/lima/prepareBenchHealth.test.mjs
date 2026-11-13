@@ -216,6 +216,7 @@ test('main probes the slot health URL through a real server and does not invent 
       assert.equal(input.health, undefined);
       assert.equal(input.fetchImpl, undefined);
       return prepareBench({
+        projectId: '102047',
         ...input,
         ...edges(tree),
         fetchImpl: forwardingFetch(server.address().port, hits),
@@ -266,6 +267,7 @@ test('main refuses a real 200 without ok and keeps the lock', async (t) => {
     stdout,
     stderr: capture(),
     prepare: (input) => prepareBench({
+      projectId: '102047',
       ...input,
       ...edges(tree),
       fetchImpl: forwardingFetch(server.address().port, hits),
@@ -289,6 +291,7 @@ test('an async health callback blocks the receipt until it fails', async () => {
   const pendingHealth = new Promise((resolve) => { finish = resolve; });
   let settled = false;
   const pending = prepareBench({
+    projectId: '102047',
     db: 'migrate',
     runtimeRoot: tree.release,
     cmRoot: tree.cm,
@@ -326,6 +329,7 @@ test('a rejected health callback and a sync callback keep their receipts', async
     lockPath: reservation.lockPath,
   };
   await assert.rejects(() => prepareBench({
+    projectId: '102047',
     db: 'migrate',
     runtimeRoot: tree.release,
     cmRoot: tree.cm,
@@ -340,6 +344,7 @@ test('a rejected health callback and a sync callback keep their receipts', async
   });
 
   const sync = await prepareBench({
+    projectId: '102047',
     db: 'migrate',
     runtimeRoot: tree.release,
     cmRoot: tree.cm,

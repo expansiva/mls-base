@@ -30,9 +30,9 @@ const RELEASE_FIELDS = ['id', 'client', 'versionRef', 'platformCommit', 'libs', 
 export function usage() {
   return [
     'usage: node tools/lima/lima.mjs <command>',
-    '  begin <102047|102056> --session <name>',
+    '  begin <projectId> --session <name>',
     '  status [--session <name>]',
-    '  prepare <102047|102056> --session <name> [--db migrate] [--dry-run] [--tree project]',
+    '  prepare <projectId> --session <name> [--db migrate] [--dry-run] [--tree project]',
     '  end --session <name>',
     'help and status do not start prepare or a browser.',
     'prepare keeps the reservation; --dry-run only reports occupation and the plan.',

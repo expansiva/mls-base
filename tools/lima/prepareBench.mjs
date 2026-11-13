@@ -1,5 +1,5 @@
 /**
- * Migração ou reset da bancada 102047, seed e recibo.
+ * Migração ou reset da bancada do projeto, seed e recibo.
  * A URL do banco segue só para o processo filho; o recibo leva o nome do banco.
  */
 import { spawnSync } from 'node:child_process';
@@ -11,16 +11,13 @@ import { inspectSlot, runOnVm, testDatabaseUrlFromEnvText } from '../../scripts/
 import { TEST_DATABASE_NAME, declaredTestMode } from '../../scripts/runtime/vmApps.mjs';
 import { deriveMemberRoles } from './benchRoles.mjs';
 import { probeBenchHealth } from './health.mjs';
-import { SUPPORTED_PROJECTS, projectApp, projectMlsBase, projectRuntimeRoot } from './session.mjs';
+import { assertProjectId, projectApp, projectMlsBase } from './session.mjs';
 import { DEFAULT_LOCK_PATH, dispatch } from './sessionVm.mjs';
 
-export const BENCH_PROJECT_ID = SUPPORTED_PROJECTS[0];
-export const BENCH_APP = projectApp(BENCH_PROJECT_ID);
-export const VM_RUNTIME_ROOT = projectRuntimeRoot(BENCH_PROJECT_ID);
 export const VM_CM_ROOT = '/data/msg.collab.codes/current';
 export const VM_BENCH_SCRIPT = '/data/mls-base/tools/lima/prepareBench.mjs';
 
-export function vmBenchScript(projectId = BENCH_PROJECT_ID, env = process.env) {
+export function vmBenchScript(projectId, env = process.env) {
   return `${projectMlsBase(projectId, env)}/tools/lima/prepareBench.mjs`;
 }
 
@@ -176,7 +173,7 @@ export function slotConsumers(remoteBase, projectId, fs = defaultFs) {
   return { known: true, others };
 }
 
-export function assessResetExclusive({ consumers, activity, externalDependents, appName = BENCH_APP }) {
+export function assessResetExclusive({ consumers, activity, externalDependents, appName }) {
   if (!consumers?.known) {
     return { ok: false, reason: consumers?.reason || 'slot inventory is unknown; migrate remains available' };
   }
@@ -409,7 +406,7 @@ export async function probeWithPg(client, request = {}) {
 export async function prepareBench(input) {
   const fs = input.fs ?? defaultFs;
   const spawn = input.spawnSync ?? spawnSync;
-  const projectId = input.projectId ?? BENCH_PROJECT_ID;
+  const projectId = input.projectId;
   if (input.operation) {
     const confirmed = await confirmBenchOperation(input.operation);
     if (!confirmed.ok) {
@@ -420,9 +417,7 @@ export async function prepareBench(input) {
       throw error;
     }
   }
-  if (!SUPPORTED_PROJECTS.includes(projectId)) {
-    throw new Error(`project ${projectId} is outside this bench`);
-  }
+  assertProjectId(projectId);
   const appName = projectApp(projectId);
   if (input.db !== 'migrate' && input.db !== 'reset') {
     throw new Error('db must be migrate or reset');
@@ -609,7 +604,7 @@ export async function prepareBench(input) {
     }
 
     // The seed resolves the company from the release config's `onboarding` block, or from `organization`
-    // plus a member role when the project has no onboarding module (102047). With neither, the bench is
+    // plus a member role when the project has no onboarding module. With neither, the bench is
     // ready without test logins.
     if (!releaseSeedable(fs, slot.resolvedRoot, rolesFrom.roles.length > 0)) {
       baseReceipt.seed = {

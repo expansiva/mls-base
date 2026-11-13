@@ -61,6 +61,9 @@ function makeBench() {
   mkdirSync(join(root, 'tools', 'lima'), { recursive: true });
   copyFileSync(join(HERE, '../tools/lima/session.mjs'), join(root, 'tools', 'lima', 'session.mjs'));
   copyFileSync(join(HERE, '../tools/lima/sessionVm.mjs'), join(root, 'tools', 'lima', 'sessionVm.mjs'));
+  // The bench app: the lima reservation is held for a project app (mls-<id>/l5/config.json has projects[<id>]).
+  mkdirSync(join(root, 'mls-102047', 'l5'), { recursive: true });
+  writeFileSync(join(root, 'mls-102047', 'l5', 'config.json'), `${JSON.stringify({ projects: { 102047: {} } })}\n`);
   const sshConfig = join(root, 'ssh.config');
   writeFileSync(sshConfig, 'Host lima-ubuntu24\n  HostName 127.0.0.1\n');
   writeFileSync(join(root, '.env'), `PUBLISH_LOCAL_SSH_HOST=bench\nPUBLISH_LOCAL_REMOTE_BASE=/unused\nPUBLISH_LOCAL_SSH_CONFIG=${sshConfig}\n`);
@@ -138,6 +141,12 @@ function pair(bench, id, { hook = true } = {}) {
   git(remote, ['config', 'receive.denyCurrentBranch', 'updateInstead']);
   git(remote, ['config', 'receive.advertisePushOptions', 'true']);
   writeFileSync(join(remote, 'README.md'), `remote ${id}\n`);
+  if (id === '102047') {
+    // The bench app is a project app: its l5/config.json has projects[<id>] (the stub makeBench left is replaced by this clone).
+    mkdirSync(join(remote, 'l5'), { recursive: true });
+    writeFileSync(join(remote, 'l5', 'config.json'), `${JSON.stringify({ projects: { 102047: {} } })}\n`);
+    rmSync(local, { recursive: true, force: true });
+  }
   git(remote, ['add', '-A']);
   git(remote, ['commit', '-q', '-m', 'seed']);
   git(bench.root, ['clone', '-q', remote, local]);
@@ -210,6 +219,7 @@ function cliEnv(bench, actor, extra = {}) {
     COLLAB_NODE: process.execPath,
     LIMA_LOCK_PATH: join(bench.root, 'lima.lock'),
     LIMA_STATE_DIR: join(bench.root, 'lima-state'),
+    LIMA_BENCH_PROJECT: '102047',
     ...extra,
   });
   delete env.NODE_TEST_CONTEXT;

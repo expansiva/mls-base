@@ -45,7 +45,7 @@ import { addMissingTsconfigPaths } from './syncTsconfigPaths.mjs';
 import { formatClientConfigWarn, validateClientConfigFile } from './validateClientConfig.mjs';
 import { createPublishLocalLock } from './publishGitLocalLock.mjs';
 import {
-  SUPPORTED_PROJECTS, beginSession, callVm, endSession, loadOwnerRef, resolveLocalProfile, saveOwnerRef,
+  beginSession, callVm, endSession, isProjectApp, loadOwnerRef, resolveLocalProfile, saveOwnerRef,
 } from '../tools/lima/session.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1415,7 +1415,7 @@ function listedSessionNames(profile) {
 function loadCanonicalRef(profile, session) {
   if (!listedSessionNames(profile).has(session)) return null;
   const ref = loadOwnerRef(profile, session);
-  if (!ref || ref.session !== session || ref.vm !== profile.alias || !SUPPORTED_PROJECTS.includes(ref.projectId)) return null;
+  if (!ref || ref.session !== session || ref.vm !== profile.alias || !isProjectApp(ROOT, ref.projectId)) return null;
   return ref;
 }
 
@@ -1433,9 +1433,18 @@ function refuseUnsafeCampaign(status) {
   if (status.phase === 'failed') limaRefuse('lima reservation occupied', 73);
 }
 
-function benchProjectForPublish(projectId) {
+/**
+ * The lima reservation is held for a project app. Publishing an app uses that app. Publishing anything else
+ * (a lib, the platform backend) has no app of its own: it joins the app of the reservation already held, or
+ * takes the one named by LIMA_BENCH_PROJECT.
+ */
+function benchProjectForPublish(projectId, heldProject, env = process.env) {
   const id = String(projectId || '');
-  return SUPPORTED_PROJECTS.includes(id) ? id : SUPPORTED_PROJECTS[0];
+  if (isProjectApp(ROOT, id)) return id;
+  const bench = String(env.LIMA_BENCH_PROJECT || '');
+  if (isProjectApp(ROOT, bench)) return bench;
+  if (isProjectApp(ROOT, String(heldProject || ''))) return String(heldProject);
+  return limaRefuse(`mls-${id} is not a project app; set LIMA_BENCH_PROJECT=<app id> to take the lima reservation for it`);
 }
 
 async function acquirePublishReservation(profile, projectId) {
@@ -1462,8 +1471,8 @@ async function acquirePublishReservation(profile, projectId) {
 
 async function enterLimaReservation(projectId) {
   const profile = resolveLocalProfile(ROOT);
-  const benchProject = benchProjectForPublish(projectId);
   const status = await limaStatus(profile);
+  const benchProject = benchProjectForPublish(projectId, status.held === false ? '' : status.projectId);
   if (status.held === false) return acquirePublishReservation(profile, benchProject);
 
   const session = status.session;

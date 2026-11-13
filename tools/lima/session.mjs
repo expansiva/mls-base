@@ -7,8 +7,6 @@ import { fileURLToPath } from 'node:url';
 import { BUSY_EXIT } from './sessionVm.mjs';
 
 export const SSH_ALIAS = 'lima-ubuntu24';
-export const SUPPORTED_PROJECTS = ['102047', '102056'];
-export const SUPPORTED_PROJECT = SUPPORTED_PROJECTS[0];
 export const CLAIM_TIMEOUT_MS = 15_000;
 export const LONG_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -19,10 +17,25 @@ export function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-export function assertProjectId(projectId) {
-  if (!SUPPORTED_PROJECTS.includes(projectId)) {
+/**
+ * A project app is the repo `mls-<id>` whose `l5/config.json` has `projects[<id>]`. A dependency (a lib, the
+ * platform backend) has no such entry. This is the only test of "is this a project": there is no list of ids.
+ */
+export function isProjectApp(root, projectId) {
+  if (typeof projectId !== 'string' || !/^\d{6}$/u.test(projectId)) return false;
+  try {
+    const config = JSON.parse(readFileSync(join(root, `mls-${projectId}`, 'l5', 'config.json'), 'utf8'));
+    const entry = config?.projects?.[projectId];
+    return entry != null && typeof entry === 'object';
+  } catch {
+    return false;
+  }
+}
+
+export function assertProjectId(projectId, root = ROOT) {
+  if (!isProjectApp(root, projectId)) {
     throw limaError(
-      `project ${projectId || '(missing)'} is not supported; this bench is ${SUPPORTED_PROJECTS.join(' or ')} only`,
+      `project ${projectId || '(missing)'} is not a project app: no mls-<id>/l5/config.json projects[<id>]`,
       'project',
     );
   }

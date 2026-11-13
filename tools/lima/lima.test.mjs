@@ -155,7 +155,8 @@ test('deadlines stay separate and help does not open ssh', async () => {
   const box = bench();
   const help = await runCli(['help'], box.env);
   assert.equal(help.code, 0);
-  assert.match(help.stdout, /begin <102047\|102056>/u);
+  assert.match(help.stdout, /begin <projectId>/u);
+  assert.doesNotMatch(help.stdout, /102047|102056/u);
   assert.equal(sshLines(box.sshLog).length, 0);
 });
 
@@ -191,10 +192,15 @@ test('remote host, wrong project and prepare do not succeed', async () => {
   const remote = await runCli(['begin', '102047', '--session', 'a', '--host', 'vm.example'], box.env);
   assert.notEqual(remote.code, 0);
   assert.match(remote.stderr, /remote host/u);
-  const other = await runCli(['begin', '102043', '--session', 'a'], box.env);
-  assert.notEqual(other.code, 0);
-  assert.match(other.stderr, /102047/u);
-  assert.match(other.stderr, /102056/u);
+  // A dependency (no projects[<id>] in its l5/config.json), an id that does not exist and a missing id are refused.
+  for (const wrong of ['102034', '109999']) {
+    const other = await runCli(['begin', wrong, '--session', 'a'], box.env);
+    assert.notEqual(other.code, 0);
+    assert.match(other.stderr, new RegExp(`${wrong} is not a project app`, 'u'));
+  }
+  const none = await runCli(['begin', '--session', 'a'], box.env);
+  assert.notEqual(none.code, 0);
+  assert.match(none.stderr, /usage/u);
   const prepared = await runCli(['prepare', '102047', '--session', 'a'], box.env);
   assert.notEqual(prepared.code, 0);
   assert.doesNotMatch(prepared.stdout, /"ready":true/u);

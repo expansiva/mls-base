@@ -1,4 +1,4 @@
-// Fontes do 102047 a partir do Mac. Não migra, não semeia e não marca a reserva como ready.
+// Fontes do projeto a partir do Mac. Não migra, não semeia e não marca a reserva como ready.
 // Must run on Mac (lima) AND Windows (multipass). Read mls-base/skills/crossPlatform.md first.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -8,13 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { readDepIds, snapshotTree } from '../../scripts/publishGitDeps.mjs';
 import {
-  SUPPORTED_PROJECTS, loadOwnerRef, projectApp, projectBuildLock, projectMlsBase, projectTreeMode, shQuote, spawnArgsFor, statusSession,
+  isProjectApp, loadOwnerRef, projectApp, projectBuildLock, projectMlsBase, projectTreeMode, shQuote, spawnArgsFor, statusSession,
 } from './session.mjs';
 
 const require = createRequire(import.meta.url);
 const { resolveLibsVersion } = require('../../scripts/install/libsPin.js');
 
-export const PROJECT_ID = '102047';
 export const VM_ROOT = '/data/mls-base';
 export const BUILD_LOCK = `${VM_ROOT}/.gitbuild.lock`;
 const MARKER_ERR = /##gitBackend build=error\b/;
@@ -58,9 +57,9 @@ export async function captureRepo(repo, env, { fromHead = false } = {}) {
  * with the same rule the VM release uses (brake, then latest.json), and every later plan of the same
  * prepare receives it, so a lib published in the middle never fails the prepare: it enters the next one.
  */
-export async function planLocalSources(root, projectId = PROJECT_ID, env = process.env, { pin: resolvedPin } = {}) {
-  if (!SUPPORTED_PROJECTS.includes(String(projectId))) {
-    throw Object.assign(new Error(`project refused: ${projectId}`), { code: 'project', sent: false });
+export async function planLocalSources(root, projectId, env = process.env, { pin: resolvedPin } = {}) {
+  if (!isProjectApp(root, projectId)) {
+    throw Object.assign(new Error(`project refused: ${projectId || '(missing)'} is not a project app`), { code: 'project', sent: false });
   }
   let pin = resolvedPin;
   if (!pin) {
@@ -75,8 +74,10 @@ export async function planLocalSources(root, projectId = PROJECT_ID, env = proce
   const appRepo = join(root, `mls-${projectId}`);
   const app = await captureRepo(appRepo, env, { fromHead: true });
   const declared = readDepIds(appRepo, projectId, { fromHead: true, env });
-  if (declared.includes('102056') && !projectTreeMode(env)) {
-    throw Object.assign(new Error('refusing project 102056'), { code: 'project', sent: false });
+  // In the shared tree a dependency that is itself a project app would change that app's build (rt89).
+  const appDeclared = declared.find((id) => isProjectApp(root, id));
+  if (appDeclared && !projectTreeMode(env)) {
+    throw Object.assign(new Error(`refusing project ${appDeclared}: it is an app, not a dependency`), { code: 'project', sent: false });
   }
   const depIds = declared.filter((id) => existsSync(join(root, `mls-${id}`, '.git')));
   const deps = [];
@@ -205,7 +206,8 @@ export function pinnedOf(plan) {
   return { appSha: plan.appSha, deps: Object.fromEntries(plan.deps.map((dep) => [dep.id, dep.sha])) };
 }
 
-export function publishCommand(root, projectId = PROJECT_ID, env = process.env, pinnedFile = '') {
+export function publishCommand(root, projectId, env = process.env, pinnedFile = '') {
+  if (!projectId) throw Object.assign(new Error('projectId is required'), { code: 'project' });
   const args = [join(root, 'scripts', 'publishGit.mjs'), String(projectId), 'local', '--deps-head'];
   if (pinnedFile) args.push('--pinned', pinnedFile);
   // In the project tree the app and its dependencies live under /data/app<id>/mls-base: the publish profile's
@@ -375,7 +377,7 @@ function failed(phase, extra = {}) {
 
 export async function prepareSources({
   root,
-  projectId = PROJECT_ID,
+  projectId,
   profile,
   session,
   env = process.env,
@@ -387,7 +389,7 @@ export async function prepareSources({
 } = {}) {
   const options = { env, sshBin, timeoutMs, buildTimeoutMs, spawnPublish };
   const sessionOptions = { sshBin, env, timeoutMs, lockPath: lockPath || process.env.LIMA_LOCK_PATH };
-  if (!SUPPORTED_PROJECTS.includes(String(projectId))) return failed('preparing', { code: 'project', sent: false });
+  if (!isProjectApp(root, projectId)) return failed('preparing', { code: 'project', sent: false });
   const ref = loadOwnerRef(profile, session);
   if (!ref?.operationId) return failed('preparing', { code: 'operation', sent: false });
   const status = await statusSession(profile, session, sessionOptions);

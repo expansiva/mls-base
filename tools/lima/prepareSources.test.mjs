@@ -6,7 +6,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { beginSession, withLimaOperation } from './session.mjs';
-import { planLocalSources, prepareSources, publishCommand, sourcesMismatch, PROJECT_ID } from './prepareSources.mjs';
+import { planLocalSources, prepareSources, publishCommand, sourcesMismatch } from './prepareSources.mjs';
+
+const PROJECT_ID = '102047';
 import { snapshotTree } from '../../scripts/publishGitDeps.mjs';
 
 // The expected lib version is resolved from the environment (the brake), never from a file in the repo.
@@ -177,7 +179,7 @@ function bench(mode = {}) {
   const rootSha = git(mac, ['rev-parse', 'HEAD']);
   const app = initRepo(join(mac, 'mls-102047'));
   mkdirSync(join(app, 'l5'), { recursive: true });
-  const appBody = `${JSON.stringify({ workspaceDependencies: ['102034'] })}\n`;
+  const appBody = `${JSON.stringify({ projects: { 102047: {} }, workspaceDependencies: ['102034'] })}\n`;
   const appSha = commitFile(app, 'l5/config.json', appBody, 'app');
   const dep = initRepo(join(mac, 'mls-102034'));
   commitFile(dep, 'README', 'dep\n', 'dep');
@@ -278,6 +280,7 @@ test('a dirty app or root is a warning, and only a generation lock blocks before
   writeFileSync(join(locked.mac, 'mls-102034', '.collab-msg.lock'), 'agent');
   await held(locked, async () => {
     const result = await prepareSources({
+      projectId: PROJECT_ID,
       root: locked.mac, profile: locked.profile, session: 'codex-s5', env: locked.env, sshBin: locked.options.sshBin,
       lockPath: locked.options.lockPath,
       spawnPublish: () => { throw new Error('publish ran'); },
@@ -293,6 +296,7 @@ test('coherent tree is a no-op and a root change forces the official build', asy
   let published = 0;
   await held(quiet, async () => {
     const result = await prepareSources({
+      projectId: PROJECT_ID,
       root: quiet.mac, profile: quiet.profile, session: 'codex-s5', env: quiet.env, sshBin: quiet.options.sshBin,
       lockPath: quiet.options.lockPath,
       spawnPublish: (spec) => {
@@ -321,6 +325,7 @@ test('coherent tree is a no-op and a root change forces the official build', asy
   commitFile(moved.mac, 'again.txt', 'root\n', 'root again');
   await held(moved, async () => {
     const result = await prepareSources({
+      projectId: PROJECT_ID,
       root: moved.mac, profile: moved.profile, session: 'codex-s5', env: moved.env, sshBin: moved.options.sshBin,
       lockPath: moved.options.lockPath,
       spawnPublish: () => ({ code: 0, text: 'Nothing to publish\n', uncertain: false }),
@@ -339,6 +344,7 @@ test('coherent tree is a no-op and a root change forces the official build', asy
 
 function quietPrepare(box) {
   return held(box, () => prepareSources({
+    projectId: PROJECT_ID,
     root: box.mac, profile: box.profile, session: 'codex-s5', env: box.env, sshBin: box.options.sshBin,
     lockPath: box.options.lockPath,
     spawnPublish: () => ({ code: 0, text: '[publishGit] Nothing to publish\n', uncertain: false }),
@@ -386,6 +392,7 @@ test('build error is not ready and a disconnect keeps the worktree', async () =>
   commitFile(broken.mac, 'again.txt', 'root\n', 'root again');
   await held(broken, async () => {
     const result = await prepareSources({
+      projectId: PROJECT_ID,
       root: broken.mac, profile: broken.profile, session: 'codex-s5', env: broken.env, sshBin: broken.options.sshBin,
       lockPath: broken.options.lockPath,
       spawnPublish: () => ({ code: 0, text: 'Nothing to publish\n', uncertain: false }),
@@ -400,6 +407,7 @@ test('build error is not ready and a disconnect keeps the worktree', async () =>
   const lost = bench();
   await held(lost, async () => {
     const result = await prepareSources({
+      projectId: PROJECT_ID,
       root: lost.mac, profile: lost.profile, session: 'codex-s5', env: lost.env, sshBin: lost.options.sshBin,
       lockPath: lost.options.lockPath,
       spawnPublish: () => ({ code: null, uncertain: true, text: '' }),
@@ -416,6 +424,7 @@ test('a forced build failure reports the last lines with credentials masked', as
   commitFile(broken.mac, 'again.txt', 'root\n', 'root again');
   await held(broken, async () => {
     const result = await prepareSources({
+      projectId: PROJECT_ID,
       root: broken.mac, profile: broken.profile, session: 'codex-s5', env: broken.env, sshBin: broken.options.sshBin,
       lockPath: broken.options.lockPath,
       spawnPublish: () => ({ code: 0, text: 'Nothing to publish\n', uncertain: false }),
@@ -434,6 +443,7 @@ test('a forced build failure reports the last lines with credentials masked', as
   commitFile(empty.mac, 'again.txt', 'root\n', 'root again');
   await held(empty, async () => {
     const result = await prepareSources({
+      projectId: PROJECT_ID,
       root: empty.mac, profile: empty.profile, session: 'codex-s5', env: empty.env, sshBin: empty.options.sshBin,
       lockPath: empty.options.lockPath,
       spawnPublish: () => ({ code: 0, text: 'Nothing to publish\n', uncertain: false }),
@@ -447,6 +457,7 @@ test('an uncommitted edit that appears mid-prepare does not abort, and a refused
   const raced = bench({ touch: 'dirty' });
   await held(raced, async () => {
     const result = await prepareSources({
+      projectId: PROJECT_ID,
       root: raced.mac, profile: raced.profile, session: 'codex-s5', env: raced.env, sshBin: raced.options.sshBin,
       lockPath: raced.options.lockPath,
       spawnPublish: () => ({ code: 0, text: 'Nothing to publish\n', uncertain: false }),
@@ -460,6 +471,7 @@ test('an uncommitted edit that appears mid-prepare does not abort, and a refused
   commitFile(lease.mac, 'again.txt', 'root\n', 'root again');
   await held(lease, async () => {
     const result = await prepareSources({
+      projectId: PROJECT_ID,
       root: lease.mac, profile: lease.profile, session: 'codex-s5', env: lease.env, sshBin: lease.options.sshBin,
       lockPath: lease.options.lockPath,
       spawnPublish: () => ({ code: 0, text: 'Nothing to publish\n', uncertain: false }),
@@ -557,6 +569,7 @@ echo "##gitBackend build=ok release=${RELEASE_ID} project=mls-102047##"
 
 function callPrepare(box) {
   return prepareSources({
+    projectId: PROJECT_ID,
     root: box.mac,
     profile: box.profile,
     session: 'codex-s5',
@@ -736,6 +749,7 @@ test('the publish step is given the commits of the plan, and the lima must hold 
     let outcome;
     await held(box, async () => {
       outcome = await prepareSources({
+        projectId: PROJECT_ID,
         root: box.mac, profile: box.profile, session: 'codex-s5', env: box.env, sshBin: box.options.sshBin,
         lockPath: box.options.lockPath,
         spawnPublish: (args) => {
@@ -829,6 +843,7 @@ test('the pre-s1 prepare rejects the same official obj cleanup as concurrent', {
   trackObj(appOf(box));
   await held(box, async () => {
     const result = await prior.prepareSources({
+      projectId: PROJECT_ID,
       root: box.mac,
       profile: box.profile,
       session: 'codex-s5',
@@ -850,6 +865,7 @@ test('a forced build slower than the read timeout is not cut as a disconnect', a
   commitFile(slow.mac, 'again.txt', 'root\n', 'root again');
   await held(slow, async () => {
     const result = await prepareSources({
+      projectId: PROJECT_ID,
       root: slow.mac, profile: slow.profile, session: 'codex-s5', env: slow.env, sshBin: slow.options.sshBin,
       lockPath: slow.options.lockPath, timeoutMs: 400,
       spawnPublish: () => ({ code: 0, text: 'Nothing to publish\n', uncertain: false }),
@@ -882,7 +898,7 @@ test('the dependency list of the plan is the one in HEAD, not the one on disk', 
   commitFile(join(box.mac, 'mls-102035'), 'README', 'other dep\n', 'other');
   const plain = await planLocalSources(box.mac, PROJECT_ID, box.env);
   assert.deepEqual(plain.deps.map((entry) => entry.id), ['102034']);
-  writeFileSync(join(appOf(box), 'l5', 'config.json'), `${JSON.stringify({ workspaceDependencies: ['102034', '102035'] })}\n`);
+  writeFileSync(join(appOf(box), 'l5', 'config.json'), `${JSON.stringify({ projects: { 102047: {} }, workspaceDependencies: ['102034', '102035'] })}\n`);
   const edited = await planLocalSources(box.mac, PROJECT_ID, box.env);
   assert.deepEqual(edited.deps.map((entry) => entry.id), ['102034'], 'the edited config.json is not read');
   assert.equal(edited.appTree, plain.appTree);
@@ -896,7 +912,7 @@ test('the app and the root are prepared from HEAD with work left staged and untr
   const app = appOf(box);
   const initial = git(app, ['rev-parse', 'HEAD']);
   // another session's work: a modified tracked file, a new file, and a file already staged
-  writeFileSync(join(app, 'l5', 'config.json'), `${JSON.stringify({ workspaceDependencies: ['102034'], wip: true })}\n`);
+  writeFileSync(join(app, 'l5', 'config.json'), `${JSON.stringify({ projects: { 102047: {} }, workspaceDependencies: ['102034'], wip: true })}\n`);
   writeFileSync(join(app, 'new.txt'), 'new\n');
   writeFileSync(join(app, 'staged.txt'), 'staged\n');
   git(app, ['add', '--', 'staged.txt']);

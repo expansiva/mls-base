@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { accessDefs, sourceCopy } from './benchRolesFixture.mjs';
 import { dispatch } from './sessionVm.mjs';
 import {
-  BenchError, PROBE_ACTIVITY_SQL, PROBE_COUNT_SQL, PROBE_DATABASE_SQL, PROBE_DEPENDENTS_SQL, PROBE_SCOPE_SQL, prepareBench, probeWithPg,
+  BenchError, PROBE_ACTIVITY_SQL, PROBE_COUNT_SQL, PROBE_DATABASE_SQL, PROBE_DEPENDENTS_SQL, PROBE_SCOPE_SQL, prepareBench, probeWithPg, vmBenchScript,
 } from './prepareBench.mjs';
 
 const SECRET_URL = 'postgres://bench_user:bench_secret@127.0.0.1:5432/collab_app_test';
@@ -133,6 +133,7 @@ function harness(tree, logFile, extras = {}) {
     seedArgv,
     run(db, more = {}) {
       return prepareBench({
+        projectId: '102047',
         db,
         runtimeRoot: tree.release,
         appRoot: tree.appRoot,
@@ -264,6 +265,16 @@ test('a broken L4 defs file stops the prepare before any probe, migrate or seed'
   const box = harness(tree, path.join(tree.root, 'log.ndjson'));
   await assert.rejects(() => box.run('migrate'), /l4\/modA\/access\.defs\.ts does not import/);
   assert.deepEqual(box.order, []);
+});
+
+test('the bench needs the project: none, a library or an unknown id is refused before anything runs', async () => {
+  const tree = benchTree();
+  const box = harness(tree, path.join(tree.root, 'log.ndjson'));
+  for (const projectId of [undefined, '', '102034', '109999']) {
+    await assert.rejects(() => box.run('migrate', { projectId }), /is not a project app/);
+  }
+  assert.deepEqual(box.order, []);
+  assert.throws(() => vmBenchScript(undefined), /is not a project app/);
 });
 
 test('an unreadable release config is an error, not a skipped seed', async () => {
@@ -401,6 +412,7 @@ test('the real session lock is awaited before ddl', async () => {
   });
   let probed = false;
   await prepareBench({
+    projectId: '102047',
     db: 'migrate',
     runtimeRoot: tree.release,
     cmRoot: tree.cm,
@@ -420,6 +432,7 @@ test('the real session lock is awaited before ddl', async () => {
 
   let refusedProbe = false;
   await assert.rejects(() => prepareBench({
+    projectId: '102047',
     db: 'reset',
     runtimeRoot: tree.release,
     cmRoot: tree.cm,
@@ -431,6 +444,7 @@ test('the real session lock is awaited before ddl', async () => {
 
   const bare = path.join(tree.root, 'empty.lock');
   await assert.rejects(() => prepareBench({
+    projectId: '102047',
     db: 'reset',
     runtimeRoot: tree.release,
     cmRoot: tree.cm,
@@ -461,6 +475,7 @@ test('an unregistered operation is refused before the probe', async () => {
   const tree = benchTree();
   let probed = false;
   await assert.rejects(() => prepareBench({
+    projectId: '102047',
     db: 'reset',
     runtimeRoot: tree.release,
     cmRoot: tree.cm,
@@ -490,6 +505,7 @@ test('seed writes the manifest through the real runOnVm fs', async () => {
     ],
   };
   const receipt = await prepareBench({
+    projectId: '102047',
     db: 'migrate',
     runtimeRoot: tree.release,
     cmRoot: tree.cm,
