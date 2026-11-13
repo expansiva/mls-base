@@ -41,7 +41,7 @@ Cross-cutting:
   one immutable id pool, `<seedRef>`, what `inconclusive`/`knownFail` mean). **Read before designing
   or changing a generated test case** — the case format is a single BFF call, not a script.
 - [`collab_messages.md`](collab_messages.md) — the task/step engine the agents run on.
-- [`modelTypes.md`](modelTypes.md) — model preference per prompt.
+- [`modelTypes.md`](modelTypes.md) — model preference per prompt. The alias `decision` is not one of those markers; see [`model_decision.md`](model_decision.md).
 - [`mlsProjectsArch.md`](mlsProjectsArch.md) — project layout in production; three implementations of the mls lib surface (cfe / host CLI / runtime VM).
 - [`browserLocal.md`](browserLocal.md) — browsing/clicking a screen from Codex or Claude Code on the Mac: `pnpm run browser -- -s=<client>-<id> …` (Playwright CLI + Chromium; never branded Google Chrome or a human profile); setup once, named session, read only the region you need.
 - [`publishLima.md`](publishLima.md) — publishing an app to lima: changed dependencies go along as working-tree snapshots, what the local lock protects and what to check first (dirty app/deps, `.collab-msg.lock`).

@@ -45,6 +45,10 @@ type ModelType =
 `agent` is an accepted alias, like `code`. The `agentAssistant` prompts have used `agent` since 27/10/2026.
 Wagner, 03/11/2026: "o alias 'code' e 'agent' são dois alias aceito, sem problemas".
 
+## Alias `decision` (not a chat `modelType`)
+
+`decision` is a registry alias (`models.mode = 'decision'`), called with `POST /v1/decisions`. It is not a value of the `<!-- modelType: … -->` marker and it is not accepted on `/chat/completions` (404 `llm.model.alias_not_found`). How to call it, the limits, and what to do with a refusal or a low confidence are in [`model_decision.md`](model_decision.md). The agent-side call in collab-messages does not exist yet.
+
 ## Optional prompt markers
 
 Besides `modelType`, a system prompt may carry these OPTIONAL `<!-- key: value -->` markers
