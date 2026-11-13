@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { accessDefs, sourceCopy } from './benchRolesFixture.mjs';
 import { dispatch } from './sessionVm.mjs';
 import {
-  ALIAS_ROLES, BenchError, PROBE_ACTIVITY_SQL, PROBE_COUNT_SQL, PROBE_DATABASE_SQL, PROBE_DEPENDENTS_SQL, PROBE_SCOPE_SQL, prepareBench, probeWithPg,
+  BenchError, PROBE_ACTIVITY_SQL, PROBE_COUNT_SQL, PROBE_DATABASE_SQL, PROBE_DEPENDENTS_SQL, PROBE_SCOPE_SQL, prepareBench, probeWithPg,
 } from './prepareBench.mjs';
 
 const SECRET_URL = 'postgres://bench_user:bench_secret@127.0.0.1:5432/collab_app_test';
@@ -17,8 +18,10 @@ function write(file, body) {
   writeFileSync(file, body);
 }
 
+/** `options.l4`: { modules, files, at } — a source copy of the app; the release is stamped with its commit `at` (default last). */
 function benchTree(options = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'prepare-bench-'));
+  const copy = options.l4 ? sourceCopy(options.l4.steps) : null;
   const remote = path.join(root, 'vm');
   const release = path.join(remote, 'releases', 'rel-a');
   const cm = path.join(root, 'cm');
@@ -39,17 +42,20 @@ function benchTree(options = {}) {
     defaultProjectId: '102047',
     ...(options.noOnboarding ? {} : { onboarding: { moduleId: 'inicio', entryPath: '/inicio/inicio_pessoa' } }),
     ...(options.organization ? { organization: { source: 'development-project' } } : {}),
-    projects: { 102047: { type: 'client' }, 102034: { type: 'master backend' } },
+    projects: {
+      102047: { type: 'client', ...(options.l4 ? { modules: options.l4.modules.map((moduleId) => ({ moduleId })) } : {}) },
+      102034: { type: 'master backend' },
+    },
   }));
   write(path.join(release, 'release.json'), JSON.stringify({
-    id: 'rel-a', client: '102047', versionRef: 'abc', platformCommit: 'def', libs: 'pin', monaco: '1',
+    id: 'rel-a', client: '102047', versionRef: copy ? copy.shas[options.l4.at ?? copy.shas.length - 1] : 'abc', platformCommit: 'def', libs: 'pin', monaco: '1',
   }));
   write(path.join(release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'migrate.js'), 'process.exit(0)\n');
   const resetLine = '##resetLocalDb {"modules":[{"moduleId":"tarefas","tables":1,"seedRows":1}],"seededTables":["schema_seed"],"database":"collab_app_test"}\\n';
   write(path.join(release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'resetLocalDb.js'), options.resetBody ?? `process.stdout.write('${resetLine}'); process.exit(0);\n`);
   write(path.join(release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'seedLocalTest.js'), 'process.exit(0)\n');
   write(path.join(cm, 'history.txt'), 'cm-history-kept\n');
-  return { root, remote, release, cm };
+  return { root, remote, release, cm, appRoot: copy?.root ?? path.join(root, 'no-source-copy') };
 }
 
 function recordingSpawn(logFile) {
@@ -129,6 +135,7 @@ function harness(tree, logFile, extras = {}) {
       return prepareBench({
         db,
         runtimeRoot: tree.release,
+        appRoot: tree.appRoot,
         cmRoot: tree.cm,
         fs: undefined,
         spawnSync: recordingSpawn(logFile),
@@ -172,11 +179,9 @@ test('migrate uses the verified release and restarts only app2047', async () => 
   assert.deepEqual(log.filter((row) => row.cmd === 'pm2').map((row) => row.args[0]), ['stop', 'restart', 'jlist']);
   assert.equal(log.filter((row) => row.cmd === 'pm2' && row.args[0] !== 'jlist').every((row) => row.args.join(' ').includes('app2047') && !row.args.join(' ').includes('2043')), true);
   assert.equal(box.order.indexOf('seed') > box.order.indexOf('probe:before'), true);
-  assert.ok(box.seedArgv[0].includes('--member-role'));
-  assert.ok(box.seedArgv[0].includes('tarefas.Participante'));
-  assert.equal(box.seedArgv[0].filter((arg) => arg === '--member-role').length, 1);
-  assert.deepEqual(box.seedArgv[0].slice(box.seedArgv[0].indexOf('--alias-role')), ['--alias-role', 'responsavel=compras.Comprador']);
-  assert.deepEqual(receipt.seed.aliasRoles, { responsavel: ['compras.Comprador'] });
+  // An onboarding block registers the people: no role is derived (the 102056 path).
+  assert.equal(box.seedArgv[0].includes('--member-role'), false);
+  assert.deepEqual(receipt.seed.memberRoles, []);
   assert.equal(receipt.seed.companyMdmId, 'co-1');
   assert.equal(receipt.seed.personas.membro.cmUserId, 'cm-m');
   assert.equal(JSON.stringify(receipt).includes('cookie'), false);
@@ -201,29 +206,64 @@ test('a release without an onboarding block is ready without the seed', async ()
   assert.equal(receipt.phase, 'ready');
   assert.equal(receipt.migrate.executed, true);
   assert.equal(box.order.includes('seed'), false);
-  assert.deepEqual(receipt.seed, { ok: true, skipped: true, reason: 'release config has no onboarding block', personas: null });
+  assert.deepEqual(receipt.seed, {
+    ok: true,
+    skipped: true,
+    reason: 'release config has no onboarding block',
+    rolesSkipped: 'the release config lists no module for the project',
+    modulesWithoutAccess: [],
+    personas: null,
+  });
   assert.equal(receipt.limits.includes('no test logins: the project has no onboarding block yet'), true);
   assert.deepEqual(receipt.runtimeTopology, { expectedWorkers: 2, onlineWorkers: 2 });
 });
 
-test('only the 102047 bench gives a role to one persona; the other project keeps the seed as it was', () => {
-  assert.deepEqual(ALIAS_ROLES, { 102047: { responsavel: ['compras.Comprador'] } });
-  assert.equal(ALIAS_ROLES['102056'], undefined);
-});
+const L4 = (files) => ({ modules: ['modA', 'modB', 'modC'], steps: [files] });
+const ORG_FILES = {
+  'l4/modA/access.defs.ts': accessDefs(['', 'Alpha']),
+  'l4/modC/access.defs.ts': accessDefs(['Gamma', 'Alpha']),
+};
 
-test('a release without onboarding but with an organization seeds with the member role', async () => {
-  const tree = benchTree({ noOnboarding: true, organization: true });
-  const logFile = path.join(tree.root, 'log.ndjson');
-  const box = harness(tree, logFile);
+test('without onboarding the seed gets every person type of the project from its L4, and says what it skipped', async () => {
+  const tree = benchTree({ noOnboarding: true, organization: true, l4: L4(ORG_FILES) });
+  const box = harness(tree, path.join(tree.root, 'log.ndjson'));
   const receipt = await box.run('migrate');
   assert.equal(receipt.ok, true);
-  assert.equal(box.order.includes('seed'), true);
-  assert.ok(box.seedArgv[0].includes('--member-role'));
-  assert.ok(box.seedArgv[0].includes('tarefas.Participante'));
+  const argv = box.seedArgv[0];
+  const roles = argv.flatMap((arg, i) => (arg === '--member-role' ? [argv[i + 1]] : []));
+  assert.deepEqual(roles, ['modA.Alpha', 'modC.Gamma', 'modC.Alpha']);
+  assert.equal(argv.includes('--alias-role'), false);
+  assert.deepEqual(receipt.seed.memberRoles, ['modA.Alpha', 'modC.Gamma', 'modC.Alpha']);
+  assert.deepEqual(receipt.seed.modulesWithoutAccess, ['modB']);
   assert.equal(receipt.seed.skipped, undefined);
   assert.equal(receipt.seed.ok, true);
   assert.equal(receipt.seed.companyMdmId, 'co-1');
   assert.deepEqual(Object.keys(receipt.seed.personas), ['responsavel', 'membro']);
+});
+
+test('the roles are read at the release versionRef, not at a later commit of the source copy', async () => {
+  const later = { 'l4/modA/access.defs.ts': accessDefs(['Changed']), 'l4/modC/access.defs.ts': accessDefs(['Gamma']) };
+  const tree = benchTree({ noOnboarding: true, organization: true, l4: { modules: ['modA', 'modC'], steps: [ORG_FILES, later], at: 0 } });
+  const box = harness(tree, path.join(tree.root, 'log.ndjson'));
+  const receipt = await box.run('migrate');
+  assert.deepEqual(receipt.seed.memberRoles, ['modA.Alpha', 'modC.Gamma', 'modC.Alpha']);
+});
+
+test('a release whose versionRef the source copy does not have seeds nothing and records why', async () => {
+  const tree = benchTree({ noOnboarding: true, organization: true });
+  const box = harness(tree, path.join(tree.root, 'log.ndjson'));
+  const receipt = await box.run('migrate');
+  assert.equal(receipt.ok, true);
+  assert.equal(box.order.includes('seed'), false);
+  assert.equal(receipt.seed.skipped, true);
+  assert.match(receipt.seed.rolesSkipped, /no module|source copy/);
+});
+
+test('a broken L4 defs file stops the prepare before any probe, migrate or seed', async () => {
+  const tree = benchTree({ noOnboarding: true, organization: true, l4: L4({ 'l4/modA/access.defs.ts': 'export default {{ nope' }) });
+  const box = harness(tree, path.join(tree.root, 'log.ndjson'));
+  await assert.rejects(() => box.run('migrate'), /l4\/modA\/access\.defs\.ts does not import/);
+  assert.deepEqual(box.order, []);
 });
 
 test('an unreadable release config is an error, not a skipped seed', async () => {

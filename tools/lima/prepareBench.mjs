@@ -9,18 +9,14 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inspectSlot, runOnVm, testDatabaseUrlFromEnvText } from '../../scripts/runtime/prepareLocalTestBench.mjs';
 import { TEST_DATABASE_NAME, declaredTestMode } from '../../scripts/runtime/vmApps.mjs';
+import { deriveMemberRoles } from './benchRoles.mjs';
 import { probeBenchHealth } from './health.mjs';
 import { SUPPORTED_PROJECTS, projectApp, projectMlsBase, projectRuntimeRoot } from './session.mjs';
 import { DEFAULT_LOCK_PATH, dispatch } from './sessionVm.mjs';
 
 export const BENCH_PROJECT_ID = SUPPORTED_PROJECTS[0];
 export const BENCH_APP = projectApp(BENCH_PROJECT_ID);
-export const MEMBER_ROLE = 'tarefas.Participante';
 export const VM_RUNTIME_ROOT = projectRuntimeRoot(BENCH_PROJECT_ID);
-/** Projects whose bench seed attaches a module role (tarefas). The others get only the test logins. */
-const MEMBER_ROLE_PROJECTS = new Set(['102047']);
-/** Roles for one bench persona only, per project (`<alias>=<moduleId>.<Tipo>` at the seed). Compras never registers a buyer: only the responsible one is. */
-export const ALIAS_ROLES = { 102047: { responsavel: ['compras.Comprador'] } };
 export const VM_CM_ROOT = '/data/msg.collab.codes/current';
 export const VM_BENCH_SCRIPT = '/data/mls-base/tools/lima/prepareBench.mjs';
 
@@ -428,7 +424,6 @@ export async function prepareBench(input) {
     throw new Error(`project ${projectId} is outside this bench`);
   }
   const appName = projectApp(projectId);
-  const noModuleRole = !MEMBER_ROLE_PROJECTS.has(projectId);
   if (input.db !== 'migrate' && input.db !== 'reset') {
     throw new Error('db must be migrate or reset');
   }
@@ -440,6 +435,17 @@ export async function prepareBench(input) {
   const config = JSON.parse(fs.readFileSync(path.join(slot.resolvedRoot, 'config.json'), 'utf8'));
   const backendId = masterBackend(config);
   if (!backendId) throw new Error('release has no master backend');
+  // Person roles come from the project's own L4, read before anything is touched: a broken defs file stops here.
+  // A release with an `onboarding` block registers people through it and derives no role.
+  const rolesFrom = config.onboarding != null
+    ? { roles: [], modulesWithoutAccess: [], skipped: 'the release config has an onboarding block' }
+    : await deriveMemberRoles({
+      config,
+      projectId,
+      appRoot: input.appRoot ?? path.join(projectMlsBase(projectId, input.env ?? process.env), `mls-${projectId}`),
+      versionRef: readReleaseStamp(slot.resolvedRoot, fs).versionRef,
+      ...(input.runGit ? { run: input.runGit } : {}),
+    });
   if (!declaredTestMode(slot.remoteBase, projectId)) {
     throw new Error('appEnv is not a declared test mode');
   }
@@ -605,16 +611,19 @@ export async function prepareBench(input) {
     // The seed resolves the company from the release config's `onboarding` block, or from `organization`
     // plus a member role when the project has no onboarding module (102047). With neither, the bench is
     // ready without test logins.
-    if (!releaseSeedable(fs, slot.resolvedRoot, !noModuleRole)) {
-      baseReceipt.seed = { ok: true, skipped: true, reason: 'release config has no onboarding block', personas: null };
+    if (!releaseSeedable(fs, slot.resolvedRoot, rolesFrom.roles.length > 0)) {
+      baseReceipt.seed = {
+        ok: true,
+        skipped: true,
+        reason: 'release config has no onboarding block',
+        ...(rolesFrom.skipped ? { rolesSkipped: rolesFrom.skipped } : {}),
+        modulesWithoutAccess: rolesFrom.modulesWithoutAccess,
+        personas: null,
+      };
       baseReceipt.limits = baseReceipt.limits.concat(['no test logins: the project has no onboarding block yet']);
     } else {
       const seedArgv = ['--project', projectId, '--runtime-root', slot.resolvedRoot, '--cm-root', input.cmRoot];
-      if (!noModuleRole) seedArgv.push('--member-role', MEMBER_ROLE);
-      const aliasRoles = ALIAS_ROLES[projectId] ?? {};
-      for (const [alias, roles] of Object.entries(aliasRoles)) {
-        for (const role of roles) seedArgv.push('--alias-role', `${alias}=${role}`);
-      }
+      for (const role of rolesFrom.roles) seedArgv.push('--member-role', role);
       const seed = input.runSeed
         ? input.runSeed({ argv: seedArgv, cwd: slot.resolvedRoot })
         : runOnVm({
@@ -640,8 +649,8 @@ export async function prepareBench(input) {
       }
       baseReceipt.seed = {
         ok: true,
-        memberRole: noModuleRole ? null : MEMBER_ROLE,
-        aliasRoles,
+        memberRoles: rolesFrom.roles,
+        modulesWithoutAccess: rolesFrom.modulesWithoutAccess,
         companyMdmId: manifest.companyMdmId,
         organizationKey: manifest.organizationKey,
         personas,
