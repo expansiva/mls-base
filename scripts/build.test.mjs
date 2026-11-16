@@ -7,6 +7,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildWeb,
+  copyContractSources,
   copyL3Assets,
   emitL4Defs,
   RES_EXT,
@@ -533,5 +534,23 @@ test('emitL4Defs: só l4/**/*.defs.ts vira .defs.js no dist, e o import type som
   assert.ok(!emitted.includes('import'));
   const loaded = await import(`data:text/javascript;base64,${Buffer.from(emitted).toString('base64')}`);
   assert.equal(loaded.default.journeyId, 'flow');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('copyContractSources: só l2/<módulo>/web/contracts/*.defs.ts vai, como texto, ao lado do .defs.js', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt230c-'));
+  const proj = join(root, `mls-${ID}`);
+  const contracts = join(proj, 'l2', 'modX', 'web', 'contracts');
+  mkdirSync(contracts, { recursive: true });
+  mkdirSync(join(proj, 'l2', 'modX', 'web', 'shared'), { recursive: true });
+  const text = "export interface PageContracts {\n  'modX.page.cmdGo': { kind: 'cmd'; input: { id: string } };\n}\n";
+  writeFileSync(join(contracts, 'page.defs.ts'), text);
+  writeFileSync(join(contracts, 'page.defs.js'), 'export {};\n');
+  writeFileSync(join(proj, 'l2', 'modX', 'web', 'shared', 'page.defs.ts'), 'export const x = 1;\n');
+  setProjectRoot(ID, proj);
+  const dest = join(root, 'dist-local');
+  assert.equal(await copyContractSources([ID], dest), 1);
+  assert.deepEqual(listFiles(dest).map((file) => relative(dest, file)), [join(`_${ID}_`, 'l2', 'modX', 'web', 'contracts', 'page.defs.ts')]);
+  assert.equal(readFileSync(join(dest, `_${ID}_`, 'l2', 'modX', 'web', 'contracts', 'page.defs.ts'), 'utf8'), text);
   rmSync(root, { recursive: true, force: true });
 });

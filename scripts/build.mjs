@@ -527,6 +527,28 @@ export async function emitL4Defs(ids, destRoot) {
 }
 
 /**
+ * Copy the L2 contract sources (`l2/<module>/web/contracts/*.defs.ts`) of every project, as text, into
+ * `<destRoot>/_<id>_/l2/<module>/web/contracts/` next to the emitted `.defs.js` (which is `export {}`: the types are
+ * the only place that says what a route takes and returns). The runtime reads this text to describe the app's
+ * actions; nothing here compiles or rewrites it.
+ */
+export async function copyContractSources(ids, destRoot) {
+  let copied = 0;
+  for (const id of ids) {
+    const root = join(projectDir(id), 'l2');
+    for (const file of await walkFiles(root)) {
+      const rel = toPosix(relative(projectDir(id), file));
+      if (!/^l2\/[^/]+\/web\/contracts\/[^/]+\.defs\.ts$/u.test(rel)) continue;
+      const dest = resolve(destRoot, `_${id}_`, rel);
+      await mkdir(dirname(dest), { recursive: true });
+      await cp(file, dest);
+      copied += 1;
+    }
+  }
+  return copied;
+}
+
+/**
  * Copy every project's l3 ASSET payload into `<destRoot>/_<id>_/l3/...`.
  *
  * Two layouts:
@@ -783,6 +805,7 @@ async function buildServer(ids, clientId, { release = false } = {}) {
   copied += await copyL3Assets(ids, LOCAL_DIST);
   log(`copied ${copied} resource file(s) to dist/local`);
   log(`emitted ${await emitL4Defs(ids, LOCAL_DIST)} L4 def file(s) to dist/local`);
+  log(`copied ${await copyContractSources(ids, LOCAL_DIST)} L2 contract source(s) to dist/local`);
 }
 
 // ── web build (dist/web) ─────────────────────────────────────────────────────
