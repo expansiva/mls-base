@@ -501,6 +501,32 @@ async function walkFiles(root) {
 }
 
 /**
+ * Emit the L4 definitions (the `.defs.ts` files under `l4/`: journeys, ontology, workflows, ...) of every project into
+ * `<destRoot>/_<id>_/l4/` as `.defs.js`. They are data the runtime reads (the assistant catalog); they are only
+ * transpiled, never type-checked or rewritten here, so the release's typeCheck stays what it was. Each file holds
+ * `import type` only, which the transpile erases.
+ */
+export async function emitL4Defs(ids, destRoot) {
+  const { default: ts } = await import('typescript');
+  let emitted = 0;
+  for (const id of ids) {
+    const root = join(projectDir(id), 'l4');
+    for (const file of await walkFiles(root)) {
+      if (!file.endsWith('.defs.ts')) continue;
+      const out = ts.transpileModule(await readFile(file, 'utf8'), {
+        fileName: file,
+        compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+      });
+      const dest = resolve(destRoot, `_${id}_`, toPosix(relative(projectDir(id), file)).replace(/\.ts$/u, '.js'));
+      await mkdir(dirname(dest), { recursive: true });
+      await writeFile(dest, out.outputText, 'utf8');
+      emitted += 1;
+    }
+  }
+  return emitted;
+}
+
+/**
  * Copy every project's l3 ASSET payload into `<destRoot>/_<id>_/l3/...`.
  *
  * Two layouts:
@@ -756,6 +782,7 @@ async function buildServer(ids, clientId, { release = false } = {}) {
   }
   copied += await copyL3Assets(ids, LOCAL_DIST);
   log(`copied ${copied} resource file(s) to dist/local`);
+  log(`emitted ${await emitL4Defs(ids, LOCAL_DIST)} L4 def file(s) to dist/local`);
 }
 
 // ── web build (dist/web) ─────────────────────────────────────────────────────

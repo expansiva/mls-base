@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   buildWeb,
   copyL3Assets,
+  emitL4Defs,
   RES_EXT,
   RES_SEGMENTS,
   rewriteAbsoluteImportSource,
@@ -508,4 +509,29 @@ test('withMasterRuntimeManifest: arquivos reais — 102047 sem differed, platafo
   const filled = withMasterRuntimeManifest(shape102056, readMasterRuntimeManifest);
   assert.deepEqual(filled.config.projects[102034].persistenceModules, out.config.projects[102034].persistenceModules);
   assertPlatformPersistence(filled.config);
+});
+
+test('emitL4Defs: só l4/**/*.defs.ts vira .defs.js no dist, e o import type some', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt230-'));
+  const proj = join(root, `mls-${ID}`);
+  mkdirSync(join(proj, 'l4', 'modX', 'journeys'), { recursive: true });
+  mkdirSync(join(proj, 'l1', 'modX'), { recursive: true });
+  writeFileSync(join(proj, 'l4', 'modX', 'journeys', 'flow.defs.ts'), [
+    "import type { Journey } from '/_102035_/l2/solution/types.js';",
+    'export const flowJourney = { "journeyId": "flow" } as const satisfies Journey;',
+    'export default flowJourney;',
+    '',
+  ].join('\n'));
+  writeFileSync(join(proj, 'l4', 'modX', 'journeys', 'notes.json'), '{}');
+  writeFileSync(join(proj, 'l4', 'modX', 'module.ts'), 'export const x = 1;\n');
+  writeFileSync(join(proj, 'l1', 'modX', 'other.defs.ts'), 'export const y = 1;\n');
+  setProjectRoot(ID, proj);
+  const dest = join(root, 'dist-local');
+  assert.equal(await emitL4Defs([ID], dest), 1);
+  assert.deepEqual(listFiles(dest).map((file) => relative(dest, file)), [join(`_${ID}_`, 'l4', 'modX', 'journeys', 'flow.defs.js')]);
+  const emitted = readFileSync(join(dest, `_${ID}_`, 'l4', 'modX', 'journeys', 'flow.defs.js'), 'utf8');
+  assert.ok(!emitted.includes('import'));
+  const loaded = await import(`data:text/javascript;base64,${Buffer.from(emitted).toString('base64')}`);
+  assert.equal(loaded.default.journeyId, 'flow');
+  rmSync(root, { recursive: true, force: true });
 });
