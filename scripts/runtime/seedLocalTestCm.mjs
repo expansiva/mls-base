@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 const ALIASES = ['responsavel', 'membro', 'semPapel'];
 const NAMES = { responsavel: 'Bench responsible', membro: 'Bench member', semPapel: 'Bench no role' };
 export const BENCH_STORAGE_PREFIX = 'desenv_';
+const LOCAL_DB_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
 export function localTestEmail(projectId, alias) {
   return `${alias}.${projectId}@runtime.test`;
@@ -27,14 +28,20 @@ export function assertProjectId(projectId) {
   return projectId;
 }
 
-/** Refuse before any lock or user write. */
-export function assertBenchStorage(resolvedStorage) {
+/**
+ * Refuse before any lock or user write. The destination is the Postgres the cm talks to (`describePostgres` of the cm, host and
+ * database name only): it must be declared and local, so the seed never writes into a database of another machine.
+ */
+export function assertBenchStorage(resolvedStorage, destination) {
   const prefix = resolvedStorage?.tablePrefix;
   if (prefix !== BENCH_STORAGE_PREFIX) {
     throw new Error(`refusing cm storage prefix '${prefix ?? ''}' (bench requires ${BENCH_STORAGE_PREFIX})`);
   }
-  if (!resolvedStorage.bucket || !resolvedStorage.dynamoRegion) {
+  if (!destination?.host || !destination.name) {
     throw new Error('refusing cm storage without a declared local destination');
+  }
+  if (!LOCAL_DB_HOSTS.has(destination.host.toLowerCase())) {
+    throw new Error(`refusing cm storage on a non local database host '${destination.host}'`);
   }
   return { storagePrefix: prefix };
 }
@@ -62,10 +69,12 @@ export async function loadInstalledCm(cmRoot) {
   let configMod;
   let perfilMod;
   let usersMod;
+  let poolMod;
   try {
     configMod = await import(pathToFileURL(path.join(dist, 'helpers/config.js')).href);
     perfilMod = await import(pathToFileURL(path.join(dist, 'layer_1_external/perfil.js')).href);
     usersMod = await import(pathToFileURL(path.join(dist, 'layer_3_usecases/users.js')).href);
+    poolMod = await import(pathToFileURL(path.join(dist, 'layer_1_external/pg/pool.js')).href);
   } catch (error) {
     throw new Error(`cm ${version} missing dist import: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -73,6 +82,7 @@ export async function loadInstalledCm(cmRoot) {
     version,
     config: requireExport(configMod, 'config', version),
     resolvedStorage: requireExport(configMod, 'resolvedStorage', version),
+    describePostgres: requireExport(poolMod, 'describePostgres', version),
     getPerfil: requireExport(perfilMod, 'getPerfil', version),
     UserRecord: requireExport(usersMod, 'UserRecord', version),
   };
@@ -115,7 +125,10 @@ async function ensureHuman(perfil, UserRecord, projectId, alias) {
 
 export async function seedLocalTestCm(loaded, projectId) {
   const id = assertProjectId(projectId);
-  const { storagePrefix } = assertBenchStorage(loaded.resolvedStorage);
+  if (typeof loaded.describePostgres !== 'function') {
+    throw new Error(`cm ${loaded.version ?? 'unknown'} missing export describePostgres`);
+  }
+  const { storagePrefix } = assertBenchStorage(loaded.resolvedStorage, loaded.describePostgres());
   if (typeof loaded.getPerfil !== 'function' || typeof loaded.UserRecord !== 'function') {
     throw new Error(`cm ${loaded.version ?? 'unknown'} missing export getPerfil or UserRecord`);
   }

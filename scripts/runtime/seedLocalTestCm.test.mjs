@@ -13,8 +13,10 @@ import {
 const SECRET = 'aws-secret-do-not-print';
 
 function storage(prefix = 'desenv_', extra = {}) {
-  return { tablePrefix: prefix, bucket: 'bench-bucket', dynamoRegion: 'us-west-1', ...extra };
+  return { tablePrefix: prefix, bucket: 'bench-bucket', ...extra };
 }
+
+const LOCAL_DB = { host: '127.0.0.1', name: 'cm_lima' };
 
 function harness(usersByEmail = new Map()) {
   const writes = [];
@@ -53,6 +55,7 @@ function harness(usersByEmail = new Map()) {
       version: 'test',
       config: { aws: { secretAccessKey: SECRET }, storage: storage() },
       resolvedStorage: storage(),
+      describePostgres: () => LOCAL_DB,
       getPerfil() { return perfil; },
       UserRecord,
     },
@@ -63,13 +66,28 @@ test('prefixo ausente ou produtivo recusa antes de qualquer write', async () => 
   for (const prefix of ['', 'prod_', undefined]) {
     const box = harness();
     let perfilCalled = false;
-    box.loaded.resolvedStorage = { bucket: 'bench-bucket', dynamoRegion: 'us-west-1', tablePrefix: prefix };
+    box.loaded.resolvedStorage = { bucket: 'bench-bucket', tablePrefix: prefix };
     box.loaded.getPerfil = () => { perfilCalled = true; throw new Error('perfil'); };
     await assert.rejects(() => seedLocalTestCm(box.loaded, '102047'), /refusing cm storage prefix/);
     assert.equal(perfilCalled, false);
     assert.equal(box.writes.length, 0);
   }
-  assert.throws(() => assertBenchStorage({ tablePrefix: 'desenv_' }), /declared local destination/);
+});
+
+test('destino do Postgres ausente, sem nome ou fora da máquina recusa antes de qualquer write', async () => {
+  assert.throws(() => assertBenchStorage({ tablePrefix: 'desenv_' }, null), /declared local destination/);
+  assert.throws(() => assertBenchStorage({ tablePrefix: 'desenv_' }, { host: '127.0.0.1', name: '' }), /declared local destination/);
+  assert.throws(() => assertBenchStorage({ tablePrefix: 'desenv_' }, { host: 'db.prod.example.com', name: 'cm' }), /non local database host 'db\.prod\.example\.com'/);
+  for (const host of ['127.0.0.1', 'localhost', 'LOCALHOST', '::1', '[::1]']) {
+    assert.deepEqual(assertBenchStorage({ tablePrefix: 'desenv_' }, { host, name: 'cm_lima' }), { storagePrefix: 'desenv_' });
+  }
+  const box = harness();
+  box.loaded.describePostgres = () => ({ host: 'db.prod.example.com', name: 'cm' });
+  await assert.rejects(() => seedLocalTestCm(box.loaded, '102047'), /non local database host/);
+  assert.equal(box.writes.length, 0);
+  assert.equal(box.locks.length, 0);
+  box.loaded.describePostgres = undefined;
+  await assert.rejects(() => seedLocalTestCm(box.loaded, '102047'), /missing export describePostgres/);
 });
 
 test('cria os três humanos e a repetição devolve os mesmos ids sem novo write', async () => {
@@ -118,6 +136,8 @@ test('export ausente cita a versão instalada', async () => {
     mkdirSync(path.join(root, 'dist/helpers'), { recursive: true });
     mkdirSync(path.join(root, 'dist/layer_1_external'), { recursive: true });
     mkdirSync(path.join(root, 'dist/layer_3_usecases'), { recursive: true });
+    mkdirSync(path.join(root, 'dist/layer_1_external/pg'), { recursive: true });
+    writeFileSync(path.join(root, 'dist/layer_1_external/pg/pool.js'), 'export function describePostgres() { return null; }\n');
     writeFileSync(path.join(root, 'dist/helpers/config.js'), 'export const config = {};\n');
     writeFileSync(path.join(root, 'dist/layer_1_external/perfil.js'), 'export function getPerfil() { return {}; }\n');
     writeFileSync(path.join(root, 'dist/layer_3_usecases/users.js'), 'export const unused = 1;\n');
