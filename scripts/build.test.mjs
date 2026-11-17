@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   buildWeb,
   copyContractSources,
@@ -535,6 +535,23 @@ test('emitL4Defs: só l4/**/*.defs.ts vira .defs.js no dist, e o import type som
   const loaded = await import(`data:text/javascript;base64,${Buffer.from(emitted).toString('base64')}`);
   assert.equal(loaded.default.journeyId, 'flow');
   rmSync(root, { recursive: true, force: true });
+});
+
+test('emitL4Defs: os catálogos de conexão do 102034 (rt234) vão para o dist da release e carregam', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt234-'));
+  try {
+    const dest = join(root, 'dist-local');
+    await emitL4Defs(['102034'], dest);
+    const folder = join(dest, '_102034_', 'l4', 'ontology', 'connections');
+    assert.deepEqual(readdirSync(folder).sort(), ['cm.defs.js', 'platform.defs.js', 'types.defs.js']);
+    const cm = await import(pathToFileURL(join(folder, 'cm.defs.js')).href);
+    assert.equal(cm.default.connectionId, 'cm');
+    assert.equal(cm.default.operations.length, 14);
+    const platform = await import(pathToFileURL(join(folder, 'platform.defs.js')).href);
+    assert.equal(platform.default.operations[0].operationId, 'releaseCatalogChanged');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('copyContractSources: só l2/<módulo>/web/contracts/*.defs.ts vai, como texto, ao lado do .defs.js', async () => {
