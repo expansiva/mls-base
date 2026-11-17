@@ -576,7 +576,7 @@ export async function copyL3Assets(ids, destRoot) {
   return copied;
 }
 
-async function collectProjectTsFiles(id) {
+export async function collectProjectTsFiles(id) {
   const roots = [
     resolve(ROOT, 'types'),
     ...TS_SEGMENTS.map((seg) => join(projectDir(id), seg)),

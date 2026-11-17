@@ -10,6 +10,7 @@ import {
   copyContractSources,
   copyL3Assets,
   emitL4Defs,
+  collectProjectTsFiles,
   RES_EXT,
   RES_SEGMENTS,
   rewriteAbsoluteImportSource,
@@ -550,6 +551,24 @@ test('emitL4Defs: os catálogos de conexão do 102034 (rt234) vão para o dist d
     const platform = await import(pathToFileURL(join(folder, 'platform.defs.js')).href);
     assert.equal(platform.default.operations[0].operationId, 'releaseCatalogChanged');
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('o build só leva core, l1 e l2 do projeto: a pasta testing/ (suporte de teste da rt234) fica fora da release', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt234b-'));
+  try {
+    const proj = join(root, `mls-${ID}`);
+    mkdirSync(join(proj, 'l1'), { recursive: true });
+    mkdirSync(join(proj, 'testing', 'connections'), { recursive: true });
+    writeFileSync(join(proj, 'l1', 'real.ts'), 'export const a = 1;\n');
+    writeFileSync(join(proj, 'testing', 'connections', 'fake.ts'), 'export const b = 2;\n');
+    setProjectRoot(ID, proj);
+    const files = await collectProjectTsFiles(ID);
+    assert.ok(files.some((file) => file.endsWith('l1/real.ts')));
+    assert.equal(files.some((file) => file.includes('/testing/')), false);
+  } finally {
+    setProjectRoot(ID, null);
     rmSync(root, { recursive: true, force: true });
   }
 });
