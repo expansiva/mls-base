@@ -41,7 +41,7 @@ export function assertBenchStorage(resolvedStorage, destination) {
     throw new Error('refusing cm storage without a declared local destination');
   }
   if (!LOCAL_DB_HOSTS.has(destination.host.toLowerCase())) {
-    throw new Error(`refusing cm storage on a non local database host '${destination.host}'`);
+    throw new Error(`refusing cm storage on a non local database host '${destination.host}' (database '${destination.name}')`);
   }
   return { storagePrefix: prefix };
 }
@@ -83,6 +83,7 @@ export async function loadInstalledCm(cmRoot) {
     config: requireExport(configMod, 'config', version),
     resolvedStorage: requireExport(configMod, 'resolvedStorage', version),
     describePostgres: requireExport(poolMod, 'describePostgres', version),
+    closePool: requireExport(poolMod, 'closePool', version),
     getPerfil: requireExport(perfilMod, 'getPerfil', version),
     UserRecord: requireExport(usersMod, 'UserRecord', version),
   };
@@ -124,6 +125,15 @@ async function ensureHuman(perfil, UserRecord, projectId, alias) {
 }
 
 export async function seedLocalTestCm(loaded, projectId) {
+  try {
+    return await seedHumans(loaded, projectId);
+  } finally {
+    // The cm keeps one Postgres pool open for the process: without closing it the seed never exits, success or not.
+    if (typeof loaded.closePool === 'function') await loaded.closePool();
+  }
+}
+
+async function seedHumans(loaded, projectId) {
   const id = assertProjectId(projectId);
   if (typeof loaded.describePostgres !== 'function') {
     throw new Error(`cm ${loaded.version ?? 'unknown'} missing export describePostgres`);

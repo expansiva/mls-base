@@ -21,6 +21,7 @@ const LOCAL_DB = { host: '127.0.0.1', name: 'cm_lima' };
 function harness(usersByEmail = new Map()) {
   const writes = [];
   const locks = [];
+  const closes = [];
   let seq = 0;
   class UserRecord {
     constructor() {
@@ -50,12 +51,14 @@ function harness(usersByEmail = new Map()) {
   return {
     writes,
     locks,
+    closes,
     usersByEmail,
     loaded: {
       version: 'test',
       config: { aws: { secretAccessKey: SECRET }, storage: storage() },
       resolvedStorage: storage(),
       describePostgres: () => LOCAL_DB,
+      closePool: async () => { closes.push('closed'); },
       getPerfil() { return perfil; },
       UserRecord,
     },
@@ -137,7 +140,7 @@ test('export ausente cita a versão instalada', async () => {
     mkdirSync(path.join(root, 'dist/layer_1_external'), { recursive: true });
     mkdirSync(path.join(root, 'dist/layer_3_usecases'), { recursive: true });
     mkdirSync(path.join(root, 'dist/layer_1_external/pg'), { recursive: true });
-    writeFileSync(path.join(root, 'dist/layer_1_external/pg/pool.js'), 'export function describePostgres() { return null; }\n');
+    writeFileSync(path.join(root, 'dist/layer_1_external/pg/pool.js'), 'export function describePostgres() { return null; }\nexport async function closePool() {}\n');
     writeFileSync(path.join(root, 'dist/helpers/config.js'), 'export const config = {};\n');
     writeFileSync(path.join(root, 'dist/layer_1_external/perfil.js'), 'export function getPerfil() { return {}; }\n');
     writeFileSync(path.join(root, 'dist/layer_3_usecases/users.js'), 'export const unused = 1;\n');
@@ -154,4 +157,25 @@ test('argv sem cm-root ou projeto recusa antes de importar', () => {
     cmRoot: '/opt/cm',
     project: '102047',
   });
+});
+
+test('o pool do Postgres fecha no fim, dando certo ou não', async () => {
+  const ok = harness();
+  await seedLocalTestCm(ok.loaded, '102047');
+  assert.deepEqual(ok.closes, ['closed']);
+
+  const refused = harness();
+  refused.loaded.describePostgres = () => ({ host: 'db.prod.example.com', name: 'cm' });
+  await assert.rejects(() => seedLocalTestCm(refused.loaded, '102047'), /non local database host/);
+  assert.deepEqual(refused.closes, ['closed']);
+
+  const failed = harness(new Map([['responsavel.102047@runtime.test', { userId: 'x', kind: 'agent', sub: 'local-test:102047:responsavel', email: 'responsavel.102047@runtime.test' }]]));
+  await assert.rejects(() => seedLocalTestCm(failed.loaded, '102047'), /not the local bench human/);
+  assert.deepEqual(failed.closes, ['closed']);
+});
+
+test('a recusa de destino não traz usuário nem senha do banco', async () => {
+  const box = harness();
+  box.loaded.describePostgres = () => ({ host: 'db.prod.example.com', name: 'cm', user: 'secret-user', password: 'secret-pw' });
+  await assert.rejects(() => seedLocalTestCm(box.loaded, '102047'), (error) => !/secret-user|secret-pw/.test(error.message));
 });
