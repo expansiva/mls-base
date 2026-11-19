@@ -28,7 +28,9 @@ import {
   updateTsconfigPaths,
   vmTsconfigRel,
   writeVmTsconfig,
+  assertReleaseL1,
 } from './addNewVersion.mjs';
+import { openRelease, recordsDir } from './releaseRecord.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MLS_BASE = resolve(HERE, '..', '..');
@@ -723,6 +725,46 @@ test('rt258: zip ausente no retrato não troca o current', () => {
     );
     assert.equal(resolve(readlinkSync(join(root, 'current'))), resolve(oldRel));
     assert.equal(existsSync(join(newRel, 'obj')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt265: fetch no l1 do app cliente para antes de ativar e o registro fecha em checkL1', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt265-l1-'));
+  try {
+    const bad = join(root, 'mls-900001', 'l1', 'mod', 'net.ts');
+    mkdirSync(dirname(bad), { recursive: true });
+    mkdirSync(join(root, 'mls-900001', 'l5'), { recursive: true });
+    writeFileSync(join(root, 'mls-900001', 'l5', 'project.json'), JSON.stringify({ projectType: 'client' }));
+    writeFileSync(bad, 'export const ping = () => fetch("/x");\n');
+    writeFileSync(join(root, 'mls-900001', 'l1', 'mod', 'note.ts'), 'const text = "fetch("; // fetch(\n');
+    const handle = openRelease({
+      root, dir: recordsDir(root, 'app'), releaseId: '20261119010203', queue: 'app', projectId: '900001',
+    });
+    let activated = false;
+    assert.throws(() => {
+      handle.step('checkL1', () => assertReleaseL1(root, '900001'));
+      activated = true;
+    }, (error) => {
+      assert.match(error.message, /net\.ts:1 network-global/);
+      assert.doesNotMatch(error.message, /note\.ts/);
+      return true;
+    });
+    handle.close({ error: new Error('checkL1') });
+    const record = JSON.parse(readFileSync(join(recordsDir(root, 'app'), '20261119010203.json'), 'utf8'));
+    assert.equal(record.resultado, 'falhou');
+    assert.equal(record.falha.passo, 'checkL1');
+    assert.match(record.falha.mensagem, /net\.ts:1 network-global/);
+    assert.equal(activated, false);
+    assertReleaseL1(root, '900002');
+    writeFileSync(bad, 'export const ping = () => 1;\n');
+    assertReleaseL1(root, '900001');
+    const src = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
+    const gate = src.indexOf("rec.step('checkL1'");
+    const compile = src.indexOf("rec.step('compile'");
+    const activate = src.indexOf('activateCurrent(ROOT');
+    assert.ok(gate > 0 && gate < compile && compile < activate);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -30,6 +30,7 @@ import {
 import { databaseUrlTestFor, declaredTestMode } from './vmApps.mjs';
 import { isProjectTree } from './projectPorts.mjs';
 import { readZipStamp, sourceTreeHash, writeZipStamp, ZIP_SOURCE_LEVELS } from './zipSourceTree.mjs';
+import { checkGeneratedL1 } from '../checkGeneratedL1.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const run = (cmd, cwd = ROOT, env) => {
@@ -377,6 +378,34 @@ export function parseReleaseAliases(value) {
   return aliases;
 }
 
+function walkTypeScript(dir, out) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const abs = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules') continue;
+      walkTypeScript(abs, out);
+    } else if (entry.isFile() && /\.tsx?$/u.test(entry.name)) {
+      out.push(abs);
+    }
+  }
+  return out;
+}
+
+/**
+ * Client app L1, before compile and before `current` moves.
+ * No client id: nothing to gate (a library folder is not the app).
+ * Findings stop the release; the message is `file:line rule` per finding.
+ */
+export function assertReleaseL1(root, clientId) {
+  const id = String(clientId ?? '').trim();
+  if (!/^\d+$/u.test(id)) return;
+  const l1 = join(root, `mls-${id}`, 'l1');
+  if (!existsSync(l1)) return;
+  const findings = checkGeneratedL1({ files: walkTypeScript(l1, []) });
+  if (!findings.length) return;
+  throw new Error(findings.map((item) => `${item.file}:${item.line} ${item.rule}`).join('\n'));
+}
+
 /** Open the release record before anything runs; close it (also on failure) in `finishRecord`. */
 function beginRecord(argv) {
   const clientFlag = argv.indexOf('--client');
@@ -453,6 +482,10 @@ function runRelease(argv, rec, state) {
   // Dependency trees are read before the compile: they are what this release is built from.
   const depTrees = readDepTrees(ROOT, clientId || '');
   state.depTrees = depTrees;
+  // Before compile and before activateCurrent. A finding throws; the record
+  // closes falhou at checkL1 and `current` stays on the previous release.
+  rec.step('checkL1', () => assertReleaseL1(ROOT, clientId || ''));
+
   console.log(`--- compile${clientId ? ` (client ${clientId})` : ''}`);
   // Call the compiler directly (NOT `pnpm build`, which now points to this file) to
   // avoid infinite recursion.
