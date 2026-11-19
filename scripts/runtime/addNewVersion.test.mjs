@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,7 @@ import {
   parseReleaseAliases,
   releasesInUse,
   skipPm2,
+  snapshotNodeModules,
   updateTsconfigPaths,
   vmTsconfigRel,
   writeVmTsconfig,
@@ -594,6 +595,87 @@ test('rt194: carimbado no ativar, o snapshot sem mudança de camadas não refaz'
     writeIn('README.md', 'r2')(git, repo);
     commitAll('snapshot')(git);
     assert.deepEqual(ensureFechoCompiledZips(root, ['900015'], { build: () => assert.fail('refez a lib por um snapshot'), log: () => {} }), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function fakeNodeModules(root) {
+  const nm = join(root, 'node_modules');
+  mkdirSync(join(nm, '.pnpm', 'pkg@1.0.0', 'node_modules', 'pkg'), { recursive: true });
+  writeFileSync(join(nm, '.pnpm', 'pkg@1.0.0', 'node_modules', 'pkg', 'index.js'), 'v1\n');
+  symlinkSync('.pnpm/pkg@1.0.0/node_modules/pkg', join(nm, 'pkg'));
+  return nm;
+}
+
+test('rt249: a release nova tem node_modules real (diretório), com arquivos em hard link e os links do pnpm como links relativos', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt249-'));
+  try {
+    const source = fakeNodeModules(root);
+    const target = join(root, 'release', 'node_modules');
+    mkdirSync(join(root, 'release'));
+    snapshotNodeModules(source, target);
+    assert.equal(lstatSync(target).isSymbolicLink(), false);
+    assert.equal(lstatSync(target).isDirectory(), true);
+    assert.equal(readlinkSync(join(target, 'pkg')), '.pnpm/pkg@1.0.0/node_modules/pkg');
+    assert.equal(readFileSync(join(target, 'pkg', 'index.js'), 'utf8'), 'v1\n');
+    assert.equal(statSync(join(target, 'pkg', 'index.js')).ino, statSync(join(source, 'pkg', 'index.js')).ino);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt249: um pacote trocado na raiz depois da release não muda o da release', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt249-'));
+  try {
+    const source = fakeNodeModules(root);
+    const target = join(root, 'release', 'node_modules');
+    mkdirSync(join(root, 'release'));
+    snapshotNodeModules(source, target);
+    // a later `pnpm install` replaces the file (new inode), it does not edit it in place
+    const file = join(source, '.pnpm', 'pkg@1.0.0', 'node_modules', 'pkg', 'index.js');
+    unlinkSync(file);
+    writeFileSync(file, 'v2\n');
+    assert.equal(readFileSync(join(source, 'pkg', 'index.js'), 'utf8'), 'v2\n');
+    assert.equal(readFileSync(join(target, 'pkg', 'index.js'), 'utf8'), 'v1\n');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt249: sem o comando cp -al a cópia é feita em Node, com o mesmo resultado', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt249-'));
+  const path = process.env.PATH;
+  try {
+    const source = fakeNodeModules(root);
+    const target = join(root, 'release', 'node_modules');
+    mkdirSync(join(root, 'release'));
+    process.env.PATH = '';
+    snapshotNodeModules(source, target);
+    process.env.PATH = path;
+    assert.equal(readlinkSync(join(target, 'pkg')), '.pnpm/pkg@1.0.0/node_modules/pkg');
+    assert.equal(statSync(join(target, 'pkg', 'index.js')).ino, statSync(join(source, 'pkg', 'index.js')).ino);
+  } finally {
+    process.env.PATH = path;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt249: a falha da cópia lança, não deixa cópia pela metade e acontece antes do migrate e do current', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt249-'));
+  try {
+    const source = fakeNodeModules(root);
+    const target = join(root, 'release', 'node_modules');
+    mkdirSync(join(root, 'release'));
+    assert.throws(() => snapshotNodeModules(source, target, { copy: (_from, to) => { mkdirSync(to); throw new Error('disk full'); } }), /node_modules snapshot failed: disk full/);
+    assert.equal(existsSync(target), false);
+    assert.throws(() => snapshotNodeModules(join(root, 'nao-existe'), target), /does not exist/);
+    const src = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
+    const snapshot = src.indexOf("snapshotNodeModules(join(ROOT, 'node_modules')");
+    const migrate = src.indexOf("rec.step('migrate'");
+    const activate = src.indexOf('activateCurrent(ROOT', migrate);
+    assert.ok(snapshot > 0 && migrate > snapshot && activate > migrate, 'snapshot < migrate < activateCurrent');
+    assert.equal(/symlinkSync\(join\(ROOT, 'node_modules'\)/.test(src), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

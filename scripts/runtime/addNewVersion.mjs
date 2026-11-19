@@ -10,14 +10,14 @@
 //   3. pnpm migrate for every project that declares a "migrate" script.
 //   4. Compile via `node scripts/build.mjs` (-> dist/local + dist/web).
 //   5. Assemble a release in releases/<yyyyMMddHHmmss> (runtime output only, no
-//      sources; node_modules shared via symlink), write release.json (lib pin +
+//      sources; node_modules a hard-link snapshot), write release.json (lib pin +
 //      provenance), activate it atomically through the "current" symlink, keep
 //      the 10 newest, and reload pm2 (cluster, no downtime). Rollback = repoint
 //      "current" to an older release + reload.
 
-import { execFileSync, execSync } from 'node:child_process';
+import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import {
-  cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
+  cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
   realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -246,6 +246,43 @@ function defaultBuildObjs(root, ids) {
   });
 }
 
+/** Hard-link copy of a tree: directories are made, symbolic links are copied as links (the pnpm ones are relative), files are hard-linked. */
+function linkTree(source, target) {
+  mkdirSync(target, { recursive: true });
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const from = join(source, entry.name);
+    const to = join(target, entry.name);
+    if (entry.isSymbolicLink()) symlinkSync(readlinkSync(from), to);
+    else if (entry.isDirectory()) linkTree(from, to);
+    else linkSync(from, to);
+  }
+}
+
+/**
+ * The release keeps the node_modules it was compiled and migrated with: a hard-link snapshot of `source` in `target`
+ * (`cp -al` where the system has it, the same walk in Node otherwise). A later `pnpm install` at the root replaces files
+ * without touching the ones the release holds, so going back to this release brings its own dependencies. A failure
+ * leaves no half copy and throws: the release stops before `current` changes.
+ */
+export function snapshotNodeModules(source, target, { copy = null } = {}) {
+  if (!existsSync(source)) throw new Error(`node_modules snapshot: ${source} does not exist`);
+  rmSync(target, { recursive: true, force: true });
+  try {
+    if (copy) {
+      copy(source, target);
+    } else {
+      const done = spawnSync('cp', ['-al', source, target], { stdio: 'ignore' });
+      if (done.status !== 0) {
+        rmSync(target, { recursive: true, force: true });
+        linkTree(source, target);
+      }
+    }
+  } catch (error) {
+    rmSync(target, { recursive: true, force: true });
+    throw new Error(`node_modules snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export function activateCurrent(root, releaseDir, fechoIds, options = {}) {
   ensureFechoCompiledZips(root, fechoIds, options);
   assertFechoCompiledZips(root, fechoIds);
@@ -394,7 +431,7 @@ function runRelease(argv, rec, state) {
 
   // ── assemble release and activate it via the "current" symlink ──────────────
   // A release holds only the runtime output (frontend + backend), no sources.
-  // node_modules is shared across releases via a symlink (pnpm store-backed).
+  // node_modules: a hard-link snapshot of the root one (see snapshotNodeModules), so a release keeps its own dependencies.
   const releaseId = rec.releaseId;
   const releasesDir = join(ROOT, 'releases');
   const releaseDir = join(releasesDir, releaseId);
@@ -406,7 +443,7 @@ function runRelease(argv, rec, state) {
   // Carry the VM-level .env (kept stable at the mls-base root) into the release: the server
   // and migrate resolve .env from their cwd, and releases are recreated on every publish.
   if (existsSync(join(ROOT, '.env'))) cpSync(join(ROOT, '.env'), join(releaseDir, '.env'));
-  symlinkSync(join(ROOT, 'node_modules'), join(releaseDir, 'node_modules'), 'dir');
+  snapshotNodeModules(join(ROOT, 'node_modules'), join(releaseDir, 'node_modules'));
   const stamp = collectReleaseStamp({ root: ROOT, releaseId, clientId: clientId || '', deps: depTrees });
   writeReleaseStamp(releaseDir, stamp);
   console.log(`--- release stamp libs=${stamp.libs} monaco=${stamp.monaco} platform=${stamp.platformCommit}`);
