@@ -20,6 +20,7 @@ import {
   fechoProjectIds,
   pm2ConfigRel,
   envForMigrate,
+  runMigrateCommand,
   parseReleaseAliases,
   releasesInUse,
   skipPm2,
@@ -353,14 +354,48 @@ test('migrate leva COLLAB_PROJECT_ID do --client e não leva sem --client', () =
   assert.match(src, /COLLAB_PROJECT_ID=\$\{clientId\} node '\$\{migrateJs\}'/);
   assert.match(src, /clientId && \/\^\\d\+\$\/\.test\(clientId\)/);
   assert.match(src, /--- migrate sem client: usa o modo da raiz da release/);
-  const withClient = src.includes("run(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir, migrateEnv)");
-  const withoutClient = src.includes("run(`node '${migrateJs}'`, releaseDir)");
+  const withClient = src.includes("runMigrateCommand(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir, migrateEnv)");
+  const withoutClient = src.includes("runMigrateCommand(`node '${migrateJs}'`, releaseDir)");
   assert.equal(withClient, true);
   assert.equal(withoutClient, true);
   const cmdWith = `COLLAB_PROJECT_ID=102047 node '/tmp/migrate.js'`;
   const cmdWithout = `node '/tmp/migrate.js'`;
   assert.match(cmdWith, /COLLAB_PROJECT_ID=102047 /);
   assert.doesNotMatch(cmdWithout, /COLLAB_PROJECT_ID=/);
+});
+
+test('rt268: migrate falso sem URL de teste falha com a mensagem e o registro fecha falhou', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt268-migrate-'));
+  try {
+    const releaseDir = join(root, 'releases', '20261119000000');
+    const migrateJs = join(releaseDir, 'migrate.js');
+    mkdirSync(releaseDir, { recursive: true });
+    writeFileSync(migrateJs, [
+      'console.error("DATABASE_URL_TEST is not set, and appEnv=\'presentation\' must run against the TEST database. Create the test database and set the variable; the production connection string is never used as a fallback.");',
+      'process.exit(1);',
+      '',
+    ].join('\n'));
+    const handle = openRelease({
+      root, dir: recordsDir(root, 'app'), releaseId: '20261119000000', queue: 'app', projectId: '268001',
+    });
+    const message = 'DATABASE_URL_TEST is not set';
+    assert.throws(() => {
+      handle.step('migrate', () => runMigrateCommand(`node '${migrateJs}'`, releaseDir));
+    }, (error) => {
+      assert.match(error.message, new RegExp(message));
+      assert.doesNotMatch(error.message, /Command failed/u);
+      return true;
+    });
+    handle.close({ error: new Error(message) });
+    const record = JSON.parse(readFileSync(join(recordsDir(root, 'app'), '20261119000000.json'), 'utf8'));
+    assert.equal(record.resultado, 'falhou');
+    assert.equal(record.falha.passo, 'migrate');
+    assert.match(record.passos.find((step) => step.nome === 'migrate').resultado, /falhou/);
+    assert.match(record.falha.mensagem, /DATABASE_URL_TEST is not set/u);
+    assert.match(record.falha.mensagem, /never used as a fallback/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('migrate recebe DATABASE_URL_TEST só no modo de teste', () => {

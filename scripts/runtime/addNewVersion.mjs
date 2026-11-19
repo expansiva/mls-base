@@ -46,6 +46,26 @@ const run = (cmd, cwd = ROOT, env) => {
   }
 };
 
+/** Migrate keeps the script's own message. `run` replaces it with "Command failed", and the record would not say why. */
+export function runMigrateCommand(cmd, cwd, env) {
+  const options = { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 };
+  if (env) options.env = { ...process.env, ...env };
+  try {
+    const out = execSync(cmd, options);
+    if (out) process.stdout.write(out);
+    return out;
+  } catch (error) {
+    const stdout = typeof error?.stdout === 'string' ? error.stdout : '';
+    const stderr = typeof error?.stderr === 'string' ? error.stderr : '';
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    const status = typeof error?.status === 'number' ? error.status : 1;
+    const line = stderr.split('\n').map((item) => item.trim()).find((item) => item && !item.startsWith('at ')) ?? '';
+    const message = line.replace(/^Error:\s*/u, '');
+    throw new Error(message || `Command failed (${status}): ${cmd}`);
+  }
+}
+
 // Retries `cmd` only after a failure (never pre-emptively) — for `pm2
 // startOrReload`, which self-triggered rebuilds (cbeRebuildOnSave.ts) have been
 // observed to fail on the first attempt (the app reloading itself mid-command),
@@ -525,10 +545,10 @@ function runRelease(argv, rec, state) {
       console.log(`--- migrate (mls-base master backend ${masterBackendId})`);
       if (clientId && /^\d+$/.test(clientId)) {
         const migrateEnv = envForMigrate(ROOT, clientId);
-        run(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir, migrateEnv);
+        runMigrateCommand(`COLLAB_PROJECT_ID=${clientId} node '${migrateJs}'`, releaseDir, migrateEnv);
       } else {
         console.log('--- migrate sem client: usa o modo da raiz da release');
-        run(`node '${migrateJs}'`, releaseDir);
+        runMigrateCommand(`node '${migrateJs}'`, releaseDir);
       }
     } else {
       console.log(`--- migrate skipped (${migrateJs || 'no master backend in config.json'} not found)`);
