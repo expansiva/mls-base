@@ -23,6 +23,7 @@ import {
   parseReleaseAliases,
   releasesInUse,
   skipPm2,
+  snapshotFechoZips,
   snapshotNodeModules,
   updateTsconfigPaths,
   vmTsconfigRel,
@@ -233,6 +234,7 @@ test('com zip de todo o fecho, activateCurrent troca o current', () => {
     for (const id of ['900001', '900002']) {
       mkdirSync(join(root, `mls-${id}`, 'obj'), { recursive: true });
       writeFileSync(join(root, `mls-${id}`, 'obj', 'compiled.zip'), 'zip');
+      writeFileSync(join(root, `mls-${id}`, 'obj', 'source.zip'), 'src');
     }
     activateCurrent(root, newRel, ['900001', '900002']);
     assert.equal(resolve(readlinkSync(join(root, 'current'))), resolve(newRel));
@@ -676,6 +678,51 @@ test('rt249: a falha da cópia lança, não deixa cópia pela metade e acontece 
     const activate = src.indexOf('activateCurrent(ROOT', migrate);
     assert.ok(snapshot > 0 && migrate > snapshot && activate > migrate, 'snapshot < migrate < activateCurrent');
     assert.equal(/symlinkSync\(join\(ROOT, 'node_modules'\)/.test(src), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt258: a release guarda cópia de compiled.zip e source.zip; regravar o da raiz no mesmo arquivo não muda o da release', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt258-zip-'));
+  try {
+    const releaseDir = join(root, 'releases', '20261119000000');
+    mkdirSync(releaseDir, { recursive: true });
+    const id = '900001';
+    const obj = join(root, `mls-${id}`, 'obj');
+    mkdirSync(obj, { recursive: true });
+    writeFileSync(join(obj, 'compiled.zip'), 'compiled-v1');
+    writeFileSync(join(obj, 'source.zip'), 'source-v1');
+    snapshotFechoZips(root, releaseDir, [id]);
+    const keptCompiled = join(releaseDir, 'obj', id, 'compiled.zip');
+    const keptSource = join(releaseDir, 'obj', id, 'source.zip');
+    assert.equal(readFileSync(keptCompiled, 'utf8'), 'compiled-v1');
+    assert.equal(readFileSync(keptSource, 'utf8'), 'source-v1');
+    // same in-place write the build uses (writeZipIfChanged / AdmZip.writeZip)
+    writeFileSync(join(obj, 'compiled.zip'), 'compiled-v2');
+    assert.equal(readFileSync(keptCompiled, 'utf8'), 'compiled-v1');
+    assert.notEqual(statSync(keptCompiled).ino, statSync(join(obj, 'compiled.zip')).ino);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt258: zip ausente no retrato não troca o current', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt258-miss-'));
+  try {
+    const oldRel = join(root, 'releases', '20260101000000');
+    const newRel = join(root, 'releases', '20260102000000');
+    mkdirSync(oldRel, { recursive: true });
+    mkdirSync(newRel, { recursive: true });
+    symlinkSync(oldRel, join(root, 'current'));
+    mkdirSync(join(root, 'mls-900001', 'obj'), { recursive: true });
+    writeFileSync(join(root, 'mls-900001', 'obj', 'compiled.zip'), 'zip');
+    assert.throws(
+      () => activateCurrent(root, newRel, ['900001'], { build: () => {}, log: () => {} }),
+      /release aborted: obj\/source\.zip missing for mls-900001/,
+    );
+    assert.equal(resolve(readlinkSync(join(root, 'current'))), resolve(oldRel));
+    assert.equal(existsSync(join(newRel, 'obj')), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

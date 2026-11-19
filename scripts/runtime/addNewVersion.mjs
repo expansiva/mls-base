@@ -17,7 +17,7 @@
 
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import {
-  cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
+  copyFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
   realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -283,9 +283,38 @@ export function snapshotNodeModules(source, target, { copy = null } = {}) {
   }
 }
 
+const FECHO_ZIP_NAMES = ['compiled.zip', 'source.zip'];
+
+/**
+ * Copy each fecho zip into `<release>/obj/<id>/`. Not a hard link: the zip writers
+ * (`writeZipIfChanged`, `AdmZip.writeZip`) truncate and rewrite the same inode, so a
+ * link would follow the next root build. Failure removes the partial portrait and
+ * throws before `current` moves.
+ */
+export function snapshotFechoZips(root, releaseDir, ids) {
+  const portrait = join(releaseDir, 'obj');
+  try {
+    for (const id of ids) {
+      const destDir = join(portrait, String(id));
+      mkdirSync(destDir, { recursive: true });
+      for (const name of FECHO_ZIP_NAMES) {
+        const from = join(root, `mls-${id}`, 'obj', name);
+        if (!existsSync(from)) throw new Error(`release aborted: obj/${name} missing for mls-${id}`);
+        copyFileSync(from, join(destDir, name));
+      }
+    }
+  } catch (error) {
+    rmSync(portrait, { recursive: true, force: true });
+    if (error instanceof Error && error.message.startsWith('release aborted:')) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`fecho zip snapshot failed: ${message}`);
+  }
+}
+
 export function activateCurrent(root, releaseDir, fechoIds, options = {}) {
   ensureFechoCompiledZips(root, fechoIds, options);
   assertFechoCompiledZips(root, fechoIds);
+  snapshotFechoZips(root, releaseDir, fechoIds);
   execSync(`ln -sfn '${releaseDir}' '${join(root, 'current')}'`);
 }
 
