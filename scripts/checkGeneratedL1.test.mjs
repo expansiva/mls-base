@@ -130,3 +130,39 @@ test('o nome fetch como membro, parâmetro ou tipo não é achado', () => {
   ].join('\n');
   assert.deepEqual(checkGeneratedL1({ files: [{ file: 'mls-9/l1/a/b.ts', text }] }), []);
 });
+
+// O miolo é o mesmo para o Studio (TS 5.0.2) e para a release (typescript do Node): um texto com um exemplo de cada
+// regra tem de dar o mesmo resultado nos dois. O 5.0.2 é instalado numa pasta temporária (`npm i typescript@5.0.2`).
+test('o miolo dá o mesmo resultado com o TypeScript 5.0.2 e com o do Node', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join: joinPath } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { createRequire } = await import('node:module');
+  const { readFileSync: readText } = await import('node:fs');
+  const tmp = mkdtempSync(joinPath(tmpdir(), 'rt265-ts502-'));
+  try {
+    const install = spawnSync('npm', ['install', '--no-audit', '--no-fund', '--prefix', tmp, 'typescript@5.0.2'], { encoding: 'utf8' });
+    assert.equal(install.status, 0, install.stderr);
+    const ts502 = createRequire(joinPath(tmp, 'x.js'))('typescript');
+    assert.equal(ts502.version, '5.0.2');
+    const ts = (await import('typescript')).default;
+    const output = ts.transpileModule(readText(new URL('../mls-102034/l2/shared/checkGeneratedL1Rules.ts', import.meta.url), 'utf8'), {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const { checkGeneratedL1Files } = await import(`data:text/javascript;base64,${Buffer.from(output).toString('base64')}`);
+    const text = [
+      "const a = fetch('x');", "import cp from 'node:child_process';", "eval('1');", "const d = Deno.cwd();",
+      "process.binding('fs');", "await import(name);", "const f = fetch;", "globalThis['fetch']('x');",
+      "const g = Function('return 1');", "const m = process.mainModule;", "import { createRequire } from 'node:module';",
+      "const ok = repo.fetch('1'); // fetch(", "const s = 'fetch(';", "await import('/_102034_/l1/x.js');",
+    ].join('\n');
+    const files = [{ file: 'mls-9/l1/a/b.ts', text }];
+    const withNode = checkGeneratedL1Files(ts, files);
+    const with502 = checkGeneratedL1Files(ts502, files);
+    assert.ok(withNode.length >= 10);
+    assert.deepEqual(with502, withNode);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
