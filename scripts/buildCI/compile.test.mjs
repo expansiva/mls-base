@@ -193,6 +193,30 @@ test('bundleDeclarationFiles writes what outFile wrote: no declare modifier, glo
   assert.equal(text, expected);
 });
 
+test('compileDeclarations logs a source that has no .d.ts, with the compiler reason', async () => {
+  await withRoot(async (root) => {
+    const binDir = join(root, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    const src = join(root, 'project', '_9_', 'l2', 'shared');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'gone.ts'), 'export const chart = 1;\n');
+    const parts = join(root, 'preBuild', 'types', 'parts', '_9_', 'l1');
+    mkdirSync(parts, { recursive: true });
+    writeFileSync(join(parts, 'a.d.ts'), 'export declare const c: number;\n');
+    const listed = join(root, 'project', '_9_', 'l2', 'shared', 'gone.ts');
+    writeFileSync(join(binDir, 'tsc'), `#!/usr/bin/env node
+console.log(${JSON.stringify(listed)});
+console.log(${JSON.stringify(`${listed}(1,1): error TS4094: Property '#x' of exported anonymous class type may not be private.`)});
+process.exit(2);
+`);
+    chmodSync(join(binDir, 'tsc'), 0o755);
+    const { lines, log } = collectLog();
+    await compileDeclarations({ root, stageRoot: root, declPath: 'tsconfig.d.json', log });
+    const missing = lines.find((line) => line.startsWith('declarations missing:'));
+    assert.equal(missing, 'declarations missing: _9_/l2/shared/gone (TS4094: Property \'#x\' of exported anonymous class type may not be private.)');
+  });
+});
+
 test('compileDeclarations removes the per-file parts, so compiled.zip does not ship them', async () => {
   await withRoot(async (root) => {
     writeFakeTsc(root);

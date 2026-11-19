@@ -33,9 +33,9 @@ export function passMarker(label, errors) {
   return `##buildCI pass=${label} errors=${errors}##`;
 }
 
-function runTsc(root, tsconfigPath, log, label, { tolerant = false, quietOutput = false } = {}) {
+function runTsc(root, tsconfigPath, log, label, { tolerant = false, quietOutput = false, extraArgs = [] } = {}) {
   log('compile', `tsc -p ${tsconfigPath} (${label})`);
-  const result = runTsCompiler(['-p', tsconfigPath], {
+  const result = runTsCompiler(['-p', tsconfigPath, ...extraArgs], {
     root,
     log: (line) => log('compile', line),
   });
@@ -60,6 +60,73 @@ function runTsc(root, tsconfigPath, log, label, { tolerant = false, quietOutput 
   if (result.status !== 0 && !tolerant) {
     throw new Error(`tsc (${label}) failed with exit ${result.status}:\n${output.trim()}`);
   }
+  return output;
+}
+
+// A source the compiler kept in the program (listFiles) but did not emit must be named.
+// Without listFiles (the unit double), every staged project source counts.
+const SOURCE_EXT = /\.tsx?$/u;
+
+function isExcludedProjectSource(rel) {
+  const parts = rel.split('/');
+  const name = parts[parts.length - 1];
+  if (name.endsWith('.spec.ts') || name.endsWith('.test.ts') || name.endsWith('.spec.tsx') || name.endsWith('.test.tsx')) return true;
+  if (parts.some((part) => part === 'node_modules' || part.startsWith('nodejs'))) return true;
+  if (parts.includes('fixtures') && SOURCE_EXT.test(name)) return true;
+  return false;
+}
+
+export function modulesFromListFiles(output) {
+  const modules = new Set();
+  for (const line of String(output).split('\n')) {
+    const norm = line.trim().replace(/\\/g, '/');
+    if (!SOURCE_EXT.test(norm) || norm.endsWith('.d.ts') || norm.includes('error TS')) continue;
+    const at = norm.lastIndexOf('/project/');
+    if (at < 0) continue;
+    const rel = norm.slice(at + '/project/'.length);
+    if (!/^_\d+_\//u.test(rel) || isExcludedProjectSource(rel)) continue;
+    modules.add(rel.replace(SOURCE_EXT, ''));
+  }
+  return [...modules].sort();
+}
+
+async function modulesFromStage(stageRoot) {
+  const projectDir = join(stageRoot, 'project');
+  if (!existsSync(projectDir)) return [];
+  const modules = [];
+  async function walk(dir) {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (SOURCE_EXT.test(entry.name) && !entry.name.endsWith('.d.ts')) {
+        const rel = full.slice(projectDir.length + 1).split(/[\\/]/u).join('/');
+        if (/^_\d+_\//u.test(rel) && !isExcludedProjectSource(rel)) modules.push(rel.replace(SOURCE_EXT, ''));
+      }
+    }
+  }
+  await walk(projectDir);
+  modules.sort();
+  return modules;
+}
+
+export function missReason(output, moduleName) {
+  const needle = `/${moduleName}.ts`;
+  for (const line of String(output).split('\n')) {
+    const norm = line.replace(/\\/g, '/');
+    if (!norm.includes(needle) || !norm.includes('error TS')) continue;
+    const found = norm.match(/error (TS\d+): (.*)$/u);
+    if (found) return `${found[1]}: ${found[2].trim()}`;
+  }
+  return '';
+}
+
+export function declarationsMissingLine(missing, output) {
+  const items = missing.map((moduleName) => {
+    const reason = missReason(output, moduleName);
+    return reason ? `${moduleName} (${reason})` : moduleName;
+  });
+  return `declarations missing: ${items.join(', ')}`;
 }
 
 export async function compileCode({ root, codePath, log }) {
@@ -134,10 +201,21 @@ async function listDeclarationParts(partsDir) {
 }
 
 export async function compileDeclarations({ root, stageRoot, declPath, log }) {
-  runTsc(root, declPath, log, 'declarations', { tolerant: true, quietOutput: true });
+  const output = runTsc(root, declPath, log, 'declarations', {
+    tolerant: true,
+    quietOutput: true,
+    extraArgs: ['--listFiles'],
+  });
 
   const indexDts = join(stageRoot, 'preBuild', 'types', 'index.d.ts');
   const partsDir = join(stageRoot, DECL_PARTS_DIR);
+  const fromList = modulesFromListFiles(output);
+  const expected = fromList.length ? fromList : await modulesFromStage(stageRoot);
+  const files = existsSync(partsDir) ? await listDeclarationParts(partsDir) : [];
+  const emitted = new Set(files.map((file) => file.moduleName));
+  const missing = expected.filter((moduleName) => !emitted.has(moduleName));
+  log('compile', declarationsMissingLine(missing, output));
+
   if (!existsSync(partsDir)) {
     // The original mls-ci tolerated a missing bundle (fixFileDefinition
     // catches ENOENT and just logs it) — obj/compiled.zip comes out without
@@ -146,8 +224,6 @@ export async function compileDeclarations({ root, stageRoot, declPath, log }) {
       'continuing without types/index.d.ts, same tolerance as the original mls-ci.');
     return;
   }
-
-  const files = await listDeclarationParts(partsDir);
   await writeFile(indexDts, bundleDeclarationFiles(files), 'utf8');
   // The per-file parts are scaffolding: pack() ships preBuild/types whole, so they must not reach compiled.zip.
   await rm(partsDir, { recursive: true, force: true });
