@@ -100,3 +100,57 @@ test('declarations WARNING counts errors and does not dump that pass\'s tsc outp
     assert.match(declWarn, /tsc -p tsconfig\.d\.json/);
   });
 });
+
+function writeKillingTsc(root) {
+  const binDir = join(root, 'node_modules', '.bin');
+  mkdirSync(binDir, { recursive: true });
+  const tsc = join(binDir, 'tsc');
+  writeFileSync(tsc, `#!/usr/bin/env node
+process.kill(process.pid, 'SIGKILL');
+`);
+  chmodSync(tsc, 0o755);
+}
+
+test('compileCode rejects when tsc is killed by signal', async () => {
+  await withRoot(async (root) => {
+    writeKillingTsc(root);
+    const { log } = collectLog();
+    await assert.rejects(
+      () => compileCode({ root, codePath: 'tsconfig.json', log }),
+      /tsc \(code\) did not finish: SIGKILL/,
+    );
+  });
+});
+
+test('compileDeclarations rejects when tsc is killed by signal', async () => {
+  await withRoot(async (root) => {
+    writeKillingTsc(root);
+    const { log } = collectLog();
+    await assert.rejects(
+      () => compileDeclarations({ root, stageRoot: root, declPath: 'tsconfig.d.json', log }),
+      /tsc \(declarations\) did not finish: SIGKILL/,
+    );
+  });
+});
+
+test('compileCode still resolves on type errors with exit 2', async () => {
+  await withRoot(async (root) => {
+    writeFakeTsc(root, { codeErrors: 1, declErrors: 0 });
+    const { lines, log } = collectLog();
+    await compileCode({ root, codePath: 'tsconfig.json', log });
+    const joined = lines.join('\n');
+    assert.match(joined, /WARNING: tsc \(code\) reported type error/);
+    assert.equal(lines.includes(passMarker('code', 1)), true);
+  });
+});
+
+test('compileCode rejects when tsc binary is missing', async () => {
+  await withRoot(async (root) => {
+    mkdirSync(join(root, 'node_modules', '.bin'), { recursive: true });
+    const { log } = collectLog();
+    await assert.rejects(
+      () => compileCode({ root, codePath: 'tsconfig.json', log }),
+      /tsc \(code\) did not finish:/,
+    );
+  });
+});

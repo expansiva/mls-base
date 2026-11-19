@@ -37,6 +37,11 @@ function runTsc(root, tsconfigPath, log, label, { tolerant = false, quietOutput 
   const result = spawnSync(tscBin, ['-p', tsconfigPath], { cwd: root, encoding: 'utf8' });
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   const errors = countTscErrors(output);
+  if (result.error || result.status === null || result.signal) {
+    const reason = result.signal ?? result.error?.message ?? 'no exit status';
+    log('compile', `ERROR: tsc (${label}) did not finish: ${reason}`);
+    throw new Error(`tsc (${label}) did not finish: ${reason}`);
+  }
   if (result.status !== 0 && tolerant) {
     const prefix = `WARNING: tsc (${label}) reported type error(s) (exit ${result.status}) — ` +
       `best-effort, noEmitOnError:false ensures the file was still emitted`;
