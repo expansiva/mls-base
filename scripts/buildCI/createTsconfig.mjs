@@ -1,7 +1,7 @@
 // createTsconfig.mjs — gera os dois tsconfigs do build em .generated/<id>/.
 //
 //   tsconfig.json    -> compila o código (outDir preBuild/_<id>_/)
-//   tsconfig.d.json  -> bundle de declarações (outFile preBuild/types/index.d.ts)
+//   tsconfig.d.json  -> declarações por arquivo (declarationDir preBuild/types/parts)
 //
 // As opções espelham o tsconfig_p.json / tsconfig_d.json do mls-ci (decisão #8
 // do taskNewBuildCI.md): module ES2020, noImplicitAny/strictNullChecks
@@ -115,9 +115,9 @@ export async function createTsconfigs({ stageRoot, targetId, projects, log }) {
       // não-inferíveis caem em `any` silenciosamente. Com 'bundler' (usado no
       // passe de código) o tsc ENXERGA o caminho real
       // (.pnpm/lit-html@.../node_modules/lit-html/directive.js) mas o
-      // rejeita como "não portátil" (TS2742) — e em modo outFile isso
-      // bloqueia a emissão do bundle INTEIRO, não só degrada o símbolo.
-      outFile: './preBuild/types/index.d.ts',
+      // rejeita como "não portátil" (TS2742). Com declarationDir o símbolo
+      // degrada; o index.d.ts é a junção em compile.mjs.
+      declarationDir: './preBuild/types/parts',
       rootDir: './project',
       strict: false,
       declaration: true,

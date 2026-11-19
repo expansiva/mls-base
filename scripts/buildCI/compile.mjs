@@ -17,9 +17,11 @@
 // before every first build in the new pipeline.
 
 import { existsSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runTsCompiler } from '../tsCompiler.mjs';
+
+export const DECL_PARTS_DIR = join('preBuild', 'types', 'parts');
 
 // Count is per pass, from that pass's tsc output only — never the combined log.
 export function countTscErrors(text) {
@@ -64,28 +66,90 @@ export async function compileCode({ root, codePath, log }) {
   runTsc(root, codePath, log, 'code', { tolerant: true });
 }
 
+// fixFileDefinition: from '/_x_/foo.js' -> from '_x_/foo'. Relative specs
+// resolve against the emitting module so the bundle matches outFile names.
+export function rewriteDeclSpecifier(spec, fromModule) {
+  let next = String(spec);
+  if (next.startsWith('/')) next = next.slice(1);
+  next = next.replace(/\.js$/u, '');
+  if (next.startsWith('.')) {
+    const base = fromModule.includes('/') ? fromModule.slice(0, fromModule.lastIndexOf('/')) : '';
+    const parts = `${base}/${next}`.split('/');
+    const out = [];
+    for (const part of parts) {
+      if (part === '' || part === '.') continue;
+      if (part === '..') out.pop();
+      else out.push(part);
+    }
+    next = out.join('/');
+  }
+  return next;
+}
+
+export function rewriteDeclText(text, fromModule) {
+  return String(text).replace(
+    /(from\s*['"]|import\s*\(\s*['"])([^'"]+)(['"])/gu,
+    (_all, open, spec, close) => `${open}${rewriteDeclSpecifier(spec, fromModule)}${close}`,
+  );
+}
+
+// outFile writes the body of an ambient module: no `declare` modifier on its members and `global {` for
+// augmentations. A per-file .d.ts has `export declare ...` and `declare global`, which are not valid inside
+// `declare module` (TS1038), so the junction removes them to match what outFile emitted.
+export function stripAmbientModifiers(text) {
+  return String(text)
+    .replace(/^declare\s+global\b/gmu, 'global')
+    .replace(/^(export\s+(?:default\s+)?)?declare\s+/gmu, (_all, exp) => exp ?? '');
+}
+
+export function bundleDeclarationFiles(files) {
+  const chunks = [];
+  for (const file of files) {
+    const body = stripAmbientModifiers(rewriteDeclText(file.text, file.moduleName)).replace(/\s+$/u, '');
+    const indented = body.split('\n').map((line) => (line.length ? `    ${line}` : line)).join('\n');
+    chunks.push(`declare module "${file.moduleName}" {\n${indented}\n}`);
+  }
+  return chunks.length ? `${chunks.join('\n')}\n` : '';
+}
+
+async function listDeclarationParts(partsDir) {
+  const files = [];
+  async function walk(dir) {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.name.endsWith('.d.ts')) files.push(full);
+    }
+  }
+  await walk(partsDir);
+  files.sort();
+  const out = [];
+  for (const full of files) {
+    const rel = full.slice(partsDir.length + 1).split(/[\\/]/u).join('/');
+    if (!/^_\d+_\//u.test(rel)) continue;
+    out.push({ moduleName: rel.slice(0, -'.d.ts'.length), text: await readFile(full, 'utf8') });
+  }
+  return out;
+}
+
 export async function compileDeclarations({ root, stageRoot, declPath, log }) {
   runTsc(root, declPath, log, 'declarations', { tolerant: true, quietOutput: true });
 
   const indexDts = join(stageRoot, 'preBuild', 'types', 'index.d.ts');
-  if (!existsSync(indexDts)) {
-    // Some errors (e.g. TS2742 "cannot be named without a reference to...",
-    // common in pnpm monorepos) prevent tsc from emitting the whole outFile,
-    // not just degrading the problematic symbol to `unknown`. The original
-    // mls-ci tolerated this the same way (fixFileDefinition catches ENOENT
-    // and just logs it, without rethrowing) — obj/compiled.zip comes out
-    // without types/index.d.ts in that case, instead of aborting the whole
-    // build.
+  const partsDir = join(stageRoot, DECL_PARTS_DIR);
+  if (!existsSync(partsDir)) {
+    // The original mls-ci tolerated a missing bundle (fixFileDefinition
+    // catches ENOENT and just logs it) — obj/compiled.zip comes out without
+    // types/index.d.ts in that case, instead of aborting the whole build.
     log('compile', `WARNING: declarations bundle was not generated (${indexDts}) — ` +
       'continuing without types/index.d.ts, same tolerance as the original mls-ci.');
     return;
   }
 
-  // fixFileDefinition: from '/_x_/foo.js' -> from '_x_/foo'
-  const content = await readFile(indexDts, 'utf8');
-  const fixed = content.replace(/(from\s*['"])\/?(.*?)\.js(['"])/g, '$1$2$3');
-  if (fixed !== content) {
-    await writeFile(indexDts, fixed, 'utf8');
-    log('compile', 'index.d.ts: ".js" imports normalized');
-  }
+  const files = await listDeclarationParts(partsDir);
+  await writeFile(indexDts, bundleDeclarationFiles(files), 'utf8');
+  // The per-file parts are scaffolding: pack() ships preBuild/types whole, so they must not reach compiled.zip.
+  await rm(partsDir, { recursive: true, force: true });
+  log('compile', 'index.d.ts: ".js" imports normalized');
 }

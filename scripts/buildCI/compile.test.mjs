@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { compileCode, compileDeclarations, countTscErrors, passMarker } from './compile.mjs';
+import { bundleDeclarationFiles, compileCode, compileDeclarations, countTscErrors, passMarker, rewriteDeclSpecifier } from './compile.mjs';
 
 async function withRoot(run) {
   const root = mkdtempSync(join(tmpdir(), 'compile-pass-'));
@@ -43,6 +43,17 @@ function collectLog() {
     log: (_stage, msg) => lines.push(String(msg)),
   };
 }
+
+test('bundleDeclarationFiles names modules and strips .js from imports', () => {
+  const text = bundleDeclarationFiles([{
+    moduleName: '_9_/l1/a',
+    text: 'import type { B } from "./b.js";\nexport type { B } from "/_9_/l1/b.js";\n',
+  }]);
+  assert.match(text, /declare module "_9_\/l1\/a"/);
+  assert.match(text, /from "_9_\/l1\/b"/);
+  assert.equal(rewriteDeclSpecifier('../c.js', '_9_/l1/a'), '_9_/c');
+  assert.doesNotMatch(text, /\.js/);
+});
 
 test('countTscErrors counts error TS lines only, not the Found N summary', () => {
   const output = [
@@ -152,5 +163,45 @@ test('compileCode rejects when tsc binary is missing', async () => {
       () => compileCode({ root, codePath: 'tsconfig.json', log }),
       /tsc \(code\) did not finish:/,
     );
+  });
+});
+
+test('bundleDeclarationFiles writes what outFile wrote: no declare modifier, global { }', () => {
+  const text = bundleDeclarationFiles([{
+    moduleName: '_9_/l1/a',
+    text: [
+      'export interface I {', '    x: number;', '}',
+      'export declare const c: {', '    a: number;', '};',
+      'export declare function f(a: I): I;',
+      'export declare class K {', '    m(): number;', '}',
+      'export default class D {', '    z: number;', '}',
+      'declare global {', '    interface Window {', '        foo: string;', '    }', '}',
+      'export declare enum E {', '    A = 0,', '    B = 1', '}', '',
+    ].join('\n'),
+  }]);
+  const expected = [
+    'declare module "_9_/l1/a" {',
+    '    export interface I {', '        x: number;', '    }',
+    '    export const c: {', '        a: number;', '    };',
+    '    export function f(a: I): I;',
+    '    export class K {', '        m(): number;', '    }',
+    '    export default class D {', '        z: number;', '    }',
+    '    global {', '        interface Window {', '            foo: string;', '        }', '    }',
+    '    export enum E {', '        A = 0,', '        B = 1', '    }',
+    '}', '',
+  ].join('\n');
+  assert.equal(text, expected);
+});
+
+test('compileDeclarations removes the per-file parts, so compiled.zip does not ship them', async () => {
+  await withRoot(async (root) => {
+    writeFakeTsc(root);
+    const stageRoot = root;
+    const parts = join(stageRoot, 'preBuild', 'types', 'parts', '_9_', 'l1');
+    mkdirSync(parts, { recursive: true });
+    writeFileSync(join(parts, 'a.d.ts'), 'export declare const c: number;\n');
+    await compileDeclarations({ root, stageRoot, declPath: 'tsconfig.d.json', log: () => {} });
+    assert.equal(existsSync(join(stageRoot, 'preBuild', 'types', 'parts')), false);
+    assert.match(readFileSync(join(stageRoot, 'preBuild', 'types', 'index.d.ts'), 'utf8'), /export const c: number;/);
   });
 });
