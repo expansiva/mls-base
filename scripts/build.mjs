@@ -20,6 +20,7 @@
 //                                             # publish: compile without recomposing config
 
 import { spawnSync } from 'node:child_process';
+import { runTsCompiler } from './tsCompiler.mjs';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, relative, resolve } from 'node:path';
@@ -62,7 +63,6 @@ function baseTsconfigRel() {
 }
 const LOCAL_DIST = resolve(DIST, 'local');
 const WEB_DIST_DIR = 'web';
-const TSC_BIN = resolve(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
 const TS_SEGMENTS = ['core', 'l1', 'l2'];
 export const RES_SEGMENTS = ['core', 'l1', 'l2', 'l3', 'l5'];
 export const RES_EXT = new Set([
@@ -97,10 +97,7 @@ function run(cmd, args) {
 }
 
 function runTscCommand(args, label) {
-  const fullArgs = [TSC_BIN, ...args];
-  const displayBin = toPosix(relative(ROOT, TSC_BIN));
-  log(`node ${displayBin} ${args.join(' ')}`);
-  const result = spawnSync(process.execPath, fullArgs, { cwd: ROOT, encoding: 'utf8' });
+  const result = runTsCompiler(args, { root: ROOT, log });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.error) {

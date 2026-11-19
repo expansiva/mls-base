@@ -16,10 +16,10 @@
 // debt (never checked before) instead of requiring it to be fixed manually
 // before every first build in the new pipeline.
 
-import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { runTsCompiler } from '../tsCompiler.mjs';
 
 // Count is per pass, from that pass's tsc output only — never the combined log.
 export function countTscErrors(text) {
@@ -32,9 +32,11 @@ export function passMarker(label, errors) {
 }
 
 function runTsc(root, tsconfigPath, log, label, { tolerant = false, quietOutput = false } = {}) {
-  const tscBin = join(root, 'node_modules', '.bin', 'tsc');
   log('compile', `tsc -p ${tsconfigPath} (${label})`);
-  const result = spawnSync(tscBin, ['-p', tsconfigPath], { cwd: root, encoding: 'utf8' });
+  const result = runTsCompiler(['-p', tsconfigPath], {
+    root,
+    log: (line) => log('compile', line),
+  });
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   const errors = countTscErrors(output);
   if (result.error || result.status === null || result.signal) {

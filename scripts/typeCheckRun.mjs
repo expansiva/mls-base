@@ -6,9 +6,9 @@
 // and is the reason lima and AWS disagreed. Two tsc --noEmit processes
 // (l1 = tsconfig.backend.json, l2 = tsconfig.frontend.json) per project.
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { runTsCompiler } from './tsCompiler.mjs';
 import {
   excerptLines,
   formatOverrideLog,
@@ -75,11 +75,10 @@ function outputWithoutListFiles(output) {
 }
 
 export function defaultSpawnTsc(root, tsconfigPath) {
-  const tscBin = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
-  const result = spawnSync(process.execPath, [tscBin, '-p', tsconfigPath, '--noEmit', '--pretty', 'false', '--listFiles'], {
-    cwd: root,
-    encoding: 'utf8',
-  });
+  const result = runTsCompiler(
+    ['-p', tsconfigPath, '--noEmit', '--pretty', 'false', '--listFiles'],
+    { root, log: (line) => console.log(line) },
+  );
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   const fatal = Boolean(result.signal)
     || /SIGKILL|Killed|JavaScript heap out of memory/iu.test(output)
