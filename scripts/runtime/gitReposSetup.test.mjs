@@ -229,6 +229,111 @@ test('commit de arrumação do próprio script (ignore list) não trava a lib: �
   }
 });
 
+/** A lib the way `publishGit` leaves it on the VM: the origin's HEAD plus one commit `snapshot <sha7>[+dirty]: …` that takes obj/ out of the index. */
+function makeSnapshotLib(root, { withObj = false, subject = (sha7) => `snapshot ${sha7}: Compile TypeScript files (mls-base buildCI)`, tip = 'origin' } = {}) {
+  const dest = makeCloneWithOrigin(root);
+  armClonedDep(dest);
+  if (withObj) {
+    mkdirSync(join(dest, 'obj'), { recursive: true });
+    writeFileSync(join(dest, 'obj', 'compiled.zip'), 'zip-a\n');
+    writeFileSync(join(dest, 'obj', 'source.zip'), 'zip-b\n');
+    git(dest, 'add', '-f', '-A');
+    git(dest, 'commit', '-q', '-m', 'obj do build');
+  }
+  pushHeadToOrigin(dest);
+  const published = git(dest, 'rev-parse', '--short=7', 'HEAD');
+  if (tip === 'local-only') {
+    writeFileSync(join(dest, 'readme.md'), 'so na maquina\n');
+    git(dest, 'add', '-A');
+    git(dest, 'commit', '-q', '-m', 'so local');
+  }
+  const sha7 = tip === 'local-only' ? git(dest, 'rev-parse', '--short=7', 'HEAD') : published;
+  if (withObj) git(dest, 'rm', '-q', '--cached', '-r', 'obj');
+  git(dest, 'commit', '-q', '--allow-empty', '-m', subject(sha7));
+  return dest;
+}
+
+test('retrato limpo de um commit da origem leva a lib à origem', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-snapshot-'));
+  try {
+    const dest = makeSnapshotLib(root);
+    const result = resetFromOrigin(dest);
+    assert.equal(result.status, 'dropped-snapshot');
+    assert.equal(result.head, result.originHead);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('retrato limpo com obj/ solto (os zips que ele tirou do índice) leva à origem e devolve os zips', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-snapshot-obj-'));
+  try {
+    const dest = makeSnapshotLib(root, { withObj: true });
+    // the VM's .gitignore of the old libs did not ignore obj/: it shows as untracked
+    writeFileSync(join(dest, '.gitignore'), '');
+    assert.match(git(dest, 'status', '--short'), /\?\? obj\//);
+    git(dest, 'checkout', '--', '.gitignore');
+    const result = resetFromOrigin(dest);
+    assert.equal(result.status, 'dropped-snapshot');
+    assert.equal(result.head, result.originHead);
+    assert.equal(readFileSync(join(dest, 'obj', 'compiled.zip'), 'utf8'), 'zip-a\n');
+    assert.equal(git(dest, 'status', '--short'), '');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('retrato +dirty é recusado, com o motivo, e a lib não muda', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-snapshot-dirty-'));
+  try {
+    const dest = makeSnapshotLib(root, { subject: (sha7) => `snapshot ${sha7}+dirty: Compile TypeScript files` });
+    const before = git(dest, 'rev-parse', 'HEAD');
+    assert.throws(() => resetFromOrigin(dest), /\+dirty/);
+    assert.equal(git(dest, 'rev-parse', 'HEAD'), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('retrato de um sha que a origem não tem é recusado, com o motivo', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-snapshot-foreign-'));
+  try {
+    const dest = makeSnapshotLib(root, { tip: 'local-only' });
+    // the snapshot names a commit that exists here but was never pushed: the origin lacks it
+    const before = git(dest, 'rev-parse', 'HEAD');
+    assert.throws(() => resetFromOrigin(dest), /not in origin\/main/);
+    assert.equal(git(dest, 'rev-parse', 'HEAD'), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('retrato mais um commit comum é recusado e os dois ficam', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-snapshot-plus-'));
+  try {
+    const dest = makeSnapshotLib(root);
+    writeFileSync(join(dest, 'readme.md'), 'trabalho de alguem\n');
+    git(dest, 'add', '-A');
+    git(dest, 'commit', '-q', '-m', 'trabalho');
+    const before = git(dest, 'rev-parse', 'HEAD');
+    assert.throws(() => resetFromOrigin(dest), /trabalho/);
+    assert.equal(git(dest, 'rev-parse', 'HEAD'), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('retrato com outra sujeira além do obj/ continua recusando', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-snapshot-dirt-'));
+  try {
+    const dest = makeSnapshotLib(root);
+    writeFileSync(join(dest, 'readme.md'), 'sujo\n');
+    assert.throws(() => resetFromOrigin(dest), /readme\.md/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('lib suja recusa e não muda', () => {
   const root = mkdtempSync(join(tmpdir(), 'setup-dirty-'));
   try {
