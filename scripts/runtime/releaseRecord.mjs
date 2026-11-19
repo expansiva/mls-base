@@ -187,17 +187,33 @@ export function buildPieces({ root, clientId, stamp, previous }) {
  * the sites (a request id) is, in this order, `base` when the platform changed, `libs` when a dependency, the
  * Studio lib or the service worker changed, `shared` when a shared app (the cm) changed, else `app`. A push or the Studio's Publish (no request id) is `app`.
  */
-export function decideQueue({ requested, hasRequest, pieces }) {
-  if (PROJECT_QUEUES.has(requested)) return requested;
-  if (!hasRequest || !pieces) return 'app';
+export function decideQueue(input) {
+  return decideQueues(input)[0];
+}
+
+/**
+ * Every queue the release changed, in the priority of `decideQueue` (base, libs, shared), then `app`: a release of a
+ * project is always an `app` release too. The first is the queue of the record (`fila`); the whole list is `filas`.
+ * COLLAB_RELEASE_QUEUE (a project queue) and a release nobody asked for (a push, the Studio) stay one queue.
+ */
+export function decideQueues({ requested, hasRequest, pieces }) {
+  if (PROJECT_QUEUES.has(requested)) return [requested];
+  if (!hasRequest || !pieces) return ['app'];
   const { base, libs, libStudio, serviceWorker, shared = [] } = pieces;
-  if (base.commitAnterior && base.commit !== base.commitAnterior) return 'base';
+  const queues = [];
+  if (base.commitAnterior && base.commit !== base.commitAnterior) queues.push('base');
   const studioChanged = (libStudio?.libsAnterior && libStudio.libs !== libStudio.libsAnterior)
     || (libStudio?.monacoAnterior && libStudio.monaco !== libStudio.monacoAnterior);
   const swChanged = serviceWorker?.versaoAnterior && serviceWorker.versao !== serviceWorker.versaoAnterior;
-  if (libs.some((lib) => lib.mudou) || studioChanged || swChanged) return 'libs';
-  if (shared.some((item) => item.versaoAnterior && item.versao !== item.versaoAnterior)) return 'shared';
-  return 'app';
+  if (libs.some((lib) => lib.mudou) || studioChanged || swChanged) queues.push('libs');
+  if (shared.some((item) => item.versaoAnterior && item.versao !== item.versaoAnterior)) queues.push('shared');
+  queues.push('app');
+  return queues;
+}
+
+/** The queues of a record: `filas` when it has them, else its `fila`. */
+export function queuesOf(record) {
+  return Array.isArray(record?.filas) && record.filas.length > 0 ? record.filas : [record?.fila];
 }
 
 /** Atomic write: temp file in the same folder, then rename. */
@@ -230,7 +246,10 @@ export function readRecordFile(dir, releaseId) {
   }
 }
 
-/** Keep the last `keep` records of one queue and project (by release id); remove the rest. */
+/**
+ * Keep the last `keep` records of each queue of a project (by release id); remove the rest. A record in several queues
+ * (`filas`) is counted in each and removed only when it is out of all of them.
+ */
 export function pruneRecords(dir, { fila, projetoId }, keep = KEEP_PER_QUEUE) {
   if (!existsSync(dir)) return [];
   const mine = [];
@@ -238,9 +257,13 @@ export function pruneRecords(dir, { fila, projetoId }, keep = KEEP_PER_QUEUE) {
     const match = /^(\d{14})\.json$/u.exec(name);
     if (!match) continue;
     const record = readRecordFile(dir, match[1]);
-    if (record && record.fila === fila && (record.projetoId ?? null) === (projetoId ?? null)) mine.push(match[1]);
+    if (record && (record.projetoId ?? null) === (projetoId ?? null)) mine.push({ id: match[1], filas: queuesOf(record) });
   }
-  const removed = mine.sort().reverse().slice(keep);
+  const kept = new Set();
+  for (const queue of new Set(mine.flatMap((item) => item.filas))) {
+    mine.filter((item) => item.filas.includes(queue)).map((item) => item.id).sort().reverse().slice(0, keep).forEach((id) => kept.add(id));
+  }
+  const removed = mine.filter((item) => item.filas.includes(fila) && !kept.has(item.id)).map((item) => item.id).sort().reverse();
   for (const id of removed) {
     rmSync(join(dir, `${id}.json`), { force: true });
     rmSync(join(dir, `${id}.aviso-pendente`), { force: true });
@@ -425,10 +448,15 @@ export function openRelease({
       persist();
     },
     /** Close it: ok, or falhou with the step where it stopped. `pieces` and `queue` are best effort. */
-    close({ error = null, pieces = null, queue: decided = null } = {}) {
+    close({ error = null, pieces = null, queue: decided = null, queues = null } = {}) {
       try {
         if (pieces) record.pecas = pieces;
-        if (decided) record.fila = decided;
+        if (Array.isArray(queues) && queues.length > 0) {
+          record.fila = queues[0];
+          record.filas = [...queues];
+        } else if (decided) {
+          record.fila = decided;
+        }
         if (error || record.falha) {
           record.resultado = 'falhou';
           if (!record.falha) {
@@ -441,7 +469,9 @@ export function openRelease({
         record.duracaoMs = now() - started;
         persist();
         addNoticeSafely(dir, id, 'release.finished');
-        pruneRecords(dir, { fila: record.fila, projetoId: record.projetoId });
+        // One notice per extra queue: `release.finished:<fila>` (the first queue is the plain code).
+        for (const extra of queuesOf(record).slice(1)) addNoticeSafely(dir, id, `release.finished:${extra}`);
+        for (const queue of queuesOf(record)) pruneRecords(dir, { fila: queue, projetoId: record.projetoId });
       } catch (closeError) {
         process.stderr.write(`releaseRecord: could not close ${id}: ${closeError instanceof Error ? closeError.message : String(closeError)}\n`);
       }

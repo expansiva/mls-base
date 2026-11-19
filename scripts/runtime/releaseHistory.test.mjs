@@ -161,3 +161,20 @@ test('só lê e é rápido: 60 registros, list --limite 50 em menos de 2 s e nad
     assert.ok(dir.endsWith(join('app102047', 'mls-base', 'releases', 'registro')));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('rt250: list --fila acha a release por qualquer fila de filas, e a linha diz a fila pedida', () => {
+  const root = vm({ records: [{ ...record({ id: '20261119100000', fila: 'base' }), filas: ['base', 'libs', 'app'] }, record({ id: '20261119090000', fila: 'app' })] });
+  try {
+    for (const fila of ['base', 'libs', 'app']) {
+      const result = listRecords({ fila, projeto: 102047, dataRoot: root, etcDir: join(root, 'etc') });
+      assert.ok(result.registros.some((row) => row.releaseId === '20261119100000'), fila);
+      assert.equal(result.registros.find((row) => row.releaseId === '20261119100000').fila, fila);
+    }
+    const libs = listRecords({ fila: 'libs', projeto: 102047, dataRoot: root, etcDir: join(root, 'etc') });
+    assert.equal(libs.registros.some((row) => row.releaseId === '20261119090000'), false, 'a record only of app is not in libs');
+    const shared = listRecords({ fila: 'shared', projeto: 102047, dataRoot: root, etcDir: join(root, 'etc') });
+    assert.equal(shared.registros.length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

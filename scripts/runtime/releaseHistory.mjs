@@ -24,6 +24,11 @@ const QUEUES = new Set(['base', 'libs', 'shared', 'app', 'vm']);
 const RECORD_FILE = /^(\d{14})\.json$/u;
 const KEPT_COMMITS = 5;
 
+/** The queues of a record: `filas` when it has them, else its `fila` (the same rule as releaseRecord.queuesOf; no import, releaseRecord imports this file). */
+function queuesOf(record) {
+  return Array.isArray(record?.filas) && record.filas.length > 0 ? record.filas : [record?.fila];
+}
+
 export class HistoryError extends Error {
   constructor(message, code = 1) {
     super(message);
@@ -85,9 +90,9 @@ export function listRecords({ fila, projeto, limite, dataRoot = '/data', etcDir 
   const registros = [];
   for (const id of ids(dir)) {
     const record = read(dir, id);
-    if (!record || record.fila !== fila) continue;
+    if (!record || !queuesOf(record).includes(fila)) continue;
     if (fila !== 'vm' && record.projetoId !== undefined && record.projetoId !== null && String(record.projetoId) !== String(projeto)) continue;
-    registros.push(summary(record));
+    registros.push({ ...summary(record), fila });
     if (registros.length >= limit) break;
   }
   return { versao: 1, fila, projeto: fila === 'vm' ? null : String(projeto), registros };

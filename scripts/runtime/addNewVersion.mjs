@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { pathIdsOf, versionedTsconfigPathsFile } from '../syncTsconfigPaths.mjs';
 import { collectReleaseStamp, readDepTrees, writeReleaseStamp } from './releaseStamp.mjs';
 import {
-  activeReleaseId, buildPieces, decideQueue, openRelease, readStamp, readVmId, recordsDir, requestedByFor,
+  activeReleaseId, buildPieces, decideQueues, openRelease, readStamp, readVmId, recordsDir, requestedByFor,
 } from './releaseRecord.mjs';
 import { databaseUrlTestFor, declaredTestMode } from './vmApps.mjs';
 import { isProjectTree } from './projectPorts.mjs';
@@ -373,8 +373,8 @@ function finishRecord(ctx, error, depTrees) {
   try {
     const stamp = collectReleaseStamp({ root: ROOT, releaseId: ctx.handle.releaseId, clientId: ctx.clientId, deps: depTrees });
     const pieces = buildPieces({ root: ROOT, clientId: ctx.clientId, stamp, previous: ctx.previous });
-    const queue = decideQueue({ requested: process.env.COLLAB_RELEASE_QUEUE, hasRequest: ctx.hasRequest, pieces });
-    ctx.handle.close({ error, pieces, queue });
+    const queues = decideQueues({ requested: process.env.COLLAB_RELEASE_QUEUE, hasRequest: ctx.hasRequest, pieces });
+    ctx.handle.close({ error, pieces, queue: queues[0], queues });
   } catch (recordError) {
     process.stderr.write(`releaseRecord: pieces not recorded: ${recordError instanceof Error ? recordError.message : String(recordError)}\n`);
     ctx.handle.close({ error });

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   activeReleaseId, addPendingNotice, appendLateStep, projectRecordsRoot, resolveSharedProject, writeStandaloneRecord, buildPieces, confirmPendingNotice, readPendingNotice, cleanRepoUrl, closeRequest, closeStaleRecords, commitsBetween, decideQueue, findOpenRequest, openRelease, pruneRecords,
-  readRecordFile, readSharedVersions, readVmId, recordsDir, requestedByFor, scrubMessage,
+  decideQueues, queuesOf, pruneRecords as pruneAll, readRecordFile, readSharedVersions, readVmId, recordsDir, requestedByFor, scrubMessage,
 } from './releaseRecord.mjs';
 
 const ENV = { GIT_AUTHOR_NAME: 'Ana', GIT_AUTHOR_EMAIL: 'ana@example.com', GIT_COMMITTER_NAME: 'Ana', GIT_COMMITTER_EMAIL: 'ana@example.com' };
@@ -414,5 +414,63 @@ test('the cli writes the cm record into the project tree and the management reco
     assert.equal(projectRecordsRoot('999', { dataRoot: root }), join(root, 'mls-base'), 'no own tree: the shared tree');
     const none = execFileSync(process.execPath, [script, 'shared', '--depois', '1', '--data-root', join(root, 'empty')], { encoding: 'utf8', env });
     assert.equal(none, '');
+  });
+});
+
+const SAME_PIECES = { base: { commit: 'a', commitAnterior: 'a' }, libs: [{ mudou: false }], libStudio: { libs: '1', monaco: '2', libsAnterior: '1', monacoAnterior: '2' }, serviceWorker: { versao: '1', versaoAnterior: '1' }, shared: [] };
+
+test('rt250 decideQueues: a release que muda base e libs conta nas duas e sempre em app; a primeira é a de decideQueue', () => {
+  const both = { ...SAME_PIECES, base: { commit: 'b', commitAnterior: 'a' }, libs: [{ mudou: true }] };
+  assert.deepEqual(decideQueues({ requested: '', hasRequest: true, pieces: both }), ['base', 'libs', 'app']);
+  assert.equal(decideQueue({ requested: '', hasRequest: true, pieces: both }), 'base');
+  assert.deepEqual(decideQueues({ requested: '', hasRequest: true, pieces: { ...SAME_PIECES, libs: [{ mudou: true }], shared: [{ versao: '2', versaoAnterior: '1' }] } }), ['libs', 'shared', 'app']);
+});
+
+test('rt250 decideQueues: só app, push e a variável de ambiente continuam com uma fila só', () => {
+  assert.deepEqual(decideQueues({ requested: '', hasRequest: true, pieces: SAME_PIECES }), ['app']);
+  assert.deepEqual(decideQueues({ requested: '', hasRequest: false, pieces: { ...SAME_PIECES, base: { commit: 'b', commitAnterior: 'a' } } }), ['app']);
+  assert.deepEqual(decideQueues({ requested: 'libs', hasRequest: true, pieces: { ...SAME_PIECES, base: { commit: 'b', commitAnterior: 'a' } } }), ['libs']);
+});
+
+test('rt250: o registro guarda fila (a primeira) e filas (a lista), e o aviso vai um por fila', () => {
+  withRoot((root) => {
+    const dir = recordsDir(root, 'app');
+    const handle = openRelease({ root, dir, releaseId: '20261119100000', projectId: '102047', requestId: 'req_1', now: clock() });
+    handle.close({ queue: 'base', queues: ['base', 'libs', 'app'] });
+    const record = readRecordFile(dir, '20261119100000');
+    assert.equal(record.fila, 'base');
+    assert.deepEqual(record.filas, ['base', 'libs', 'app']);
+    assert.deepEqual(queuesOf(record), ['base', 'libs', 'app']);
+    assert.deepEqual(readPendingNotice(dir, '20261119100000'), ['release.finished', 'release.finished:libs', 'release.finished:app']);
+  });
+});
+
+test('rt250: uma release só de app guarda filas [app] e nenhum aviso a mais', () => {
+  withRoot((root) => {
+    const dir = recordsDir(root, 'app');
+    const handle = openRelease({ root, dir, releaseId: '20261119100100', projectId: '102047', now: clock() });
+    handle.close({ queue: 'app', queues: ['app'] });
+    assert.deepEqual(readRecordFile(dir, '20261119100100').filas, ['app']);
+    assert.deepEqual(readPendingNotice(dir, '20261119100100'), ['release.started', 'release.finished'], 'a release nobody asked for also tells that it started');
+  });
+});
+
+test('rt250: o corte não apaga uma release que ainda está em outra fila', () => {
+  withRoot((root) => {
+    const dir = recordsDir(root, 'app');
+    // the oldest release is in libs and app; 10 newer ones are app only: it is out of app but still alone in libs
+    openRelease({ root, dir, releaseId: '20261119090000', projectId: '102047', now: clock() }).close({ queue: 'libs', queues: ['libs', 'app'] });
+    for (let i = 0; i < 10; i += 1) {
+      openRelease({ root, dir, releaseId: `2026111910${String(i).padStart(4, '0')}`, projectId: '102047', now: clock() }).close({ queue: 'app', queues: ['app'] });
+    }
+    const names = readdirSync(dir).filter((n) => n.endsWith('.json'));
+    assert.equal(names.includes('20261119090000.json'), true, 'still the newest of libs');
+    assert.equal(names.length, 11);
+    // and one that is out of every queue goes
+    for (let i = 0; i < 10; i += 1) {
+      openRelease({ root, dir, releaseId: `2026111911${String(i).padStart(4, '0')}`, projectId: '102047', now: clock() }).close({ queue: 'libs', queues: ['libs', 'app'] });
+    }
+    assert.equal(readdirSync(dir).includes('20261119090000.json'), false, 'out of libs and out of app');
+    assert.deepEqual(pruneAll(dir, { fila: 'app', projetoId: 102047 }), []);
   });
 });
