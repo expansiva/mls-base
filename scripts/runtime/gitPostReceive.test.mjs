@@ -30,6 +30,8 @@ import {
   reloadPm2Now, staleClusterWorkers, formatStaleWorkerLog, parsePm2Jlist,
   reportClientConfig,
   ensureTsconfigPaths,
+  main,
+  runMain,
 } from './gitPostReceive.mjs';
 import { collectReleaseStamp } from './releaseStamp.mjs';
 import { ensureProjectApp } from './vmApps.mjs';
@@ -1149,6 +1151,134 @@ test('o reload do pm2 do hook entra como passo pm2 no registro da release já fe
     const failed = readRecord(dir, '20261105100100');
     assert.equal(failed.resultado, 'falhou');
     assert.equal(failed.falha.passo, 'pm2');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const GATE_EXIT = gateMessage({ ok: false, gate: 'exit' });
+
+function hookRoot(prefix) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  writeFileSync(join(root, 'tsconfig.json'), '{\n  "compilerOptions": {\n    "paths": {}\n  }\n}\n');
+  return root;
+}
+
+function openDepsRecord(root, requestId) {
+  return import('./releaseRecord.mjs').then(({ openRelease, recordsDir }) => {
+    const dir = recordsDir(root, 'app');
+    const handle = openRelease({
+      root, dir, releaseId: '20261119155152', queue: 'libs', requestId, vmId: 'vm-test',
+    });
+    handle.step('deps', () => {});
+    return { dir, releaseId: handle.releaseId };
+  });
+}
+
+test('build que falha antes do addNewVersion fecha o registro aberto do pedido', async () => {
+  const root = hookRoot('rt253-build-');
+  const requestId = '4072b489';
+  try {
+    const { dir, releaseId } = await openDepsRecord(root, requestId);
+    await main({
+      argv: ['--root', root, '--project', 'mls-102047'],
+      env: { COLLAB_RELEASE_REQUEST_ID: requestId },
+      compile: async () => ({ ok: false, message: GATE_EXIT }),
+      reload: async () => {},
+    });
+    const { readRecordFile, readPendingNotice } = await import('./releaseRecord.mjs');
+    const record = readRecordFile(dir, releaseId);
+    assert.equal(record.resultado, 'falhou');
+    assert.ok(record.fim);
+    assert.equal(record.falha.passo, 'build');
+    assert.equal(record.falha.mensagem, GATE_EXIT);
+    assert.equal(record.passos[0].nome, 'deps');
+    assert.equal(record.passos[0].resultado, 'ok');
+    assert.ok(readPendingNotice(dir, releaseId).includes('release.finished'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('erro lançado no main antes do addNewVersion fecha o registro aberto', async () => {
+  const root = hookRoot('rt253-throw-');
+  const requestId = 'f2ecc941';
+  try {
+    const { dir, releaseId } = await openDepsRecord(root, requestId);
+    const error = await runMain({
+      argv: ['--root', root, '--project', 'mls-102047'],
+      env: { COLLAB_RELEASE_REQUEST_ID: requestId },
+      compile: async () => { throw new Error('boom before addNewVersion'); },
+      reload: async () => {},
+    });
+    assert.equal(error.message, 'boom before addNewVersion');
+    const { readRecordFile, readPendingNotice } = await import('./releaseRecord.mjs');
+    const record = readRecordFile(dir, releaseId);
+    assert.equal(record.resultado, 'falhou');
+    assert.ok(record.fim);
+    assert.equal(record.falha.passo, 'build');
+    assert.match(record.falha.mensagem, /boom before addNewVersion/);
+    assert.ok(readPendingNotice(dir, releaseId).includes('release.finished'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('sem COLLAB_RELEASE_REQUEST_ID a falha não cria registro', async () => {
+  const root = hookRoot('rt253-nopid-');
+  const notes = [];
+  const write = (text) => notes.push(String(text));
+  try {
+    await main({
+      argv: ['--root', root, '--project', 'mls-102047'],
+      env: {},
+      compile: async () => ({ ok: false, message: GATE_EXIT }),
+      reload: async () => {},
+      write,
+    });
+    assert.equal(existsSync(join(root, 'releases', 'registro')), false);
+    assert.equal(notes.length, 0);
+
+    const requestId = 'sem-registro';
+    await main({
+      argv: ['--root', root, '--project', 'mls-102047'],
+      env: { COLLAB_RELEASE_REQUEST_ID: requestId },
+      compile: async () => ({ ok: false, message: GATE_EXIT }),
+      reload: async () => {},
+      write,
+    });
+    assert.equal(existsSync(join(root, 'releases', 'registro')), false);
+    assert.match(notes.join(''), new RegExp(`no open release record for request ${requestId}`));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('build ok deixa o registro aberto para o addNewVersion', async () => {
+  const root = hookRoot('rt253-ok-');
+  const requestId = '4072b489';
+  try {
+    const { dir, releaseId } = await openDepsRecord(root, requestId);
+    let ranRelease = false;
+    await main({
+      argv: ['--root', root, '--project', 'mls-102047'],
+      env: { COLLAB_RELEASE_REQUEST_ID: requestId, HOME: root },
+      compile: async () => ({
+        ok: true,
+        verdict: { ok: true, gate: 'typeCheck', declWarn: 0, typeWarn: 0, typeCheckStatus: 'permissive', tolerated: [] },
+        clientId: '',
+        ownClient: false,
+      }),
+      run: async () => { ranRelease = true; return { code: 0, out: '' }; },
+      reload: async () => {},
+    });
+    assert.equal(ranRelease, true);
+    const { readRecordFile } = await import('./releaseRecord.mjs');
+    const record = readRecordFile(dir, releaseId);
+    assert.equal(record.resultado, 'andamento');
+    assert.equal(record.fim, null);
+    assert.equal(record.passos.length, 1);
+    assert.equal(record.passos[0].nome, 'deps');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

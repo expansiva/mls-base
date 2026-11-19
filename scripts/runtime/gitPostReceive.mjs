@@ -16,7 +16,7 @@
 // named list in the log + ##clientConfig## marker; never blocks the release.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +28,7 @@ import {
   validateClientConfigFile,
 } from '../validateClientConfig.mjs';
 import { VM_TSCONFIG, writeVmTsconfig } from './addNewVersion.mjs';
-import { appendLateStep, recordsDir } from './releaseRecord.mjs';
+import { appendLateStep, findOpenRequest, openRelease, recordsDir } from './releaseRecord.mjs';
 import { ensureProjectApp, hostedProjectIds } from './vmApps.mjs';
 import { appNameOf, isProjectTree, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 import { homedir } from 'node:os';
@@ -1015,7 +1015,7 @@ export async function compileReleaseProjects(root, id, deps, { run = runLive, wr
     if (!depVerdict.ok) {
       // Nomeia o DEP, não o cliente: quem quebrou foi ele, e a release não sobe (D-C2).
       printError(depName, depVerdict);
-      return { ok: false };
+      return { ok: false, message: gateMessage(depVerdict) };
     }
     restoreWorktree(root, depName);
   }
@@ -1032,7 +1032,7 @@ export async function compileReleaseProjects(root, id, deps, { run = runLive, wr
   const verdict = evaluateBuild(build.code, build.out);
   if (!verdict.ok) {
     printError(projectName, verdict);
-    return { ok: false };
+    return { ok: false, message: gateMessage(verdict) };
   }
 
   const { clientId, ownClient } = clientIdForRelease(root, id);
@@ -1043,20 +1043,58 @@ export async function compileReleaseProjects(root, id, deps, { run = runLive, wr
   const fecho = await compileFecho(root, clientId, { run, ...(write ? { write } : {}) });
   if (!fecho.ok) {
     printError(fecho.project, fecho.verdict);
-    return { ok: false };
+    return { ok: false, message: gateMessage(fecho.verdict) };
   }
   return { ok: true, verdict, clientId, ownClient };
 }
 
-async function main() {
-  const { root, project } = parseArgs(process.argv.slice(2));
+/**
+ * A sites request opens its record in `deps`. A failure here is before `addNewVersion`,
+ * which is the only other closer. Continue that record; never open a new one.
+ * Recording must not replace the original error.
+ */
+export function failReleaseBeforeAddNewVersion(root, message, {
+  env = process.env,
+  write = (text) => process.stderr.write(text),
+} = {}) {
+  const requestId = String(env.COLLAB_RELEASE_REQUEST_ID ?? '').trim();
+  if (!requestId) return;
+  try {
+    const dir = recordsDir(root, 'app');
+    if (!findOpenRequest(dir, requestId)) {
+      write(`gitPostReceive: no open release record for request ${requestId}\n`);
+      return;
+    }
+    const handle = openRelease({ root, dir, requestId, releaseId: '00000000000000' });
+    if (!handle.continued) {
+      rmSync(join(dir, `${handle.releaseId}.json`), { force: true });
+      write(`gitPostReceive: no open release record for request ${requestId}\n`);
+      return;
+    }
+    const text = message instanceof Error ? message.message : String(message ?? 'build failed');
+    handle.markFailed('build', text);
+    handle.close({ error: text });
+  } catch (error) {
+    write(`gitPostReceive: release record not closed: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+}
+
+export async function main({
+  argv = process.argv.slice(2),
+  compile = null,
+  run = runLive,
+  env = process.env,
+  reload = reloadPm2Now,
+  write,
+} = {}) {
+  const { root, project } = parseArgs(argv);
   const id = projectIdOf(project);
   if (!id) failUsage(`gitPostReceive: invalid project "${project}"`);
   const projectName = `mls-${id}`;
 
   notePushActor(root, projectName);
 
-  const { skipBuild, deps } = parseBuildPlan(readPushOptions());
+  const { skipBuild, deps } = parseBuildPlan(readPushOptions(env));
 
   // Dep de plataforma: o retrato entra no worktree e pronto. Quem compila é o
   // push do cliente, que vem a seguir com `deps=…` — assim N deps alterados dão
@@ -1069,8 +1107,15 @@ async function main() {
   reportClientConfig(root, id);
   ensureTsconfigPaths(root);
 
-  const built = await compileReleaseProjects(root, id, deps);
-  if (!built.ok) return;
+  const built = compile
+    ? await compile(root, id, deps)
+    : await compileReleaseProjects(root, id, deps);
+  if (!built.ok) {
+    failReleaseBeforeAddNewVersion(root, built.message || 'gitPostReceive: build failed', {
+      env, ...(write ? { write } : {}),
+    });
+    return;
+  }
   const { verdict, clientId, ownClient } = built;
 
   const releaseArgs = ['scripts/runtime/addNewVersion.mjs'];
@@ -1097,7 +1142,7 @@ async function main() {
     );
   }
 
-  const release = await runLive(
+  const release = await run(
     'node',
     releaseArgs,
     {
@@ -1145,13 +1190,36 @@ async function main() {
 
   // Marker already flushed. Reload last: ssh/SSM in-process; https detached so
   // this hook (and the TCP connection that carries its output) can finish.
-  if (shouldDeferPm2Reload(process.env)) {
+  if (reload !== reloadPm2Now) {
+    await reload(root, { appName });
+  } else if (shouldDeferPm2Reload(process.env)) {
     scheduleDetachedPm2Reload(root, { appName });
   } else {
     await reloadPm2Now(root, { appName });
   }
   if (verdict.typeCheckStatus === 'deferred' && clientId) {
     scheduleDetachedVerification(root, { projectId: clientId, releaseId: ts });
+  }
+}
+
+/** CLI entry: a throw before addNewVersion still prints the build=error marker and closes the open record. */
+export async function runMain(options = {}) {
+  try {
+    await main(options);
+    return null;
+  } catch (error) {
+    const argv = options.argv ?? process.argv.slice(2);
+    const env = options.env ?? process.env;
+    const { root, project } = parseArgs(argv);
+    const name = projectIdOf(project) ? `mls-${projectIdOf(project)}` : (project || 'unknown');
+    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+    process.stderr.write(`##gitBackend build=error project=${name}##\n`);
+    failReleaseBeforeAddNewVersion(
+      root,
+      error instanceof Error ? error.message : String(error),
+      { env, ...(options.write ? { write: options.write } : {}) },
+    );
+    return error;
   }
 }
 
@@ -1198,11 +1266,8 @@ if (invokedAsMain()) {
         process.exitCode = 1;
       });
   } else {
-    main().catch((error) => {
-      const project = parseArgs(process.argv.slice(2)).project || 'unknown';
-      const name = projectIdOf(project) ? `mls-${projectIdOf(project)}` : project;
+    runMain().catch((error) => {
       process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-      process.stderr.write(`##gitBackend build=error project=${name}##\n`);
     });
   }
 }
