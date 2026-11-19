@@ -27,10 +27,12 @@ import { collectReleaseStamp, readDepTrees, writeReleaseStamp } from './releaseS
 import {
   activeReleaseId, buildPieces, decideQueues, openRelease, readStamp, readVmId, recordsDir, requestedByFor,
 } from './releaseRecord.mjs';
-import { databaseUrlTestFor, declaredTestMode } from './vmApps.mjs';
+import { envForMigrate } from './migrateEnv.mjs';
 import { isProjectTree } from './projectPorts.mjs';
 import { readZipStamp, sourceTreeHash, writeZipStamp, ZIP_SOURCE_LEVELS } from './zipSourceTree.mjs';
 import { checkGeneratedL1 } from '../checkGeneratedL1.mjs';
+
+export { envForMigrate };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const run = (cmd, cwd = ROOT, env) => {
@@ -350,14 +352,6 @@ export function releasesInUse(root) {
     } catch { /* unreadable link: nothing to protect */ }
   }
   return inUse;
-}
-
-/** Env extra do migrate. A URL fica só aqui — nunca no comando nem no log. */
-export function envForMigrate(root, clientId) {
-  if (!(clientId && /^\d+$/.test(clientId) && declaredTestMode(root, clientId))) return undefined;
-  const url = databaseUrlTestFor(root);
-  if (!url) return undefined;
-  return { DATABASE_URL_TEST: url };
 }
 
 /**

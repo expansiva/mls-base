@@ -7,6 +7,7 @@ import { execSync } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { envFileValue, planManualMigrate } from './runtime/migrateEnv.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url))); // scripts/..
 const current = join(ROOT, 'current');
@@ -33,4 +34,18 @@ if (!existsSync(migrateJs)) {
   process.exit(1);
 }
 
-execSync(`node '${migrateJs}'`, { cwd: current, stdio: 'inherit' });
+// The name printed before acting is the one `migrate` will use: PGDATABASE of the release .env (the app loads it), then the process env.
+const plan = planManualMigrate(ROOT, config, {
+  ...process.env,
+  PGDATABASE: envFileValue(join(current, '.env'), 'PGDATABASE') || process.env.PGDATABASE || '',
+});
+if (plan.refused) {
+  console.error(plan.message);
+  process.exit(1);
+}
+console.log(plan.line);
+execSync(`node '${migrateJs}'`, {
+  cwd: current,
+  stdio: 'inherit',
+  env: plan.migrateEnv ? { ...process.env, ...plan.migrateEnv } : process.env,
+});
