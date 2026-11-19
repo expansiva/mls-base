@@ -108,9 +108,16 @@ async function main() {
   // Step 6 — tsc + enhancement + declarations
   const { compileCode, compileDeclarations } = await import('./compile.mjs');
   const { runEnhancement } = await import('./enhancement.mjs');
+  const { stageShipFromEmit } = await import('./pack.mjs');
   timer.mark('tsconfig');
+  // Count only. The .js the zip ships is the emitProject tree, staged next.
   await compileCode({ root: ROOT, codePath, log });
   timer.mark('tscCode');
+  const emitLevels = ['core', 'l1', ...shipLevels];
+  await stageShipFromEmit({
+    root: ROOT, stageRoot, targetId: id, shipLevels, emitLevels, log,
+  });
+  timer.mark('emit');
   await runEnhancement({ stageRoot, targetId: id, log });
   timer.mark('enhancement');
   await compileDeclarations({ root: ROOT, stageRoot, declPath, log });

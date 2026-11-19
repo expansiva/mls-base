@@ -1,6 +1,6 @@
 // compile.mjs — the two tsc passes over the staging area.
 //
-//   compileCode        -> tsc -p tsconfig.json    (preBuild/_<id>_/l*/*.js)
+//   compileCode        -> tsc -p tsconfig.json --noEmit (count only; js comes from emitProject)
 //   compileDeclarations-> tsc -p tsconfig.d.json  (preBuild/types/index.d.ts)
 //                         + removing ".js" from the bundle's imports
 //                           (mls-ci's fixFileDefinition)
@@ -25,7 +25,8 @@ export const DECL_PARTS_DIR = join('preBuild', 'types', 'parts');
 
 // Count is per pass, from that pass's tsc output only — never the combined log.
 export function countTscErrors(text) {
-  const matches = String(text).match(/\berror TS\d+/gu);
+  const plain = String(text).replace(/\u001b\[[0-9;]*m/gu, '');
+  const matches = plain.match(/\berror TS\d+/gu);
   return matches ? matches.length : 0;
 }
 
@@ -47,8 +48,10 @@ function runTsc(root, tsconfigPath, log, label, { tolerant = false, quietOutput 
     throw new Error(`tsc (${label}) did not finish: ${reason}`);
   }
   if (result.status !== 0 && tolerant) {
-    const prefix = `WARNING: tsc (${label}) reported type error(s) (exit ${result.status}) — ` +
-      `best-effort, noEmitOnError:false ensures the file was still emitted`;
+    const wrote = extraArgs.includes('--noEmit')
+      ? 'best-effort, --noEmit writes nothing'
+      : 'best-effort, noEmitOnError:false ensures the file was still emitted';
+    const prefix = `WARNING: tsc (${label}) reported type error(s) (exit ${result.status}) — ${wrote}`;
     const suffix = quietOutput
       ? `. ${errors} errors suppressed (structural noise, decision #25 — reproduce with \`tsc -p ${tsconfigPath}\`)`
       : `:\n${output.trim()}`;
@@ -130,7 +133,9 @@ export function declarationsMissingLine(missing, output) {
 }
 
 export async function compileCode({ root, codePath, log }) {
-  runTsc(root, codePath, log, 'code', { tolerant: true });
+  // The browser zip and the server read emitProject. This pass only counts
+  // type errors for the pass=code gate, and only by running the compiler.
+  runTsc(root, codePath, log, 'code', { tolerant: true, extraArgs: ['--noEmit', '--pretty', 'false'] });
 }
 
 // fixFileDefinition: from '/_x_/foo.js' -> from '_x_/foo'. Relative specs

@@ -215,6 +215,14 @@ export function evaluateBuild(code, out) {
     };
   }
 
+  // pass=code decides only when the log has neither a ##typeCheck## marker nor
+  // ##typeCheck deferred##. Those two already returned above, and they are what
+  // the three release entries print:
+  // - sites release: addNewVersion → buildProjectsObj --only, no --typecheck → deferred
+  // - Studio push and publishGit: gitPostReceive → the same buildProjectsObj → deferred
+  // This branch still decides a log that has only the code pass (direct buildCI
+  // output). The count is compileCode's tsc --noEmit. There is no errors=0
+  // marker without that run.
   if (codeErrors == null) {
     return {
       ok: !hasTscError(text),

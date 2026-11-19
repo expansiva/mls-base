@@ -63,6 +63,7 @@ test('countTscErrors counts error TS lines only, not the Found N summary', () =>
   ].join('\n');
   assert.equal(countTscErrors(output), 2);
   assert.equal(countTscErrors('clean compile'), 0);
+  assert.equal(countTscErrors('error\u001b[0m\u001b[90m TS2345: nope'), 1);
 });
 
 test('compile.mjs emits both pass markers with errors=0 when tsc is clean', async () => {
