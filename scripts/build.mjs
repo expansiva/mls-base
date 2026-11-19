@@ -20,9 +20,10 @@
 //                                             # publish: compile without recomposing config
 
 import { spawnSync } from 'node:child_process';
-import { runTsCompiler } from './tsCompiler.mjs';
+import { shipLevelsFor } from './buildCI/buildCI.mjs';
+import { emitProject, rebaseSourceMapsInTree } from './emitProject.mjs';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { cp, mkdir, readdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -43,12 +44,10 @@ import {
   hashFile,
   legacyCacheReason,
   loadCheck,
-  loadEmit,
   planLibCache,
   snapshotTypeCheck,
   typescriptVersion,
   writeCheckEntry,
-  writeEmitEntry,
 } from './buildCache.mjs';
 import { planVerification } from './releaseVerification.mjs';
 import { readTypeCheckPolicy } from './typeCheckPolicy.mjs';
@@ -73,7 +72,6 @@ export const RES_EXT = new Set([
   '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico',
   '.woff2',
 ]);
-const TSC_EMIT_BATCH_SIZE = Number.parseInt(process.env.COLLAB_TSC_EMIT_BATCH_SIZE ?? '40', 10);
 // Matches absolute project specifiers in emitted JS: from '/_102034_/l1/...'
 // Matches every form of project specifier in emitted JS:
 //   from '/_..._/...'  | import '/_..._/...'  | import('/_..._/...')  | require('/_..._/...')
@@ -94,22 +92,6 @@ function run(cmd, args) {
   if (result.status !== 0) {
     throw new Error(`Command failed (${result.status}): ${cmd} ${args.join(' ')}`);
   }
-}
-
-function runTscCommand(args, label) {
-  const result = runTsCompiler(args, { root: ROOT, log });
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-  if (result.error) {
-    throw new Error(`Failed to start TypeScript compiler: ${result.error.message}`);
-  }
-  if (result.status === 0) return { ok: true, label };
-
-  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  const status = result.signal ? `signal ${result.signal}` : `exit ${result.status}`;
-  const fatal = Boolean(result.signal) ||
-    /SIGKILL|Killed|ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL|JavaScript heap out of memory/iu.test(output);
-  return { ok: false, label, status, fatal, output };
 }
 
 function logTypeCheck(report) {
@@ -156,9 +138,7 @@ async function runTsc(_tsconfigPath, ids, compilerOptions, clientId, { release =
     if (legacy) log(`build cache ignored: ${legacy}`);
   }
   const blocked = [];
-  const checkHits = new Map();
   const freshCheck = new Map();
-  const freshEmit = new Map();
   const depNow = (depId) => {
     const dir = projectDir(depId);
     return { head: gitHead(dir), porcelain: gitPorcelain(dir) };
@@ -180,7 +160,6 @@ async function runTsc(_tsconfigPath, ids, compilerOptions, clientId, { release =
     if (plan?.eligible) {
       const loaded = await loadCheck(cacheRoot, id, plan.checkBase, depNow);
       if (loaded.hit) {
-        checkHits.set(String(id), loaded);
         logTypeCheck(loaded.report);
         log(`typeCheck mls-${id} cached ${plan.checkBase.slice(0, 12)}`);
         if (loaded.report.block) blocked.push(loaded.report);
@@ -211,115 +190,31 @@ async function runTsc(_tsconfigPath, ids, compilerOptions, clientId, { release =
   }
   throwIfTypeCheckBlocked(blocked);
 
-  // Emit one project per tsc process. The monolithic emit can be killed by Lima's
-  // small VM memory limit; split emit keeps the release path reliable without swap.
+  /** @type {Map<string, { hit: boolean, dir: string }>} */
+  const emitted = new Map();
   for (const id of ids) {
-    const plan = planById.get(String(id));
-    if (plan?.eligible && !checkHits.get(String(id))?.report?.block) {
-      const loaded = await loadEmit(cacheRoot, id, plan.emitKey);
-      if (loaded.hit) {
-        const target = join(LOCAL_DIST, `_${id}_`);
-        try {
-          await mkdir(LOCAL_DIST, { recursive: true });
-          await rm(target, { recursive: true, force: true });
-          await cp(loaded.tree, target, { recursive: true });
-          log(`emit mls-${id} cached ${plan.emitKey.slice(0, 12)}`);
-          continue;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          log(`build cache mls-${id} ignored: unreadable: ${message}`);
-        }
-      } else if (loaded.reason !== 'miss') {
-        log(`build cache mls-${id} ignored: ${loaded.reason}`);
-      }
-    }
-    if (plan?.eligible) freshEmit.set(String(id), { emitKey: plan.emitKey });
-    const files = await collectProjectTsFiles(id);
-    const emit = await runTscEmitConfig(`mls-${id}`, `.tsconfig.build.${id}.json`, files, compilerOptions);
-    if (emit.ok) continue;
-
-    if (emit.fatal && files.length > TSC_EMIT_BATCH_SIZE) {
-      log(`tsc emit for mls-${id} could not complete (${emit.status}); retrying in batches of ${TSC_EMIT_BATCH_SIZE}`);
-      const batched = await runTscEmitBatches(id, files, compilerOptions);
-      if (batched) continue;
-    }
-
-    throw new Error([
-      `TypeScript emit failed during publish for mls-${id} (${emit.status}).`,
-      'No release will be activated because dist/local may be incomplete.',
-      summarizeTypeScriptOutput(emit.output) || tailOutput(emit.output),
-    ].filter(Boolean).join('\n'));
+    const result = await emitProject(ROOT, String(id), { levels: emitLevelsFor(id) });
+    emitted.set(String(id), result);
   }
-  return { cacheRoot, freshCheck, freshEmit };
+  return { cacheRoot, freshCheck, emitted };
 }
 
-async function runTscEmitConfig(label, configName, files, compilerOptions) {
-  const configPath = resolve(ROOT, configName);
-  await writeFile(configPath, `${JSON.stringify({
-    extends: baseTsconfigRel(),
-    compilerOptions: {
-      ...compilerOptions,
-      noResolve: true,
-    },
-    // extends merges files with the base tsconfig's "include" instead of
-    // replacing it — without this override every emit (and every batch) was
-    // silently compiling the whole repo's l1/l2 (~3458 files) instead of just
-    // `files`, which is what actually blew up memory, not project/batch size.
-    include: [],
-    files,
-  }, null, 2)}\n`, 'utf8');
+// Server reads core, l1 and l2. Platform libs also emit l4 into the same tree
+// so the browser zip can take it from this emission.
+function emitLevelsFor(id) {
+  const levels = ['core', 'l1', 'l2'];
+  const projectJson = join(projectDir(id), 'l5', 'project.json');
+  if (!existsSync(projectJson)) return levels;
+  let projectType;
   try {
-    return runTscCommand(['-p', configPath, '--noCheck', '--pretty', 'false'], `emit ${label}`);
-  } finally {
-    await unlink(configPath).catch(() => undefined);
+    projectType = JSON.parse(readFileSync(projectJson, 'utf8')).projectType;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`mls-${id} l5/project.json unreadable (${message}); emitting without l4`);
+    return levels;
   }
-}
-
-async function runTscEmitBatches(id, files, compilerOptions) {
-  const dtsFiles = files.filter((file) => file.endsWith('.d.ts'));
-  const tsFiles = files.filter((file) => !file.endsWith('.d.ts'));
-  const batchSize = Number.isFinite(TSC_EMIT_BATCH_SIZE) && TSC_EMIT_BATCH_SIZE > 0
-    ? TSC_EMIT_BATCH_SIZE
-    : 40;
-  for (let start = 0, batch = 1; start < tsFiles.length; start += batchSize, batch += 1) {
-    const batchFiles = [...dtsFiles, ...tsFiles.slice(start, start + batchSize)];
-    const emit = await runTscEmitConfig(
-      `mls-${id} batch ${batch}`,
-      `.tsconfig.build.${id}.${batch}.json`,
-      batchFiles,
-      compilerOptions,
-    );
-    if (!emit.ok) {
-      throw new Error([
-        `TypeScript emit failed during publish for mls-${id} batch ${batch} (${emit.status}).`,
-        'No release will be activated because dist/local may be incomplete.',
-        summarizeTypeScriptOutput(emit.output) || tailOutput(emit.output),
-      ].filter(Boolean).join('\n'));
-    }
-  }
-  return true;
-}
-
-function summarizeTypeScriptOutput(output) {
-  const lines = output.split(/\r?\n/u);
-  const selected = [];
-  for (let i = 0; i < lines.length; i += 1) {
-    if (!/\berror TS\d+:/u.test(lines[i])) continue;
-    selected.push(lines[i]);
-    for (let j = i + 1; j < lines.length && j <= i + 3; j += 1) {
-      if (!lines[j].trim()) break;
-      if (/\berror TS\d+:/u.test(lines[j])) break;
-      selected.push(lines[j]);
-    }
-  }
-  if (selected.length > 0) return `TypeScript errors:\n${selected.slice(-40).join('\n')}`;
-  const tail = lines.filter((line) => line.trim()).slice(-40).join('\n');
-  return tail ? `Compiler output:\n${tail}` : '';
-}
-
-function tailOutput(output) {
-  const tail = output.split(/\r?\n/u).filter((line) => line.trim()).slice(-40).join('\n');
-  return tail ? `Compiler output:\n${tail}` : '';
+  if (shipLevelsFor(projectType).includes('l4')) levels.push('l4');
+  return levels;
 }
 
 // Bytes, not git checkout: an uncommitted edit in l5/config.json must survive the build.
@@ -683,6 +578,25 @@ export async function rewriteLocalDistAbsoluteImports(localDist = LOCAL_DIST) {
   return { rewritten, completed };
 }
 
+// The cache keeps the compiler output. dist/local receives core, l1 and l2,
+// then the import rewrite. l4 stays in the cache for the browser zip.
+async function copyEmittedProject(id, dir) {
+  const src = join(dir, `mls-${id}`);
+  const target = join(LOCAL_DIST, `_${id}_`);
+  await rm(target, { recursive: true, force: true });
+  await mkdir(target, { recursive: true });
+  for (const seg of TS_SEGMENTS) {
+    const from = join(src, seg);
+    if (!existsSync(from)) continue;
+    await cp(from, join(target, seg), { recursive: true });
+    await rebaseSourceMapsInTree(from, join(target, seg));
+  }
+  const typesFrom = join(dir, 'types');
+  if (existsSync(typesFrom)) {
+    await cp(typesFrom, join(LOCAL_DIST, 'types'), { recursive: true });
+  }
+}
+
 // ── server build (dist/local) ────────────────────────────────────────────────
 async function buildServer(ids, clientId, { release = false } = {}) {
   log(`server build -> dist/local (${ids.map((i) => 'mls-' + i).join(' ')})`);
@@ -726,18 +640,10 @@ async function buildServer(ids, clientId, { release = false } = {}) {
   const tmp = resolve(ROOT, 'tsconfig.build.json');
   await writeFile(tmp, `${JSON.stringify(tsconfig, null, 2)}\n`, 'utf8');
   log('tsconfig written: tsconfig.build.json');
-  const { cacheRoot, freshCheck, freshEmit } = await runTsc('tsconfig.build.json', ids, compilerOptions, clientId, { release });
-
-  // rename dist/local/mls-<id> -> dist/local/_<id>_
-  if (existsSync(LOCAL_DIST)) {
-    for (const entry of await readdir(LOCAL_DIST, { withFileTypes: true })) {
-      const rm2 = /^mls-(\d+)$/u.exec(entry.name);
-      if (entry.isDirectory() && rm2) {
-        const target = join(LOCAL_DIST, `_${rm2[1]}_`);
-        await rm(target, { recursive: true, force: true });
-        await rename(join(LOCAL_DIST, entry.name), target);
-      }
-    }
+  const { cacheRoot, freshCheck, emitted } = await runTsc('tsconfig.build.json', ids, compilerOptions, clientId, { release });
+  await mkdir(LOCAL_DIST, { recursive: true });
+  for (const [id, result] of emitted) {
+    await copyEmittedProject(id, result.dir);
   }
   for (const [id, saved] of freshCheck) {
     if (!saved.saveCheck) continue;
@@ -753,25 +659,6 @@ async function buildServer(ids, clientId, { release = false } = {}) {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log(`build cache mls-${id} check not written: ${message}`);
-    }
-  }
-  for (const [id, saved] of freshEmit) {
-    const src = join(LOCAL_DIST, `_${id}_`);
-    if (!existsSync(src)) {
-      log(`build cache mls-${id} not written: emitted tree missing`);
-      continue;
-    }
-    try {
-      const written = await writeEmitEntry({
-        cacheRoot,
-        id,
-        key: saved.emitKey,
-        treeSource: src,
-      });
-      if (written.cleanupError) log(`build cache mls-${id} cleanup: ${written.cleanupError}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log(`build cache mls-${id} not written: ${message}`);
     }
   }
   await pruneLocalDistProjects(ids);

@@ -129,7 +129,7 @@ test('null exit from tsrs falls back once', () => {
   });
 });
 
-test('the three callers do not name a tsc binary outside tsCompiler.mjs', () => {
+test('the callers (emitProject, buildCI compile, typeCheckRun) do not name a tsc binary outside tsCompiler.mjs', () => {
   const scripts = join(import.meta.dirname, '.');
   const hits = [];
   for (const file of walkMjs(scripts)) {
@@ -139,7 +139,7 @@ test('the three callers do not name a tsc binary outside tsCompiler.mjs', () => 
     if (text.includes(shim) || text.includes(lib)) hits.push(file);
   }
   assert.deepEqual(hits, []);
-  for (const file of ['build.mjs', 'buildCI/compile.mjs', 'typeCheckRun.mjs']) {
+  for (const file of ['emitProject.mjs', 'buildCI/compile.mjs', 'typeCheckRun.mjs']) {
     const text = readFileSync(join(scripts, file), 'utf8');
     assert.match(text, /tsCompiler\.mjs/);
   }
