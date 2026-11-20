@@ -544,6 +544,18 @@ test('prepare --no-alpha sends the mode to the bench and the receipt carries it;
   assert.deepEqual(JSON.parse(readFileSync(JSON.parse(off.stdout).receiptFile, 'utf8')).benchMode, { noAlpha: false });
 });
 
+test('--authority is repeatable, belongs to prepare and must be <alias>=<module>:<actor>', async () => {
+  const box = bench();
+  const ok = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate', '--authority', 'responsavel=monitor:admin', '--authority', 'membro=repoHost:admin'], withStages(box));
+  assert.equal(ok.code, 0, ok.stderr);
+  for (const bad of [['--authority', 'monitor:admin'], ['--authority', 'outro=monitor:admin'], ['--authority']]) {
+    const refused = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate', ...bad], withStages(box));
+    assert.equal(refused.code, 2);
+  }
+  const wrongCommand = await runCli(['status', '--authority', 'responsavel=monitor:admin'], withStages(box));
+  assert.equal(wrongCommand.code, 2);
+});
+
 test('prepare is not ready when the bench receipt carries another mode than the requested one', async () => {
   const box = bench();
   const refused = await runCli(['prepare', '102047', '--session', 'campanha', '--db', 'migrate', '--no-alpha'], withStages(box, { LIMA_MODE_LIE: 'true' }));

@@ -447,6 +447,7 @@ export async function prepareBench(input) {
     throw new Error('appEnv is not a declared test mode');
   }
   const noAlpha = input.noAlpha === true;
+  const extraAuthorities = Array.isArray(input.extraAuthorities) ? input.extraAuthorities.filter((item) => typeof item === 'string') : [];
   // The mode lives in the bench manifest, which only a seeded bench has: asking for it without one is a refusal.
   if (noAlpha && !releaseSeedable(fs, slot.resolvedRoot, rolesFrom.roles.length > 0)) {
     throw new Error('--no-alpha needs a seeded bench: the release has no test logins');
@@ -632,6 +633,8 @@ export async function prepareBench(input) {
       // tied to a person type to the member, and nothing to semPapel.
       for (const authority of rolesFrom.authorities) seedArgv.push('--authority', `responsavel=${authority}`);
       for (const authority of rolesFrom.personAuthorities) seedArgv.push('--authority', `membro=${authority}`);
+      // Asked for by the tester on this run (`lima prepare --authority`): the seed validates the shape and refuses a repeat.
+      for (const authority of extraAuthorities) seedArgv.push('--authority', authority);
       const seed = input.runSeed
         ? input.runSeed({ argv: seedArgv, cwd: slot.resolvedRoot })
         : runOnVm({
@@ -793,6 +796,7 @@ export async function main({
       runtimeRoot: command.runtimeRoot,
       cmRoot: command.cmRoot,
       noAlpha: command.noAlpha === true,
+      extraAuthorities: command.extraAuthorities,
       operation,
     });
     stdout.write(`${JSON.stringify(receipt)}\n`);

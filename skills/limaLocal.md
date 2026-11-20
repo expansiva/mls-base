@@ -105,6 +105,8 @@ node tools/lima/lima.mjs prepare 102047 --session tester-<rodada> --db migrate
 
 Depois abre as jars com `--lima-session tester-<rodada>` e dá o `end` ao terminar. Próxima rodada, campanha nova.
 
+**Autoridade extra por persona (`--authority <alias>=<módulo>:<ator>`, só no `prepare`, repetível):** soma uma autoridade a `responsavel`, `membro` ou `semPapel` além dos atores lidos do L4 (ex.: `--authority responsavel=monitor:admin --authority membro=repoHost:admin`, para provar a tela `/monitor/external-systems`; o ator `<m>:admin` não vem do L4). Vai no manifesto da bancada: um `prepare` sem a opção a tira. Não rodar o seed interno à mão.
+
 **Modo sem alpha (`--no-alpha`, só no `prepare`):** `prepare 102047 --session tester-<rodada> --no-alpha` liga a bancada sem o alpha (o super usuário que dá todos os atores) e com a recusa da tela ligada (escopo vazio recusado). O modo vai no manifesto da bancada (`noAlpha`), só existe na lima em modo de teste declarado e não mexe no repositório do app. O recibo traz `benchMode: { noAlpha }` e `modeRestarted` (o app reinicia quando o modo muda). Um `prepare` sem a opção volta ao modo normal.
 
 **O que o `prepare` faz:**

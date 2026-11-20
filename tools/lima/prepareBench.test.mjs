@@ -736,3 +736,21 @@ test('--no-alpha on a bench that cannot be seeded is refused before anything is 
   await assert.rejects(() => box.run('migrate', { noAlpha: true }), /--no-alpha needs a seeded bench/);
   assert.deepEqual(readLog(logFile).filter((row) => row.cmd === 'pm2'), []);
 });
+
+test('--authority of the tester reaches the seed on top of the L4 actors', async () => {
+  const tree = benchTree();
+  const logFile = path.join(tree.root, 'log.ndjson');
+  const box = harness(tree, logFile);
+  const script = path.join(tree.release, 'dist', 'local', '_102034_', 'l1', 'scripts', 'migrate.js');
+  await box.run('migrate', {
+    extraAuthorities: ['responsavel=monitor:admin', 'membro=repoHost:admin'],
+    priorMigrate: { ok: true, script, database: 'collab_app_test', projectId: '102047' },
+    runSeed: (info) => {
+      box.seedArgv.push(info.argv);
+      return { manifestFile: '/etc/collab/local-tests/102047.json', manifest: manifest(), previousNoAlpha: false };
+    },
+  });
+  const pairs = box.seedArgv[0].flatMap((arg, index, all) => (arg === '--authority' ? [all[index + 1]] : []));
+  assert.equal(pairs.includes('responsavel=monitor:admin'), true);
+  assert.equal(pairs.includes('membro=repoHost:admin'), true);
+});

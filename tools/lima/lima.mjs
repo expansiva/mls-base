@@ -23,6 +23,7 @@ import {
   statusSession,
 } from './session.mjs';
 
+const EXTRA_AUTHORITY = /^(responsavel|membro|semPapel)=[A-Za-z][A-Za-z0-9]*:[A-Za-z][A-Za-z0-9]*$/u;
 const SESSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/u;
 const SECRET = /cookieKey|postgres:\/\/|PGPASSWORD|secretAccess|DATABASE_URL|token|cookie/iu;
 const RELEASE_FIELDS = ['id', 'client', 'versionRef', 'platformCommit', 'libs', 'monaco'];
@@ -32,10 +33,11 @@ export function usage() {
     'usage: node tools/lima/lima.mjs <command>',
     '  begin <projectId> --session <name>',
     '  status [--session <name>]',
-    '  prepare <projectId> --session <name> [--db migrate] [--dry-run] [--tree project] [--no-alpha]',
+    '  prepare <projectId> --session <name> [--db migrate] [--dry-run] [--tree project] [--no-alpha] [--authority <alias>=<moduleId>:<actorId>]...',
     '  end --session <name>',
     'help and status do not start prepare or a browser.',
     'prepare keeps the reservation; --dry-run only reports occupation and the plan.',
+    '--authority (prepare only, repeatable) adds one authority to a bench persona on top of the actors read from the L4 (for example responsavel=monitor:admin); the bench manifest carries it, so a prepare without it drops it.',
     '--no-alpha (prepare only) runs the bench without the alpha super user and with the screen refusal on; it is written in the bench manifest, so a prepare without it goes back to the normal mode. The receipt says benchMode and whether the app restarted for it.',
     '--tree project (or LIMA_PROJECT_TREE=1) forces the project tree; without it the prepare asks the bench where the app runs. It uses /data/app<id>/mls-base and current. The default is /data/mls-base and current-<id>.',
   ].join('\n');
@@ -64,6 +66,7 @@ export function parseCli(argv) {
   let dryRun = false;
   let tree = '';
   let noAlpha = false;
+  const extraAuthorities = [];
   const positional = [];
   for (let i = 1; i < args.length; i += 1) {
     const sessionValue = takeSession(args, i);
@@ -86,6 +89,14 @@ export function parseCli(argv) {
     }
     if (args[i] === '--no-alpha') {
       noAlpha = true;
+      continue;
+    }
+    if (args[i] === '--authority') {
+      const value = args[++i] || '';
+      if (!EXTRA_AUTHORITY.test(value)) {
+        throw Object.assign(new Error('--authority must be <alias>=<moduleId>:<actorId> (alias: responsavel, membro or semPapel)'), { code: 'usage', exitCode: 2 });
+      }
+      extraAuthorities.push(value);
       continue;
     }
     if (args[i] === '--tree') {
@@ -133,7 +144,10 @@ export function parseCli(argv) {
   if (noAlpha && command !== 'prepare') {
     throw Object.assign(new Error('--no-alpha belongs to prepare'), { code: 'usage', exitCode: 2 });
   }
-  return { command, session, projectId, db, dryRun, tree, noAlpha };
+  if (extraAuthorities.length > 0 && command !== 'prepare') {
+    throw Object.assign(new Error('--authority belongs to prepare'), { code: 'usage', exitCode: 2 });
+  }
+  return { command, session, projectId, db, dryRun, tree, noAlpha, extraAuthorities };
 }
 
 function sessionOptions(env) {
@@ -438,6 +452,7 @@ export async function runPrepare(parsed, profile, env = process.env) {
     runtimeRoot: projectRuntimeRoot(parsed.projectId, env),
     cmRoot: VM_CM_ROOT,
     noAlpha: parsed.noAlpha === true,
+    extraAuthorities: parsed.extraAuthorities ?? [],
     operation: { ownerId: ref.ownerId, operationId: ref.operationId, lockPath: options.lockPath },
   });
   if (!bench?.ready) await fail(bench?.code || 'bench', bench?.message || 'bench did not become ready', true);
