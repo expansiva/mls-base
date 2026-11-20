@@ -29,6 +29,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { RELEASE_OBJ_PATHS } from './releaseObjPaths.mjs';
 import { newReleaseId, openRelease, readVmId, recordsDir, requestedByFor } from './releaseRecord.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -444,7 +445,7 @@ function originDefaultBranch(dir) {
  * O nome da opção `--reset-from-origin` fica: quem chama é o collab-sites.
  * Não é chamado pelo build.
  */
-const REGENERATED_OBJ_PATHS = ['obj/compiled.zip', 'obj/source.zip'];
+
 
 /** `publishGit` sends a lib as a snapshot of the Mac disk: `snapshot <sha7 of the local HEAD>[+dirty]: <subject>` (publishGitDeps.mjs). */
 const SNAPSHOT_SUBJECT = /^snapshot ([0-9a-f]{7,40})(\+dirty)?: /u;
@@ -503,9 +504,9 @@ export function resetFromOrigin(dir) {
   })();
   // The obj zips the release regenerates on this machine (addNewVersion.ensureFechoCompiledZips) are not
   // someone's work: they only count as dirt when the project also has other changes.
-  const porcelainLines = gitOrThrow(dir, ['status', '--short']).split('\n').filter(Boolean);
+  const porcelainLines = gitOrThrow(dir, ['status', '--short', '--untracked-files=all']).split('\n').filter(Boolean);
   const pathOf = (line) => line.replace(/^\s*\S+\s+/u, '');
-  const regeneratedObj = porcelainLines.filter((line) => REGENERATED_OBJ_PATHS.includes(pathOf(line)));
+  const regeneratedObj = porcelainLines.filter((line) => RELEASE_OBJ_PATHS.includes(pathOf(line)));
   const looseObj = onlySnapshots ? porcelainLines.filter((line) => line.startsWith('?? ') && pathOf(line).startsWith('obj/')) : [];
   const porcelain = porcelainLines.filter((line) => !regeneratedObj.includes(line) && !looseObj.includes(line)).join('\n');
   if (porcelain) {
@@ -538,7 +539,8 @@ export function resetFromOrigin(dir) {
   const originHead = gitOrThrow(dir, ['rev-parse', `origin/${branch}`]);
   if (head === originHead) return { status: 'unchanged', branch, head, originHead };
   // Going to a newer commit: the origin's zips (the Action's) replace the ones generated here.
-  if (regeneratedObj.length) gitOrThrow(dir, ['checkout', '-q', '--', ...regeneratedObj.map((line) => pathOf(line))]);
+  const trackedRegenerated = regeneratedObj.filter((line) => !line.startsWith('??'));
+  if (trackedRegenerated.length) gitOrThrow(dir, ['checkout', '-q', '--', ...trackedRegenerated.map((line) => pathOf(line))]);
   gitOrThrow(dir, ['merge', '--ff-only', `origin/${branch}`]);
   return {
     status: 'fast-forward',

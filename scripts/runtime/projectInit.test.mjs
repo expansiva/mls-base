@@ -162,7 +162,7 @@ function withFakeRoot(fn, options) {
   const root = mkdtempSync(join(tmpdir(), 'projinit-root-'));
   try {
     mkdirSync(join(root, 'scripts', 'runtime'), { recursive: true });
-    for (const name of ['projectInit.mjs', 'gitReposSetup.mjs']) {
+    for (const name of ['projectInit.mjs', 'gitReposSetup.mjs', 'releaseObjPaths.mjs']) {
       writeFileSync(join(root, 'scripts', 'runtime', name), readFileSync(join(MLS_BASE, 'scripts', 'runtime', name)));
     }
     writeFileSync(

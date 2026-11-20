@@ -19,25 +19,30 @@
 //   node scripts/runtime/buildProjectsObj.mjs [--force] [--only 100554,102025]
 
 import { execSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { formatTypeCheckTsconfigLog, typeCheckProject } from '../typeCheckRun.mjs';
 import { writeZipStamp } from './zipSourceTree.mjs';
+import { RELEASE_OBJ_PATHS } from './releaseObjPaths.mjs';
+
+export { RELEASE_OBJ_PATHS };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SOURCE_LEVELS = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
 const SKIP_DIRS = new Set(['node_modules', '.git', 'obj', 'dist']);
 
-const argv = process.argv.slice(2);
-const force = argv.includes('--force');
-// The type check is opt-in (rt192): the release verifies nothing here. The app is
-// verified by build.mjs (strict, before activation) or after activation (permissive).
-const withTypeCheck = argv.includes('--typecheck');
-const onlyFlag = argv.indexOf('--only');
-const only = onlyFlag >= 0
-  ? new Set(String(argv[onlyFlag + 1] ?? '').split(',').map((s) => s.replace(/^mls-/u, '').trim()).filter(Boolean))
-  : null;
+function parseArgs(argv) {
+  const force = argv.includes('--force');
+  // The type check is opt-in (rt192): the release verifies nothing here. The app is
+  // verified by build.mjs (strict, before activation) or after activation (permissive).
+  const withTypeCheck = argv.includes('--typecheck');
+  const onlyFlag = argv.indexOf('--only');
+  const only = onlyFlag >= 0
+    ? new Set(String(argv[onlyFlag + 1] ?? '').split(',').map((s) => s.replace(/^mls-/u, '').trim()).filter(Boolean))
+    : null;
+  return { force, withTypeCheck, only };
+}
 
 function discoverProjects() {
   return readdirSync(ROOT)
@@ -84,59 +89,67 @@ function isStale(id) {
   return newestSourceMtime(projectDir) > statSync(zipPath).mtimeMs;
 }
 
-const ids = discoverProjects().filter((id) => !only || only.has(id));
-console.log(`[buildProjectsObj] projects on disk: ${ids.map((i) => 'mls-' + i).join(' ') || '(none)'}`);
-if (only) console.log(formatTypeCheckTsconfigLog(ROOT));
+function main() {
+  const { force, withTypeCheck, only } = parseArgs(process.argv.slice(2));
+  const ids = discoverProjects().filter((id) => !only || only.has(id));
+  console.log(`[buildProjectsObj] projects on disk: ${ids.map((i) => 'mls-' + i).join(' ') || '(none)'}`);
+  if (only) console.log(formatTypeCheckTsconfigLog(ROOT));
 
-const results = { built: [], skipped: [], failed: [] };
-for (const id of ids) {
-  if (!force && !isStale(id)) {
-    results.skipped.push(id);
-  } else {
-    const startedAt = Date.now();
-    console.log(`[buildProjectsObj] building mls-${id} ...`);
-    try {
-      execSync(`node scripts/buildCI/buildCI.mjs ${id}`, {
-        cwd: ROOT,
-        stdio: 'inherit',
-        env: { ...process.env, BUILDCI_OFFLINE: '1' },
-      });
-      // buildCI never writes into mls-<id>/ (its decision #14) — on the CI that
-      // copy is the GitHub Action's job, here it is ours: publish the zips to
-      // the location the cbe login serves from.
-      const objDir = join(ROOT, `mls-${id}`, 'obj');
-      mkdirSync(objDir, { recursive: true });
-      for (const zipName of ['compiled.zip', 'source.zip']) {
-        const staged = join(ROOT, '.generated', id, 'obj', zipName);
-        if (existsSync(staged)) copyFileSync(staged, join(objDir, zipName));
+  const results = { built: [], skipped: [], failed: [] };
+  for (const id of ids) {
+    if (!force && !isStale(id)) {
+      results.skipped.push(id);
+    } else {
+      const startedAt = Date.now();
+      console.log(`[buildProjectsObj] building mls-${id} ...`);
+      try {
+        execSync(`node scripts/buildCI/buildCI.mjs ${id}`, {
+          cwd: ROOT,
+          stdio: 'inherit',
+          env: { ...process.env, BUILDCI_OFFLINE: '1' },
+        });
+        // buildCI never writes into mls-<id>/ (its decision #14) — on the CI that
+        // copy is the GitHub Action's job, here it is ours: publish the zips to
+        // the location the cbe login serves from.
+        const objDir = join(ROOT, `mls-${id}`, 'obj');
+        mkdirSync(objDir, { recursive: true });
+        for (const rel of RELEASE_OBJ_PATHS) {
+          const zipName = rel.slice('obj/'.length);
+          const staged = join(ROOT, '.generated', id, 'obj', zipName);
+          if (existsSync(staged)) copyFileSync(staged, join(objDir, zipName));
+        }
+        // rt194: which source tree this zip came from, for the activation guard (not the commit time).
+        writeZipStamp(join(ROOT, `mls-${id}`), join(objDir, 'compiled.zip'));
+        results.built.push(id);
+        console.log(`[buildProjectsObj] mls-${id} done in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+      } catch (error) {
+        results.failed.push(id);
+        console.error(`[buildProjectsObj] mls-${id} FAILED (previous obj stays): ${error instanceof Error ? error.message : String(error)}`);
       }
-      // rt194: which source tree this zip came from, for the activation guard (not the commit time).
-      writeZipStamp(join(ROOT, `mls-${id}`), join(objDir, 'compiled.zip'));
-      results.built.push(id);
-      console.log(`[buildProjectsObj] mls-${id} done in ${Math.round((Date.now() - startedAt) / 1000)}s`);
-    } catch (error) {
-      results.failed.push(id);
-      console.error(`[buildProjectsObj] mls-${id} FAILED (previous obj stays): ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // Gate path (`--only`, gitPostReceive): with `--typecheck` always type-check,
+    // including a cache-hot skip — that skip is what made lima and AWS disagree
+    // (gb74). Without it the marker says the check was deferred (rt192): the
+    // release treats each repo as correct and verifies only the app, elsewhere.
+    if (only && !withTypeCheck) {
+      console.log(`##typeCheck deferred project=${id} reason=release##`);
+    } else if (only) {
+      const report = typeCheckProject({ root: ROOT, projectId: id });
+      if (report.overrideLog) console.log(`[buildProjectsObj] ${report.overrideLog}`);
+      console.log(`[buildProjectsObj] typeCheck ${report.reportLine}`);
+      if (report.toleratedLog) console.log(`[buildProjectsObj] ${report.toleratedLog}`);
+      for (const line of report.excerpt) console.log(`[buildProjectsObj] typeCheck ${line}`);
+      console.log(report.marker);
     }
   }
 
-  // Gate path (`--only`, gitPostReceive): with `--typecheck` always type-check,
-  // including a cache-hot skip — that skip is what made lima and AWS disagree
-  // (gb74). Without it the marker says the check was deferred (rt192): the
-  // release treats each repo as correct and verifies only the app, elsewhere.
-  if (only && !withTypeCheck) {
-    console.log(`##typeCheck deferred project=${id} reason=release##`);
-  } else if (only) {
-    const report = typeCheckProject({ root: ROOT, projectId: id });
-    if (report.overrideLog) console.log(`[buildProjectsObj] ${report.overrideLog}`);
-    console.log(`[buildProjectsObj] typeCheck ${report.reportLine}`);
-    if (report.toleratedLog) console.log(`[buildProjectsObj] ${report.toleratedLog}`);
-    for (const line of report.excerpt) console.log(`[buildProjectsObj] typeCheck ${line}`);
-    console.log(report.marker);
-  }
+  console.log(`[buildProjectsObj] summary: built [${results.built.join(', ') || '-'}] | up-to-date [${results.skipped.join(', ') || '-'}] | failed [${results.failed.join(', ') || '-'}]`);
+  // Failures are non-fatal by design (the release must not be blocked); a fully
+  // failed run still exits 1 so an operator notices.
+  process.exit(results.failed.length > 0 && results.built.length === 0 && results.skipped.length === 0 ? 1 : 0);
 }
 
-console.log(`[buildProjectsObj] summary: built [${results.built.join(', ') || '-'}] | up-to-date [${results.skipped.join(', ') || '-'}] | failed [${results.failed.join(', ') || '-'}]`);
-// Failures are non-fatal by design (the release must not be blocked); a fully
-// failed run still exits 1 so an operator notices.
-process.exit(results.failed.length > 0 && results.built.length === 0 && results.skipped.length === 0 ? 1 : 0);
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  main();
+}

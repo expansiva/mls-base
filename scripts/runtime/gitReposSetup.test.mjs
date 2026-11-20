@@ -481,6 +481,29 @@ test('vmGitOrigin invalido nao vira remote — recusa como antes', () => {
   }
 });
 
+test('obj solto que o release escreve não trava; outro arquivo em obj/ ou em l2/ trava', () => {
+  const root = mkdtempSync(join(tmpdir(), 'setup-obj-loose-'));
+  try {
+    const dest = makeCloneWithOrigin(root);
+    git(dest, 'branch', 'vm-baseline', 'HEAD');
+    pushHeadToOrigin(dest);
+    mkdirSync(join(dest, 'obj'), { recursive: true });
+    writeFileSync(join(dest, 'obj', 'compiled.zip'), 'loose compiled');
+    writeFileSync(join(dest, 'obj', 'source.zip'), 'loose source');
+    assert.equal(resetFromOrigin(dest).status, 'unchanged');
+
+    writeFileSync(join(dest, 'obj', 'outro.txt'), 'nao e zip\n');
+    assert.throws(() => resetFromOrigin(dest), /obj\/outro\.txt/);
+    rmSync(join(dest, 'obj', 'outro.txt'));
+
+    mkdirSync(join(dest, 'l2'), { recursive: true });
+    writeFileSync(join(dest, 'l2', 'algo.ts'), 'export const x = 1;\n');
+    assert.throws(() => resetFromOrigin(dest), /l2\/algo\.ts/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('zips de obj regerados na VM não travam o avanço; outra sujeira continua travando', () => {
   const root = mkdtempSync(join(tmpdir(), 'setup-obj-'));
   try {
