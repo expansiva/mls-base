@@ -377,6 +377,20 @@ test('withMasterRuntimeManifest: manifesto ausente ou inválido lança', () => {
   );
 });
 
+test('masterModules lista platform e os três módulos novos e o build os compõe', () => {
+  const manifest = readMasterRuntimeManifest('102034');
+  const ids = manifest.persistenceModules.map((entry) => entry.moduleId);
+  for (const id of ['platform', 'platformExternalSettings', 'platformExternalLog', 'platformModuleEvents']) {
+    assert.ok(ids.includes(id), id);
+  }
+  const out = withMasterRuntimeManifest(
+    { projects: { 102034: { type: 'master backend' } } },
+    () => manifest,
+  );
+  assert.deepEqual(out.config.projects[102034].persistenceModules, manifest.persistenceModules);
+  assertPlatformPersistence(out.config);
+});
+
 test('assertPlatformPersistence: master sem platform lança', () => {
   const manifest = { modules: [{ moduleId: 'mdm' }], persistenceModules: [{ moduleId: 'mdm' }] };
   const out = withMasterRuntimeManifest(
