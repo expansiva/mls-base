@@ -1,7 +1,7 @@
 // releaseRecord.mjs — the release record of the controleReleases contract (versaoContrato 2).
 //
 // ONE module writes it: open at the start of a release, continue it step by step, close it in a `finally`
-// (also on failure), atomically, keeping the last 10 per queue and project. The same stamp that
+// (also on failure), atomically, keeping the last 5 per queue and project. The same stamp that
 // releaseStamp.mjs writes into releases/<id>/release.json is what this reads for "what changed", so there is
 // no second source of what a release used.
 //
@@ -24,7 +24,7 @@ import { HistoryError, listRecords, showRecord } from './releaseHistory.mjs';
 export { readSharedVersions };
 
 export const CONTRACT_VERSION = 2;
-export const KEEP_PER_QUEUE = 10;
+export const KEEP_PER_QUEUE = 5;
 export const MAX_COMMITS = 200;
 export const MAX_FILES = 50;
 export const MAX_MESSAGE = 500;

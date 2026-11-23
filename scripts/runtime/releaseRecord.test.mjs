@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   activeReleaseId, addPendingNotice, appendLateStep, projectRecordsRoot, resolveSharedProject, writeStandaloneRecord, buildPieces, confirmPendingNotice, readPendingNotice, cleanRepoUrl, closeRequest, closeStaleRecords, commitsBetween, decideQueue, findOpenRequest, openRelease, pruneRecords,
-  decideQueues, queuesOf, pruneRecords as pruneAll, readRecordFile, readSharedVersions, readVmId, recordsDir, requestedByFor, scrubMessage,
+  KEEP_PER_QUEUE, decideQueues, queuesOf, pruneRecords as pruneAll, readRecordFile, readSharedVersions, readVmId, recordsDir, requestedByFor, scrubMessage,
 } from './releaseRecord.mjs';
 
 const ENV = { GIT_AUTHOR_NAME: 'Ana', GIT_AUTHOR_EMAIL: 'ana@example.com', GIT_COMMITTER_NAME: 'Ana', GIT_COMMITTER_EMAIL: 'ana@example.com' };
@@ -94,10 +94,10 @@ test('a failure outside a step (the deferred pm2 reload) is the failing step', (
   });
 });
 
-test('11 releases of the same queue and project leave 10; another queue or project is untouched', () => {
+test('7 releases of the same queue and project leave 5; another queue or project is untouched', () => {
   withRoot((root) => {
     const dir = recordsDir(root, 'app');
-    for (let i = 0; i < 11; i += 1) {
+    for (let i = 0; i < 7; i += 1) {
       const id = `2026110514${String(i).padStart(4, '0')}`;
       openRelease({ root, dir, releaseId: id, projectId: '102047', queue: 'app', now: clock() }).close({});
     }
@@ -105,8 +105,10 @@ test('11 releases of the same queue and project leave 10; another queue or proje
     openRelease({ root, dir, releaseId: '20261105150100', projectId: '102047', queue: 'libs', now: clock() }).close({});
     const names = readdirSync(dir).filter((n) => n.endsWith('.json'));
     const mine = names.filter((n) => readRecordFile(dir, n.slice(0, 14)).projetoId === 102047 && readRecordFile(dir, n.slice(0, 14)).fila === 'app');
-    assert.equal(mine.length, 10);
+    assert.equal(mine.length, 5);
     assert.equal(names.includes('20261105140000.json'), false, 'the oldest went');
+    assert.equal(names.includes('20261105140001.json'), false, 'the second oldest went');
+    assert.equal(names.includes('20261105140002.json'), true);
     assert.equal(names.includes('20261105150000.json'), true);
     assert.equal(names.includes('20261105150100.json'), true);
     assert.deepEqual(pruneRecords(dir, { fila: 'app', projetoId: 102047 }), []);
@@ -458,16 +460,16 @@ test('rt250: uma release só de app guarda filas [app] e nenhum aviso a mais', (
 test('rt250: o corte não apaga uma release que ainda está em outra fila', () => {
   withRoot((root) => {
     const dir = recordsDir(root, 'app');
-    // the oldest release is in libs and app; 10 newer ones are app only: it is out of app but still alone in libs
+    // the oldest release is in libs and app; KEEP_PER_QUEUE newer ones are app only: it is out of app but still alone in libs
     openRelease({ root, dir, releaseId: '20261119090000', projectId: '102047', now: clock() }).close({ queue: 'libs', queues: ['libs', 'app'] });
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < KEEP_PER_QUEUE; i += 1) {
       openRelease({ root, dir, releaseId: `2026111910${String(i).padStart(4, '0')}`, projectId: '102047', now: clock() }).close({ queue: 'app', queues: ['app'] });
     }
     const names = readdirSync(dir).filter((n) => n.endsWith('.json'));
     assert.equal(names.includes('20261119090000.json'), true, 'still the newest of libs');
-    assert.equal(names.length, 11);
+    assert.equal(names.length, KEEP_PER_QUEUE + 1);
     // and one that is out of every queue goes
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < KEEP_PER_QUEUE; i += 1) {
       openRelease({ root, dir, releaseId: `2026111911${String(i).padStart(4, '0')}`, projectId: '102047', now: clock() }).close({ queue: 'libs', queues: ['libs', 'app'] });
     }
     assert.equal(readdirSync(dir).includes('20261119090000.json'), false, 'out of libs and out of app');

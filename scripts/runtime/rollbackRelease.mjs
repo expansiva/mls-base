@@ -13,6 +13,7 @@ import { existsSync, readlinkSync, renameSync, rmSync, symlinkSync } from 'node:
 import { spawnSync } from 'node:child_process';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { KEEP_RELEASES } from './addNewVersion.mjs';
 import { waitForHealth } from './migrateToProjectTree.mjs';
 import { appNameOf, projectIdToPort, releaseAliasOf } from './projectPorts.mjs';
 import {
@@ -49,7 +50,7 @@ export async function rollbackRelease({
   if (!RELEASE_ID.test(String(releaseId))) throw new RollbackRefused(`release id must be 14 digits: ${releaseId}`);
   const folder = join(root, 'releases', releaseId);
   if (!existsSync(join(folder, 'release.json')) || !existsSync(join(folder, 'dist'))) {
-    throw new RollbackRefused(`release ${releaseId} is not on disk any more (${folder}); only the last ten are kept`);
+    throw new RollbackRefused(`release ${releaseId} is not on disk any more (${folder}); only the last ${KEEP_RELEASES} are kept`);
   }
   const alias = aliasPath(root, projectId);
   let activeId = null;
