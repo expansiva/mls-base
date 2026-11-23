@@ -23,6 +23,8 @@ import {
   runMigrateCommand,
   parseReleaseAliases,
   releasesInUse,
+KEEP_RELEASES,
+releasesToPrune,
   skipPm2,
   snapshotFechoZips,
   snapshotNodeModules,
@@ -803,4 +805,24 @@ test('rt265: fetch no l1 do app cliente para antes de ativar e o registro fecha 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('a poda guarda KEEP_RELEASES (5): com 7 releases e nenhuma em uso, tira as 2 mais antigas', () => {
+  assert.equal(KEEP_RELEASES, 5);
+  const names = ['20261120000001', '20261121000001', '20261122000001', '20261122000002', '20261122000003', '20261123000001', '20261123000002', 'registro'];
+  const { remove, kept } = releasesToPrune(names, new Set());
+  assert.deepEqual(remove.sort(), ['20261120000001', '20261121000001']);
+  assert.deepEqual(kept, []);
+});
+
+test('a poda não toca em release antiga apontada por current-<id>, e as 5 mais novas ficam', () => {
+  const names = ['20261120000001', '20261121000001', '20261122000001', '20261122000002', '20261122000003', '20261123000001', '20261123000002'];
+  const { remove, kept } = releasesToPrune(names, new Set(['20261120000001']));
+  assert.deepEqual(remove, ['20261121000001']);
+  assert.deepEqual(kept, ['20261120000001']);
+});
+
+test('a poda com 5 ou menos releases não remove nada', () => {
+  assert.deepEqual(releasesToPrune(['20261122000001', '20261123000001'], new Set()), { remove: [], kept: [] });
+  assert.deepEqual(releasesToPrune(['1', '2', '3', '4', '5'].map((n) => `2026112200000${n}`), new Set()), { remove: [], kept: [] });
 });

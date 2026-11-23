@@ -351,6 +351,20 @@ export function pm2ConfigRel(root) {
   return existsSync(join(root, 'pm2.config.js')) ? 'pm2.config.js' : 'servers/pm2.config.js';
 }
 
+/** How many release folders stay on the disk (`releases/<id>`, each with its own `dist`, `obj` and `node_modules`). */
+export const KEEP_RELEASES = 5;
+
+/**
+ * Which release folders the prune removes: the ones older than the `keep` most recent, except any still pointed at by a
+ * `current*` symlink (those are returned in `kept`, so the caller can say why they stayed).
+ * @param {string[]} names folder names found in `releases/` (any order; only 14-digit ids count)
+ * @param {Set<string>} inUse names from `releasesInUse`
+ */
+export function releasesToPrune(names, inUse, keep = KEEP_RELEASES) {
+  const old = names.filter((n) => /^\d{14}$/.test(n)).sort().reverse().slice(keep);
+  return { remove: old.filter((n) => !inUse.has(n)), kept: old.filter((n) => inUse.has(n)) };
+}
+
 /**
  * Release names still pointed at by a `current*` symlink at the root — the
  * global `current` and every `current-<id>` alias a hosted app runs from.
@@ -567,15 +581,11 @@ function runRelease(argv, rec, state) {
     console.log(`--- ${releaseAlias} -> releases/${releaseId}`);
   }
 
-  // Keep the 10 most recent releases; remove older ones — except any still
+  // Keep the KEEP_RELEASES most recent releases; remove older ones — except any still
   // pointed at by a `current*` symlink (see releasesInUse).
-  const releases = readdirSync(releasesDir).filter((n) => /^\d{14}$/.test(n)).sort().reverse();
-  const stillInUse = releasesInUse(ROOT);
-  for (const old of releases.slice(10)) {
-    if (stillInUse.has(old)) {
-      console.log(`    kept old release ${old} (still referenced by a current* symlink)`);
-      continue;
-    }
+  const { remove, kept } = releasesToPrune(readdirSync(releasesDir), releasesInUse(ROOT));
+  for (const old of kept) console.log(`    kept old release ${old} (still referenced by a current* symlink)`);
+  for (const old of remove) {
     rmSync(join(releasesDir, old), { recursive: true, force: true });
     console.log(`    pruned old release ${old}`);
   }
