@@ -416,12 +416,18 @@ export function openRelease({
   // A release the sites did not ask for (push, Studio) has no record there yet: tell it when it starts.
   if (!continued && !requestId) addNoticeSafely(dir, id, 'release.started');
 
+  let pendingEtapas;
   const handle = {
     releaseId: id,
     record,
     continued: Boolean(continued),
+    /** Optional stage list for the step that is running. Kept on success and on failure. */
+    setEtapas(list) {
+      pendingEtapas = list;
+    },
     step(name, fn) {
       const startedAt = now();
+      pendingEtapas = undefined;
       const entry = { nome: name, inicio: nowIso(() => startedAt), duracaoMs: null, resultado: 'andamento' };
       record.passos.push(entry);
       persist();
@@ -435,6 +441,8 @@ export function openRelease({
         throw error;
       } finally {
         entry.duracaoMs = now() - startedAt;
+        if (Array.isArray(pendingEtapas)) entry.etapas = pendingEtapas;
+        pendingEtapas = undefined;
         persist();
       }
     },

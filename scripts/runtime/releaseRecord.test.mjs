@@ -82,6 +82,32 @@ test('a release that fails in compile is closed falhou with the step and a short
   });
 });
 
+test('rt306: o passo compile guarda etapas no sucesso e na falha', () => {
+  withRoot((root) => {
+    const dir = recordsDir(root, 'app');
+    const stages = [{ nome: 'buildWeb.tailwind', duracaoMs: 12, alvo: '102047', cache: 'hit' }];
+    const ok = openRelease({ root, dir, releaseId: '20261124180000', projectId: '102047', now: clock() });
+    ok.step('compile', () => { ok.setEtapas(stages); });
+    ok.close({});
+    const done = readRecordFile(dir, '20261124180000');
+    assert.equal(done.versaoContrato, 2);
+    assert.equal(done.resultado, 'ok');
+    assert.deepEqual(done.passos[0].etapas, stages);
+
+    const bad = openRelease({ root, dir, releaseId: '20261124180001', projectId: '102047', now: clock() });
+    const failed = [{ nome: 'main', duracaoMs: 4 }];
+    assert.throws(() => bad.step('compile', () => {
+      bad.setEtapas(failed);
+      throw new Error('compile failed');
+    }), /compile failed/);
+    bad.close({ error: new Error('compile failed') });
+    const closed = readRecordFile(dir, '20261124180001');
+    assert.equal(closed.resultado, 'falhou');
+    assert.equal(closed.passos[0].resultado, 'falhou');
+    assert.deepEqual(closed.passos[0].etapas, failed);
+  });
+});
+
 test('a failure outside a step (the deferred pm2 reload) is the failing step', () => {
   withRoot((root) => {
     const dir = recordsDir(root, 'app');

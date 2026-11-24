@@ -20,6 +20,7 @@ import {
   copyFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
   realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pathIdsOf, versionedTsconfigPathsFile } from '../syncTsconfigPaths.mjs';
@@ -33,6 +34,35 @@ import { readZipStamp, sourceTreeHash, writeZipStamp, ZIP_SOURCE_LEVELS } from '
 import { checkGeneratedL1 } from '../checkGeneratedL1.mjs';
 
 export { envForMigrate };
+
+/** Stage lines written by the compile (`COLLAB_BUILD_TIMINGS_FILE`). Missing file: no stages. A bad line is skipped. */
+export function readCompileEtapas(file) {
+  if (!file || !existsSync(file)) return undefined;
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (error) {
+    console.warn(`[release] timings not read: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+  const etapas = [];
+  for (const line of text.split(/\n/u)) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line);
+      if (!row || typeof row.nome !== 'string' || typeof row.duracaoMs !== 'number' || Number.isNaN(row.duracaoMs)) {
+        throw new Error('stage needs nome and duracaoMs');
+      }
+      const etapa = { nome: row.nome, duracaoMs: row.duracaoMs };
+      if (row.alvo !== undefined) etapa.alvo = row.alvo;
+      if (row.cache !== undefined) etapa.cache = row.cache;
+      etapas.push(etapa);
+    } catch (error) {
+      console.warn(`[release] timings line skipped: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return etapas;
+}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const run = (cmd, cwd = ROOT, env) => {
@@ -516,8 +546,21 @@ function runRelease(argv, rec, state) {
 
   console.log(`--- compile${clientId ? ` (client ${clientId})` : ''}`);
   // Call the compiler directly (NOT `pnpm build`, which now points to this file) to
-  // avoid infinite recursion.
-  rec.step('compile', () => run(`node scripts/build.mjs --release${clientArg}`));
+  // avoid infinite recursion. Stage times come back on a file outside the repo.
+  rec.step('compile', () => {
+    const timingsFile = join(tmpdir(), `collab-build-timings-${rec.releaseId}.jsonl`);
+    let failed = null;
+    try {
+      run(`node scripts/build.mjs --release${clientArg}`, ROOT, { COLLAB_BUILD_TIMINGS_FILE: timingsFile });
+    } catch (error) {
+      failed = error;
+    } finally {
+      const etapas = readCompileEtapas(timingsFile);
+      if (etapas) rec.setEtapas(etapas);
+      rmSync(timingsFile, { force: true });
+    }
+    if (failed) throw failed;
+  });
 
   // ── assemble release and activate it via the "current" symlink ──────────────
   // A release holds only the runtime output (frontend + backend), no sources.

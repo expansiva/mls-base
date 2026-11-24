@@ -52,6 +52,7 @@ import {
 import { planVerification } from './releaseVerification.mjs';
 import { readTypeCheckPolicy } from './typeCheckPolicy.mjs';
 import { formatTypeCheckTsconfigLog, typeCheckProject } from './typeCheckRun.mjs';
+import { timeStage } from './buildTimings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(ROOT, 'dist');
@@ -152,48 +153,58 @@ async function runTsc(_tsconfigPath, ids, compilerOptions, clientId, { release =
     })
     : null;
   for (const id of ids) {
-    if (verification && !verification.now.includes(String(id))) {
-      log(`typeCheck mls-${id} skipped: ${verification.deferred.includes(String(id)) ? 'deferred until after activation (permissive)' : 'library, release does not verify it'}`);
-      continue;
-    }
-    const plan = planById.get(String(id));
-    if (plan?.eligible) {
-      const loaded = await loadCheck(cacheRoot, id, plan.checkBase, depNow);
-      if (loaded.hit) {
-        logTypeCheck(loaded.report);
-        log(`typeCheck mls-${id} cached ${plan.checkBase.slice(0, 12)}`);
-        if (loaded.report.block) blocked.push(loaded.report);
-        continue;
+    const extra = { alvo: String(id) };
+    await timeStage('typeCheck', async () => {
+      if (verification && !verification.now.includes(String(id))) {
+        log(`typeCheck mls-${id} skipped: ${verification.deferred.includes(String(id)) ? 'deferred until after activation (permissive)' : 'library, release does not verify it'}`);
+        return;
       }
-      if (loaded.reason !== 'miss') log(`build cache mls-${id} ignored: ${loaded.reason}`);
-    }
-    const report = typeCheckProject({ root: ROOT, projectId: id });
-    logTypeCheck(report);
-    const snap = snapshotTypeCheck(report);
-    if (!snap.block && plan?.eligible) {
-      const deps = (report.loadedProjectIds ?? []).map((depId) => {
-        const now = depNow(depId);
-        return { id: String(depId), head: now.head, porcelain: now.porcelain };
-      });
-      const saveCheck = deps.every((dep) => dep.head && dep.porcelain === '');
-      if (!saveCheck) {
-        log(`build cache mls-${id} check not written: dependency not a clean HEAD`);
+      const plan = planById.get(String(id));
+      if (plan?.eligible) {
+        const loaded = await loadCheck(cacheRoot, id, plan.checkBase, depNow);
+        if (loaded.hit) {
+          extra.cache = 'hit';
+          logTypeCheck(loaded.report);
+          log(`typeCheck mls-${id} cached ${plan.checkBase.slice(0, 12)}`);
+          if (loaded.report.block) blocked.push(loaded.report);
+          return;
+        }
+        if (loaded.reason !== 'miss') log(`build cache mls-${id} ignored: ${loaded.reason}`);
       }
-      freshCheck.set(String(id), {
-        checkBase: plan.checkBase,
-        report: snap,
-        deps: deps.map((dep) => ({ id: dep.id, head: dep.head ?? '' })),
-        saveCheck,
-      });
-    }
-    if (report.verdict.block) blocked.push(report);
+      extra.cache = 'miss';
+      const report = typeCheckProject({ root: ROOT, projectId: id });
+      logTypeCheck(report);
+      const snap = snapshotTypeCheck(report);
+      if (!snap.block && plan?.eligible) {
+        const deps = (report.loadedProjectIds ?? []).map((depId) => {
+          const now = depNow(depId);
+          return { id: String(depId), head: now.head, porcelain: now.porcelain };
+        });
+        const saveCheck = deps.every((dep) => dep.head && dep.porcelain === '');
+        if (!saveCheck) {
+          log(`build cache mls-${id} check not written: dependency not a clean HEAD`);
+        }
+        freshCheck.set(String(id), {
+          checkBase: plan.checkBase,
+          report: snap,
+          deps: deps.map((dep) => ({ id: dep.id, head: dep.head ?? '' })),
+          saveCheck,
+        });
+      }
+      if (report.verdict.block) blocked.push(report);
+    }, extra);
   }
   throwIfTypeCheckBlocked(blocked);
 
   /** @type {Map<string, { hit: boolean, dir: string }>} */
   const emitted = new Map();
   for (const id of ids) {
-    const result = await emitProject(ROOT, String(id), { levels: emitLevelsFor(id) });
+    const extra = { alvo: String(id), cache: 'miss' };
+    const result = await timeStage('emit', async () => {
+      const emittedProject = await emitProject(ROOT, String(id), { levels: emitLevelsFor(id) });
+      extra.cache = emittedProject.hit ? 'hit' : 'miss';
+      return emittedProject;
+    }, extra);
     emitted.set(String(id), result);
   }
   return { cacheRoot, freshCheck, emitted };
@@ -284,7 +295,11 @@ function composeGeneratedConfig(clientId) {
       continue;
     }
     const composer = `mls-${master.masterProject}/l2/${master.agentFolder}/nodejsSaveConfigJson.ts`;
-    if (existsSync(resolve(ROOT, composer))) run('pnpm', ['exec', 'tsx', composer, clientId]);
+    if (existsSync(resolve(ROOT, composer))) {
+      timeStage('main.nodejsSaveConfigJson', () => {
+        run('pnpm', ['exec', 'tsx', composer, clientId]);
+      }, { alvo: String(master.masterProject) });
+    }
     else log(`composer ausente: ${composer} (agentFolder=${master.agentFolder})`);
   }
 }
@@ -600,96 +615,113 @@ async function copyEmittedProject(id, dir) {
 // ── server build (dist/local) ────────────────────────────────────────────────
 async function buildServer(ids, clientId, { release = false } = {}) {
   log(`server build -> dist/local (${ids.map((i) => 'mls-' + i).join(' ')})`);
-  await rm(LOCAL_DIST, { recursive: true, force: true });
+  await timeStage('buildServer.cleanLocalDist', () => rm(LOCAL_DIST, { recursive: true, force: true }));
 
   // dynamic tsconfig: paths from the project set, emit to dist/local, sourcemaps on.
   // Relative path values (leading "./") resolve correctly without baseUrl, so the
   // file lives at the project root and stays forward-compatible (no baseUrl).
-  const paths = {};
-  const include = ['./types/*.d.ts'];
-  for (const id of ids) {
-    for (const seg of TS_SEGMENTS) {
-      const segDir = join(projectDir(id), seg);
-      if (!existsSync(segDir)) continue;
-      const segRel = toPosix(relative(ROOT, segDir));
-      paths[`/_${id}_/${seg}/*`] = [`./${segRel}/*`];
-      include.push(`./${segRel}/**/*.ts`, `./${segRel}/**/*.d.ts`);
+  const { compilerOptions } = await timeStage('buildServer.tsconfig', async () => {
+    const paths = {};
+    const include = ['./types/*.d.ts'];
+    for (const id of ids) {
+      for (const seg of TS_SEGMENTS) {
+        const segDir = join(projectDir(id), seg);
+        if (!existsSync(segDir)) continue;
+        const segRel = toPosix(relative(ROOT, segDir));
+        paths[`/_${id}_/${seg}/*`] = [`./${segRel}/*`];
+        include.push(`./${segRel}/**/*.ts`, `./${segRel}/**/*.d.ts`);
+      }
     }
-  }
-  const compilerOptions = {
-    // Force consistent ESM output for every file (dist/local/package.json is
-    // type:module). nodenext would emit CJS for files without a package.json
-    // type:module context, mixing CJS+ESM and breaking at runtime.
-    module: 'esnext',
-    moduleResolution: 'bundler',
-    outDir: toPosix(relative(ROOT, LOCAL_DIST)),
-    rootDir: '.',
-    paths,
-    sourceMap: true,
-    declaration: false,
-    noEmit: false,
-    noEmitOnError: false,
-  };
-  const tsconfig = {
-    extends: baseTsconfigRel(),
-    compilerOptions,
-    include,
-  };
-  // Single, inspectable tsconfig at the project root (where the build runs).
-  // Overwritten each run; not deleted.
-  const tmp = resolve(ROOT, 'tsconfig.build.json');
-  await writeFile(tmp, `${JSON.stringify(tsconfig, null, 2)}\n`, 'utf8');
-  log('tsconfig written: tsconfig.build.json');
+    const options = {
+      // Force consistent ESM output for every file (dist/local/package.json is
+      // type:module). nodenext would emit CJS for files without a package.json
+      // type:module context, mixing CJS+ESM and breaking at runtime.
+      module: 'esnext',
+      moduleResolution: 'bundler',
+      outDir: toPosix(relative(ROOT, LOCAL_DIST)),
+      rootDir: '.',
+      paths,
+      sourceMap: true,
+      declaration: false,
+      noEmit: false,
+      noEmitOnError: false,
+    };
+    const tsconfig = {
+      extends: baseTsconfigRel(),
+      compilerOptions: options,
+      include,
+    };
+    // Single, inspectable tsconfig at the project root (where the build runs).
+    // Overwritten each run; not deleted.
+    const tmp = resolve(ROOT, 'tsconfig.build.json');
+    await writeFile(tmp, `${JSON.stringify(tsconfig, null, 2)}\n`, 'utf8');
+    log('tsconfig written: tsconfig.build.json');
+    return { compilerOptions: options };
+  });
   const { cacheRoot, freshCheck, emitted } = await runTsc('tsconfig.build.json', ids, compilerOptions, clientId, { release });
-  await mkdir(LOCAL_DIST, { recursive: true });
-  for (const [id, result] of emitted) {
-    await copyEmittedProject(id, result.dir);
-  }
-  for (const [id, saved] of freshCheck) {
-    if (!saved.saveCheck) continue;
-    try {
-      const written = await writeCheckEntry({
-        cacheRoot,
-        id,
-        baseKey: saved.checkBase,
-        report: saved.report,
-        deps: saved.deps,
-      });
-      if (written.cleanupError) log(`build cache mls-${id} cleanup: ${written.cleanupError}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log(`build cache mls-${id} check not written: ${message}`);
+  await timeStage('buildServer.copyEmitted', async () => {
+    await mkdir(LOCAL_DIST, { recursive: true });
+    for (const [id, result] of emitted) {
+      await copyEmittedProject(id, result.dir);
     }
-  }
-  await pruneLocalDistProjects(ids);
+  });
+  await timeStage('buildServer.writeCheck', async () => {
+    for (const [id, saved] of freshCheck) {
+      if (!saved.saveCheck) continue;
+      try {
+        const written = await writeCheckEntry({
+          cacheRoot,
+          id,
+          baseKey: saved.checkBase,
+          report: saved.report,
+          deps: saved.deps,
+        });
+        if (written.cleanupError) log(`build cache mls-${id} cleanup: ${written.cleanupError}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(`build cache mls-${id} check not written: ${message}`);
+      }
+    }
+  });
+  await timeStage('buildServer.pruneLocalDist', () => pruneLocalDistProjects(ids));
 
   // mark the emitted tree as ESM so Node treats the .js as modules
-  await mkdir(LOCAL_DIST, { recursive: true });
-  await writeFile(resolve(LOCAL_DIST, 'package.json'), `${JSON.stringify({ type: 'module' }, null, 2)}\n`, 'utf8');
+  await timeStage('buildServer.packageJson', async () => {
+    await mkdir(LOCAL_DIST, { recursive: true });
+    await writeFile(resolve(LOCAL_DIST, 'package.json'), `${JSON.stringify({ type: 'module' }, null, 2)}\n`, 'utf8');
+  });
 
   // rewrite /_<id>_/... imports to relative paths within dist/local
-  await rewriteLocalDistAbsoluteImports(LOCAL_DIST);
+  await timeStage('buildServer.rewriteImports', () => rewriteLocalDistAbsoluteImports(LOCAL_DIST));
 
   // copy non-TS resources (sql/html/css/less/json/svg/md + binary assets) into dist/local/_<id>_
   let copied = 0;
-  for (const id of ids) {
-    for (const seg of RES_SEGMENTS) {
-      const segDir = join(projectDir(id), seg);
-      if (!existsSync(segDir)) continue;
-      for (const file of await walkFiles(segDir)) {
-        if (!RES_EXT.has(extname(file))) continue;
-        const rel = toPosix(relative(projectDir(id), file));
-        const dest = resolve(LOCAL_DIST, `_${id}_`, rel);
-        await mkdir(dirname(dest), { recursive: true });
-        await cp(file, dest);
-        copied += 1;
+  copied += await timeStage('buildServer.copyResources', async () => {
+    let count = 0;
+    for (const id of ids) {
+      for (const seg of RES_SEGMENTS) {
+        const segDir = join(projectDir(id), seg);
+        if (!existsSync(segDir)) continue;
+        for (const file of await walkFiles(segDir)) {
+          if (!RES_EXT.has(extname(file))) continue;
+          const rel = toPosix(relative(projectDir(id), file));
+          const dest = resolve(LOCAL_DIST, `_${id}_`, rel);
+          await mkdir(dirname(dest), { recursive: true });
+          await cp(file, dest);
+          count += 1;
+        }
       }
     }
-  }
-  copied += await copyL3Assets(ids, LOCAL_DIST);
+    return count;
+  });
+  copied += await timeStage('buildServer.copyL3Assets', () => copyL3Assets(ids, LOCAL_DIST));
   log(`copied ${copied} resource file(s) to dist/local`);
-  log(`emitted ${await emitL4Defs(ids, LOCAL_DIST)} L4 def file(s) to dist/local`);
-  log(`copied ${await copyContractSources(ids, LOCAL_DIST)} L2 contract source(s) to dist/local`);
+  await timeStage('buildServer.emitL4Defs', async () => {
+    log(`emitted ${await emitL4Defs(ids, LOCAL_DIST)} L4 def file(s) to dist/local`);
+  });
+  await timeStage('buildServer.copyContractSources', async () => {
+    log(`copied ${await copyContractSources(ids, LOCAL_DIST)} L2 contract source(s) to dist/local`);
+  });
 }
 
 // ── web build (dist/web) ─────────────────────────────────────────────────────
@@ -704,87 +736,101 @@ function resolveVirtual(p) {
 
 export async function buildWeb(clientConfig, ids) {
   const outdir = resolve(DIST, WEB_DIST_DIR);
-  await rm(outdir, { recursive: true, force: true });
+  await timeStage('buildWeb.clean', () => rm(outdir, { recursive: true, force: true }));
 
   // O Lit sai UMA vez em _libs/lit/ (ver scripts/litRuntime.mjs). O importmap
   // dos shells, gerado abaixo, é a única forma de `lit` chegar ao browser.
-  const litConfig = readLitRuntimeConfig(ROOT);
-  const { dir: litPkgDir, pkgJson: litPkgJson } = litPackageDir(ROOT, litConfig.package);
-  const litEntries = litExportEntries(litPkgJson);
-  const litCount = await emitLitRuntime({
-    root: ROOT, outdir, config: litConfig, entries: litEntries, pkgDir: litPkgDir,
+  const lit = await timeStage('buildWeb.lit', async () => {
+    const litConfig = readLitRuntimeConfig(ROOT);
+    const { dir: litPkgDir, pkgJson: litPkgJson } = litPackageDir(ROOT, litConfig.package);
+    const litEntries = litExportEntries(litPkgJson);
+    const litCount = await emitLitRuntime({
+      root: ROOT, outdir, config: litConfig, entries: litEntries, pkgDir: litPkgDir,
+    });
+    log(`lit runtime -> ${litConfig.outDir} (${litCount} modules, served at ${litConfig.baseUrl})`);
+    return { litConfig, litEntries };
   });
-  log(`lit runtime -> ${litConfig.outDir} (${litCount} modules, served at ${litConfig.baseUrl})`);
-  const echartsSource = resolve(ROOT, 'node_modules/echarts/dist/echarts.min.js');
-  const echartsTarget = resolve(outdir, '_libs/echarts.min.js');
-  if (!existsSync(echartsSource)) throw new Error(`local ECharts runtime not found at ${echartsSource}`);
-  await mkdir(dirname(echartsTarget), { recursive: true });
-  await cp(echartsSource, echartsTarget);
-  log('echarts runtime -> _libs/echarts.min.js');
+  await timeStage('buildWeb.echarts', async () => {
+    const echartsSource = resolve(ROOT, 'node_modules/echarts/dist/echarts.min.js');
+    const echartsTarget = resolve(outdir, '_libs/echarts.min.js');
+    if (!existsSync(echartsSource)) throw new Error(`local ECharts runtime not found at ${echartsSource}`);
+    await mkdir(dirname(echartsTarget), { recursive: true });
+    await cp(echartsSource, echartsTarget);
+    log('echarts runtime -> _libs/echarts.min.js');
+  });
   log(`web build -> dist/${WEB_DIST_DIR} (Lit + shells + css + l3; app modules come from the zip)`);
 
   // copy l2/l3 static resources (html/css/svg/json/md/wav/png/…) into dist/web
   let copied = 0;
-  for (const id of ids) {
-    for (const layer of ['l2', 'l3']) {
-      const src = join(projectDir(id), layer);
-      if (!existsSync(src)) continue;
-      for (const file of await walkFiles(src)) {
-        const ext = extname(file);
-        if (!RES_EXT.has(ext) && ext !== '') continue;
-        if (ext === '.ts' || ext === '.tsx') continue;
-        const rel = toPosix(relative(src, file));
-        const dest = resolve(outdir, `_${id}_`, layer, rel);
-        await mkdir(dirname(dest), { recursive: true });
-        await cp(file, dest);
-        copied += 1;
+  copied += await timeStage('buildWeb.copyStatic', async () => {
+    let count = 0;
+    for (const id of ids) {
+      for (const layer of ['l2', 'l3']) {
+        const src = join(projectDir(id), layer);
+        if (!existsSync(src)) continue;
+        for (const file of await walkFiles(src)) {
+          const ext = extname(file);
+          if (!RES_EXT.has(ext) && ext !== '') continue;
+          if (ext === '.ts' || ext === '.tsx') continue;
+          const rel = toPosix(relative(src, file));
+          const dest = resolve(outdir, `_${id}_`, layer, rel);
+          await mkdir(dirname(dest), { recursive: true });
+          await cp(file, dest);
+          count += 1;
+        }
       }
     }
-  }
-  copied += await copyL3Assets(ids, outdir);
+    return count;
+  });
+  copied += await timeStage('buildWeb.copyL3Assets', () => copyL3Assets(ids, outdir));
   log(`copied ${copied} static file(s) to dist/${WEB_DIST_DIR}`);
 
   // compile Tailwind for each master-frontend project, overwriting the copied
   // source css with the built one. @source covers every project's l2 so
   // cross-project class names are included.
-  for (const [projId, project] of Object.entries(clientConfig.projects ?? {})) {
-    if (project.type !== 'master frontend') continue;
-    const cssSrc = join(projectDir(projId), 'l2', 'shared', 'tailwind.css');
-    if (!existsSync(cssSrc)) continue;
-    const cssOut = resolve(outdir, `_${projId}_`, 'l2', 'shared', 'tailwind.css');
-    await mkdir(dirname(cssOut), { recursive: true });
-    const sources = ids
-      .map((id) => `@source "${toPosix(relative(dirname(cssSrc), join(projectDir(id), 'l2')))}/**/*.{ts,html}";`)
-      .join('\n');
-    const tmpCss = join(dirname(cssSrc), '.tailwind.build.css');
-    await writeFile(tmpCss, `${readFileSync(cssSrc, 'utf8').trimEnd()}\n${sources}\n`, 'utf8');
-    try {
-      run('pnpm', ['exec', 'tailwindcss', '-i', tmpCss, '-o', cssOut, '--minify']);
-      log(`tailwind compiled -> ${toPosix(relative(outdir, cssOut))}`);
-    } finally {
-      await rm(tmpCss, { force: true });
+  await timeStage('buildWeb.tailwind', async () => {
+    for (const [projId, project] of Object.entries(clientConfig.projects ?? {})) {
+      if (project.type !== 'master frontend') continue;
+      const cssSrc = join(projectDir(projId), 'l2', 'shared', 'tailwind.css');
+      if (!existsSync(cssSrc)) continue;
+      const cssOut = resolve(outdir, `_${projId}_`, 'l2', 'shared', 'tailwind.css');
+      await mkdir(dirname(cssOut), { recursive: true });
+      const sources = ids
+        .map((id) => `@source "${toPosix(relative(dirname(cssSrc), join(projectDir(id), 'l2')))}/**/*.{ts,html}";`)
+        .join('\n');
+      const tmpCss = join(dirname(cssSrc), '.tailwind.build.css');
+      await writeFile(tmpCss, `${readFileSync(cssSrc, 'utf8').trimEnd()}\n${sources}\n`, 'utf8');
+      try {
+        run('pnpm', ['exec', 'tailwindcss', '-i', tmpCss, '-o', cssOut, '--minify']);
+        log(`tailwind compiled -> ${toPosix(relative(outdir, cssOut))}`);
+      } finally {
+        await rm(tmpCss, { force: true });
+      }
     }
-  }
+  });
 
   // copy shell templates referenced by config.json (kept in their _<id>_ path),
   // injetando o importmap do Lit gerado acima.
-  const litVersions = litEntryContentVersions(outdir, litConfig.outDir, litEntries);
-  const litImportMap = buildLitImportMap(litConfig.package, litConfig.baseUrl, litEntries, litVersions);
-  let shells = 0;
-  for (const shellPath of Object.values(clientConfig.shellTemplates ?? {})) {
-    const { abs, rel } = resolveVirtual(shellPath);
-    if (!existsSync(abs)) continue;
-    const dest = resolve(outdir, rel);
-    await mkdir(dirname(dest), { recursive: true });
-    const html = stampTailwindHref(injectImportMap(await readFile(abs, 'utf8'), litImportMap), (href) => {
-      const file = resolve(outdir, href.replace(/^\//u, ''));
-      if (!existsSync(file)) throw new Error(`tailwind.css missing for ${href}`);
-      return contentVersionHash(readFileSync(file));
-    });
-    await writeFile(dest, html, 'utf8');
-    shells += 1;
-  }
-  log(`lit importmap injetado em ${shells} shell(s), ${Object.keys(litImportMap.imports).length} specifiers`);
+  await timeStage('buildWeb.importmap', async () => {
+    const { litConfig, litEntries } = lit;
+    const litVersions = litEntryContentVersions(outdir, litConfig.outDir, litEntries);
+    const litImportMap = buildLitImportMap(litConfig.package, litConfig.baseUrl, litEntries, litVersions);
+    let shells = 0;
+    for (const shellPath of Object.values(clientConfig.shellTemplates ?? {})) {
+      const { abs, rel } = resolveVirtual(shellPath);
+      if (!existsSync(abs)) continue;
+      const dest = resolve(outdir, rel);
+      await mkdir(dirname(dest), { recursive: true });
+      const html = stampTailwindHref(injectImportMap(await readFile(abs, 'utf8'), litImportMap), (href) => {
+        const file = resolve(outdir, href.replace(/^\//u, ''));
+        if (!existsSync(file)) throw new Error(`tailwind.css missing for ${href}`);
+        return contentVersionHash(readFileSync(file));
+      });
+      await writeFile(dest, html, 'utf8');
+      shells += 1;
+    }
+    log(`lit importmap injetado em ${shells} shell(s), ${Object.keys(litImportMap.imports).length} specifiers`);
+  });
 }
 
 // ── client config discovery ──────────────────────────────────────────────────
@@ -830,11 +876,14 @@ async function main() {
         // master runtime manifest merge (masterModules.json -> 102034
         // modules/persistenceModules). The publish client validates that merge
         // before invoking this build with --use-existing-config.
-        composeGeneratedConfig(clientId);
+        // nodejsSaveConfigJson is its own stage inside composeGeneratedConfig.
+        timeStage('main.composeConfig', () => {
+          composeGeneratedConfig(clientId);
+        });
       }
       const configPath = clientConfigPath(clientId);
       if (!existsSync(configPath)) throw new Error(`generated config not found: ${configPath}`);
-      const composed = JSON.parse(await readFile(configPath, 'utf8'));
+      const composed = JSON.parse(await timeStage('main.readConfig', () => readFile(configPath, 'utf8')));
       const { config, replaced, differed } = withMasterRuntimeManifest(composed, readMasterRuntimeManifest);
       if (replaced.length > 0) log(`master manifest replaced ${replaced.join(', ')}`);
       if (differed.length > 0) log(`master manifest differed ${differed.join(', ')} (client copy ignored)`);
@@ -855,11 +904,15 @@ async function main() {
         // post-compile: compile each project's .less and inject into the per-file JS
         // (same mls-ci routine the GitHub Action uses; requires the /// <mls header,
         // so it applies to dist/local only)
-        run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local', ...projectIds]);
-        await validateServerOutput(config);
+        timeStage('main.processCss', () => {
+          run('node', ['scripts/processCssAfterCompile.mjs', '--dist', 'dist/local', ...projectIds]);
+        });
+        await timeStage('main.validateServer', () => validateServerOutput(config));
         // make the chosen client config discoverable at the projects-dir root
-        await writeFile(resolve(ROOT, 'config.json'), `${JSON.stringify(config, null, 2)}\n`, 'utf8');
-        log('copied generated client config to project root');
+        await timeStage('main.writeRootConfig', async () => {
+          await writeFile(resolve(ROOT, 'config.json'), `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+          log('copied generated client config to project root');
+        });
       }
       return { clientConfig: config, ids: projectIds };
     },

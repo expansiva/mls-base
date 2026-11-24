@@ -71,6 +71,20 @@ test('list: a fila vm lê /data/etc/releases; fila de projeto sem --projeto e li
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('rt306: 40 etapas no compile cabem em 20.000 ou o corte dos passos tira o detalhe, sem erro', () => {
+  const rec = record({ id: '20261124180100', libs: 2, changed: 1, steps: 1, base: 1 });
+  rec.passos = [{
+    nome: 'compile', inicio: '2026-11-24T18:00:00Z', duracaoMs: 70029, resultado: 'ok',
+    etapas: Array.from({ length: 40 }, (_, i) => ({ nome: `stage.${i}`, duracaoMs: i, alvo: '102047', cache: 'miss', extra: 'z'.repeat(800) })),
+  }];
+  const fitted = fitRecord(rec);
+  const text = JSON.stringify(fitted);
+  const kept = Array.isArray(fitted.passos) && fitted.passos.every((step) => step.etapas);
+  const cut = fitted.cortado === true && fitted.passos.every((step) => !('etapas' in step) && step.nome && step.resultado);
+  assert.ok(text.length <= MAX_SHOW ? true : cut);
+  assert.ok(kept || cut);
+});
+
 test('show: abaixo de 20.000 vem inteiro, sem marca de corte', () => {
   const small = record({ id: '20261109150104', libs: 3, changed: 1, base: 1 });
   assert.ok(JSON.stringify(small).length < MAX_SHOW);

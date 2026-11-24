@@ -32,6 +32,7 @@ releasesToPrune,
   vmTsconfigRel,
   writeVmTsconfig,
   assertReleaseL1,
+  readCompileEtapas,
 } from './addNewVersion.mjs';
 import { openRelease, recordsDir } from './releaseRecord.mjs';
 
@@ -804,6 +805,38 @@ test('rt265: fetch no l1 do app cliente para antes de ativar e o registro fecha 
     assert.ok(gate > 0 && gate < compile && compile < activate);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rt306: linhas de tempo do compile — inválida é pulada, arquivo ausente não traz etapas', () => {
+  const file = join(tmpdir(), `rt306-timings-${process.pid}.jsonl`);
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (line) => warnings.push(String(line));
+  try {
+    writeFileSync(file, [
+      JSON.stringify({ nome: 'typeCheck', duracaoMs: 10, alvo: '102047', cache: 'hit', ignored: true }),
+      'not-json',
+      JSON.stringify({ nome: 'emit', duracaoMs: 4, alvo: '102047', cache: 'miss' }),
+      '',
+    ].join('\n'));
+    assert.deepEqual(readCompileEtapas(file), [
+      { nome: 'typeCheck', duracaoMs: 10, alvo: '102047', cache: 'hit' },
+      { nome: 'emit', duracaoMs: 4, alvo: '102047', cache: 'miss' },
+    ]);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /timings line skipped/);
+    assert.equal(readCompileEtapas(join(tmpdir(), 'rt306-missing-timings.jsonl')), undefined);
+    const src = readFileSync(join(HERE, 'addNewVersion.mjs'), 'utf8');
+    const compile = src.indexOf("rec.step('compile'");
+    const next = src.indexOf("rec.step('migrate'");
+    const body = src.slice(compile, next);
+    assert.match(body, /COLLAB_BUILD_TIMINGS_FILE/);
+    assert.match(body, /readCompileEtapas/);
+    assert.match(body, /rmSync\(timingsFile/);
+  } finally {
+    console.warn = warn;
+    rmSync(file, { force: true });
   }
 });
 
